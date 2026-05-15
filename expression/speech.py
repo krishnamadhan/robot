@@ -46,8 +46,16 @@ class TTSEngine:
         self._player = self._detect_player()
         self._prebaked: dict[str, str] = {}
         self._prebake_all()
+        # Lazy-init: asyncio.Lock must be created inside a running loop
+        self.__audio_lock: Optional[asyncio.Lock] = None
         log.info("tts.init", player=self._player, piper=self._piper_available,
                   espeak=self._espeak_available, prebaked=len(self._prebaked))
+
+    @property
+    def _audio_lock(self) -> asyncio.Lock:
+        if self.__audio_lock is None:
+            self.__audio_lock = asyncio.Lock()
+        return self.__audio_lock
 
     def _prebake_all(self) -> None:
         """Generate all sounds to disk at startup so play_sound has zero overhead."""
@@ -171,9 +179,13 @@ class TTSEngine:
     async def speak(self, text: str, interrupt: bool = True) -> None:
         if not (self._piper_available or self._espeak_available) or not text.strip():
             return
+        if self._audio_lock.locked():
+            log.debug("tts.speak_dropped", reason="audio_busy", text_preview=text[:40])
+            return
         cleaned = self._clean_text(text)
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, self._speak_sync, cleaned)
+        async with self._audio_lock:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self._speak_sync, cleaned)
 
     def _speak_sync(self, text: str) -> None:
         self._playing = True
@@ -187,6 +199,7 @@ class TTSEngine:
                 gen = subprocess.run(
                     ["piper",
                      "--model", str(PIPER_MODEL),
+                     "--length_scale", "0.9",
                      "--output_file", wav_path],
                     input=text.encode(),
                     capture_output=True,
@@ -259,9 +272,13 @@ class TTSEngine:
         self._pitch = int(50 + mood * 15)        # 35–65
 
     async def play_sound(self, sound_type: str) -> None:
-        """Play a synthesized non-speech sound expression."""
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, self._play_sound_sync, sound_type)
+        """Play a non-speech sound. Skipped (not queued) if any audio is playing."""
+        if self._audio_lock.locked():
+            log.debug("tts.sound_dropped", reason="audio_busy", sound=sound_type)
+            return
+        async with self._audio_lock:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self._play_sound_sync, sound_type)
 
     def _play_sound_sync(self, sound_type: str) -> None:
         # Use pre-baked file (no generation overhead — critical for <200ms beep_ack)
@@ -358,7 +375,7 @@ class TTSEngine:
 
     @property
     def is_speaking(self) -> bool:
-        return self._playing
+        return self._audio_lock.locked()
 
 
 tts = TTSEngine()

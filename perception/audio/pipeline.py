@@ -151,12 +151,12 @@ class ListeningPipeline:
         # Acknowledge — beep + eye animation
         await tts.play_sound("beep_ack")
 
-        # Capture the actual utterance
+        # Capture the actual utterance — 250ms silence timeout is enough for natural speech
         audio = await vad.capture_once(
             mic,
             timeout_ms=MAX_UTTERANCE_S * 1000,
-            min_speech_ms=400,
-            silence_timeout_ms=350,
+            min_speech_ms=300,
+            silence_timeout_ms=250,
         )
 
         if not audio:
@@ -191,6 +191,9 @@ class ListeningPipeline:
                 # Let behavior engine handle it; still fall through for verbal response
         except Exception:
             pass
+
+        # Signal "I heard you, processing" — plays ~200ms then LLM runs
+        asyncio.create_task(tts.play_sound("chirp_curious"))
 
         # Generate response
         self._state = ListenState.SPEAKING
