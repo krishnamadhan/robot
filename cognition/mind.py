@@ -13,7 +13,7 @@ import asyncio
 import os
 import random
 import time
-from typing import Optional
+from typing import List, Optional
 
 from core.event_bus import bus, Event, EventType
 from expression.eyes import EyeExpression, eye_engine
@@ -223,6 +223,73 @@ class CosmoMind:
             except Exception:
                 pass
 
+    # ── Episodic memory context ───────────────────────────────────────────────
+
+    async def _memory_context(self, name: Optional[str] = None) -> str:
+        """
+        Fetch last 5 episodes and format as compact natural-language context.
+        Kept under ~50 tokens. Returns "" on any failure.
+        """
+        try:
+            from core.memory.episodic import episodic
+            episodes = await episodic.retrieve(limit=5, min_importance=0.0)
+            if not episodes:
+                return ""
+
+            # Sort by recency — retrieve() orders by importance first but
+            # all our episodes have similar importance, so make it explicit.
+            episodes.sort(key=lambda e: e.timestamp, reverse=True)
+
+            now = time.time()
+            now_day = time.localtime(now).tm_yday
+
+            parts: List[str] = []
+            for e in episodes:
+                age_s = now - e.timestamp
+                ep_day = time.localtime(e.timestamp).tm_yday
+
+                if age_s < 3600:
+                    when = "just now"
+                elif age_s < 21600:
+                    when = "earlier today"
+                elif ep_day == now_day:
+                    when = "today"
+                elif age_s < 172800:
+                    when = "yesterday"
+                elif age_s < 604800:
+                    when = f"{int(age_s / 86400)}d ago"
+                else:
+                    when = "last week"
+
+                who = ""
+                if e.person_id:
+                    if "madhan" in e.person_id.lower():
+                        who = "Madhan"
+                    elif "indhu" in e.person_id.lower():
+                        who = "Indhu"
+                    else:
+                        who = e.person_id.replace("person_", "").capitalize()
+
+                if e.emotional_valence > 0.5:
+                    mood = "happy"
+                elif e.emotional_valence < -0.3:
+                    mood = "upset"
+                else:
+                    mood = ""
+
+                if who and mood:
+                    parts.append(f"{when} {who} {mood}")
+                elif who:
+                    parts.append(f"{when} saw {who}")
+                else:
+                    parts.append(f"{when} {e.summary[:40]}")
+
+            if not parts:
+                return ""
+            return "Recent memories: " + "; ".join(parts) + "."
+        except Exception:
+            return ""
+
     # ── Claude speech (paid, rate-limited) ───────────────────────────────────
 
     async def _maybe_speak(
@@ -248,7 +315,11 @@ class CosmoMind:
         self._last_spoke = now
 
         prompt = _SPEAK_PROMPTS.get(trigger, lambda n: f"[Say something short, Tanglish.]")(name)
-        log.info("cosmo_mind.speak_trigger", trigger=trigger, name=name)
+        mem = await self._memory_context(name)
+        if mem:
+            prompt = f"{prompt}\n{mem}"
+        log.info("cosmo_mind.speak_trigger", trigger=trigger, name=name,
+                 has_memory=bool(mem))
 
         loop = asyncio.get_event_loop()
         try:

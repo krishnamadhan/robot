@@ -133,6 +133,10 @@ class LLMInterface:
             if not episodes:
                 return ""
 
+            # Sort by recency — retrieve() orders importance-first,
+            # but for conversation context recency matters most.
+            episodes.sort(key=lambda e: e.timestamp, reverse=True)
+
             lines = []
             for e in episodes:
                 ts = time.strftime("%m-%d %H:%M", time.localtime(e.timestamp))
