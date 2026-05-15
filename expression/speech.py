@@ -30,6 +30,7 @@ _PW_ENV = {
 BT_SINK_NAME = "bluez_output.28_FA_19_C1_73_F8.1"
 PW_DEFAULT_SINK = "@DEFAULT_SINK@"
 PIPER_MODEL = Path.home() / ".robot" / "models" / "piper" / "en_US-lessac-medium.onnx"
+_PREBAKE_DIR = Path("/tmp/cosmo_sounds")
 
 
 class TTSEngine:
@@ -43,8 +44,58 @@ class TTSEngine:
         self._pitch = 55          # 0-99 (espeak fallback)
         self._playing = False
         self._player = self._detect_player()
+        self._prebaked: dict[str, str] = {}
+        self._prebake_all()
         log.info("tts.init", player=self._player, piper=self._piper_available,
-                  espeak=self._espeak_available)
+                  espeak=self._espeak_available, prebaked=len(self._prebaked))
+
+    def _prebake_all(self) -> None:
+        """Generate all sounds to disk at startup so play_sound has zero overhead."""
+        _PREBAKE_DIR.mkdir(exist_ok=True)
+        for name in ["beep_ack", "boot_chime", "chirp_curious", "chirp_happy",
+                     "whimper_sad", "purr_content", "happy_trill"]:
+            path = _PREBAKE_DIR / f"{name}.wav"
+            if not path.exists():
+                try:
+                    ok = self._generate_sound_to_file(name, str(path))
+                    if not ok:
+                        continue
+                except Exception as e:
+                    log.warning("tts.prebake_failed", sound=name, error=str(e))
+                    continue
+            self._prebaked[name] = str(path)
+
+    def _generate_sound_to_file(self, sound_type: str, out_path: str) -> bool:
+        """Generate a sound and save at 44100 Hz stereo WAV. Returns True on success."""
+        import numpy as np, wave as wave_module
+        sr = 22050
+        sounds = {
+            "boot_chime":    self._chime([523, 659, 784], sr),
+            "beep_ack":      self._tone(880, 0.15, sr),
+            "chirp_curious": self._chirp(600, 1200, 0.2, sr),
+            "chirp_happy":   self._chirp(800, 1600, 0.25, sr),
+            "whimper_sad":   self._chirp(500, 250, 0.4, sr),
+            "purr_content":  self._purr(120, 2.0, sr),
+            "happy_trill":   self._trill(700, 0.4, sr),
+        }
+        samples = sounds.get(sound_type)
+        if samples is None:
+            return False
+        tmp = out_path + ".tmp.wav"
+        with wave_module.open(tmp, "w") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sr)
+            wf.writeframes(samples.tobytes())
+        r = subprocess.run(
+            ["ffmpeg", "-y", "-i", tmp, "-ar", "44100", "-ac", "2", out_path],
+            capture_output=True, timeout=10,
+        )
+        try:
+            os.unlink(tmp)
+        except Exception:
+            pass
+        return r.returncode == 0
 
     def _check_piper(self) -> bool:
         try:
@@ -213,6 +264,12 @@ class TTSEngine:
         await loop.run_in_executor(None, self._play_sound_sync, sound_type)
 
     def _play_sound_sync(self, sound_type: str) -> None:
+        # Use pre-baked file (no generation overhead — critical for <200ms beep_ack)
+        if sound_type in self._prebaked:
+            self._play_wav(self._prebaked[sound_type])
+            return
+
+        # On-the-fly fallback for sounds not in prebake cache
         import numpy as np, wave, struct
         sr = 22050
         sounds = {

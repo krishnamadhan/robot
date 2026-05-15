@@ -98,7 +98,7 @@ class ListeningPipeline:
                  mode=type(detector).__name__,
                  keyword=detector.keyword_label)
         while self._running:
-            if self._state != ListenState.PASSIVE:
+            if self._state != ListenState.PASSIVE or tts.is_speaking:
                 await asyncio.sleep(0.05)
                 continue
             chunk = await mic.read_chunk()
@@ -139,8 +139,11 @@ class ListeningPipeline:
                                 asyncio.create_task(self._handle_wake_word(matched))
 
     async def _handle_wake_word(self, word: str) -> None:
-        if self._state != ListenState.PASSIVE:
-            return  # already busy
+        if self._state != ListenState.PASSIVE or tts.is_speaking:
+            log.debug("audio_pipeline.wake_ignored",
+                      reason="speaking" if tts.is_speaking else "busy",
+                      state=self._state)
+            return
 
         log.info("audio_pipeline.wake_word_triggered", word=word)
         self._state = ListenState.LISTENING
@@ -205,6 +208,14 @@ class ListeningPipeline:
         except Exception as e:
             log.error("audio_pipeline.respond_error", error=str(e))
             await tts.speak("Hmm, something went wrong da. Try again?")
+
+        # conversation.respond fires TTS as a task (fire-and-forget) — wait for it
+        # so we don't accept new wake words while still speaking
+        wait_start = time.monotonic()
+        while tts.is_speaking:
+            await asyncio.sleep(0.05)
+            if time.monotonic() - wait_start > 30:  # safety cap
+                break
 
         self._state = ListenState.PASSIVE
 
