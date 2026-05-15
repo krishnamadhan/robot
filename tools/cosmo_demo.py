@@ -294,11 +294,8 @@ async def setup_event_handlers() -> None:
     @bus.on(EventType.WAKE_WORD)
     async def on_wake(event: Event) -> None:
         _state["events"].append(f"Wake: '{event.data.get('word', '?')}'")
-        await asyncio.gather(
-            eye_engine.set_expression(EyeExpression.CURIOUS, duration=3.0),
-            sounds.play("beep_ack"),
-            return_exceptions=True,
-        )
+        eye_engine.set_expression(EyeExpression.CURIOUS, duration=3.0)
+        await sounds.play("beep_ack")
 
     @bus.on(EventType.USER_INTENT)
     async def on_intent(event: Event) -> None:
@@ -321,11 +318,8 @@ async def setup_event_handlers() -> None:
         elif action == "behavior.love_reaction":
             asyncio.create_task(behavior_engine.love_reaction())
         elif action == "state.transition.SLEEPING":
-            await asyncio.gather(
-                eye_engine.set_expression(EyeExpression.SLEEPY),
-                sounds.play("sleep_exhale"),
-                return_exceptions=True,
-            )
+            eye_engine.set_expression(EyeExpression.SLEEPY)
+            await sounds.play("sleep_exhale")
         elif action == "audio.mute_30s":
             sounds.mute(30)
         elif action == "behavior.look_around":
@@ -341,31 +335,22 @@ async def setup_event_handlers() -> None:
     async def on_touch(event: Event) -> None:
         zone = event.data.get("zone", "?")
         _state["events"].append(f"Touch: {zone}")
-        await asyncio.gather(
-            eye_engine.set_expression(EyeExpression.LOVING, duration=3.0),
-            sounds.play("purr_petted"),
-            return_exceptions=True,
-        )
+        eye_engine.set_expression(EyeExpression.LOVING, duration=3.0)
+        await sounds.play("purr_petted")
 
     @bus.on(EventType.MOTION_DETECTED)
     async def on_motion(event: Event) -> None:
         _state["events"].append("Motion (PIR)")
         if _state["person_name"] == "no one":
-            await asyncio.gather(
-                eye_engine.set_expression(EyeExpression.CURIOUS, duration=2.0),
-                sounds.play("chirp_curious"),
-                return_exceptions=True,
-            )
+            eye_engine.set_expression(EyeExpression.CURIOUS, duration=2.0)
+            await sounds.play("chirp_curious")
 
     @bus.on(EventType.BATTERY_CRITICAL)
     async def on_bat_crit(event: Event) -> None:
         pct = event.data.get("percent", 0)
         _state["events"].append(f"Battery CRITICAL: {pct:.0f}%")
-        await asyncio.gather(
-            eye_engine.set_expression(EyeExpression.SCARED, duration=10.0),
-            sounds.play("battery_low"),
-            return_exceptions=True,
-        )
+        eye_engine.set_expression(EyeExpression.SCARED, duration=10.0)
+        await sounds.play("battery_low")
 
     @bus.on(EventType.RESPONSE_READY)
     async def on_response(event: Event) -> None:

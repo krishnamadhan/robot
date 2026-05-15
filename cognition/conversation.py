@@ -81,13 +81,32 @@ class ConversationManager:
         conv = wm.get_conversation()
         if conv:
             turns = len([m for m in conv if m["role"] == "user"])
+            user_msgs = [m["content"] for m in conv if m["role"] == "user"]
+            name = self._active_person_name or "someone"
+            emotion = f" ({self._their_emotion})" if self._their_emotion else ""
+
+            if user_msgs:
+                first = user_msgs[0][:70].rstrip()
+                if len(user_msgs[0]) > 70:
+                    first += "…"
+                if turns == 1:
+                    summary = f'{name}{emotion} said: "{first}"'
+                else:
+                    summary = f'{name}{emotion}, {turns} turns — started: "{first}"'
+            else:
+                summary = f"Chat with {name}{emotion} ({turns} turns)"
+
             await episodic.store(Episode(
                 episode_type="conversation",
-                summary=f"Chat with {self._active_person_name or 'someone'} ({turns} turns)",
+                summary=summary,
                 emotional_valence=personality.state.mood,
                 importance=min(1.0, 0.3 + turns * 0.05),
                 person_id=self._active_person_id,
-                raw_data={"turns": turns, "duration_s": round(duration_s, 1)},
+                raw_data={
+                    "turns": turns,
+                    "duration_s": round(duration_s, 1),
+                    "messages": user_msgs[:5],
+                },
             ))
 
         wm.clear_conversation()

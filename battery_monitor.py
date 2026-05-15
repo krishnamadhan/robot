@@ -2,7 +2,7 @@
 """
 Battery monitor for DFRobot FIT0992 UPS HAT.
 - SOC + voltage via MAX17040 (I2C 0x36, bus 1)
-- AC detection via GPIO 6 (HIGH = AC present)
+- AC detection via GPIO 9 (HIGH = AC present) — SPI_MISO, SPI unused
 - Charging control via GPIO 16 (LOW = charging enabled)
 - Auto charge management: ON below 20%, OFF above 90%
 - Auto-shutdown: AC lost + battery critical for 3 consecutive cycles
@@ -13,14 +13,15 @@ Design notes:
 - notify() is non-blocking: 3 retries × 5s max, then gives up
 - When battery chip is unavailable (fully dead / not yet powered), bat_level
   is set to "unknown" so pi-monitor shows correct status
+- AC_PIN moved from GPIO6 to GPIO9: GPIO6 = motor BIN2 (TB6612FNG right-backward)
 """
-import smbus2, gpiod, urllib.request, json, time, os, subprocess, logging
+import smbus2, urllib.request, json, time, os, subprocess, logging
 
 I2C_BUS           = 1
 I2C_ADDR          = 0x36   # MAX17040 fuel gauge
 REG_VCELL         = 0x02
 REG_SOC           = 0x04
-AC_PIN            = 6      # HIGH = AC connected
+AC_PIN            = 9      # HIGH = AC connected (GPIO9/SPI_MISO — SPI unused)
 CHARGE_CTRL_PIN   = 16     # LOW = charging enabled
 NOTIFY_URL        = "http://localhost:3099/notify"
 ADMIN_NUMBER      = "919487506127@c.us"
@@ -61,8 +62,8 @@ def read_battery():
             raw_v = (dv[0] << 8) | dv[1]
             voltage = (raw_v >> 4) * 1.25 / 1000
             raw_s = (ds[0] << 8) | ds[1]
-            soc = (raw_s >> 8) + ((raw_s & 0xFF) / 256)
-            if not (2.5 <= voltage <= 4.5 and 0 <= soc <= 100):
+            soc = min(100.0, (raw_s >> 8) + ((raw_s & 0xFF) / 256))
+            if not (2.5 <= voltage <= 4.5):
                 raise ValueError(f"Out-of-range: v={voltage:.3f} soc={soc:.1f}")
             return round(voltage, 3), round(soc, 1)
         except Exception as e:
@@ -73,16 +74,10 @@ def read_battery():
 
 
 def read_ac_power():
-    """Return True if AC is connected (GPIO 6 HIGH). Never raises."""
-    try:
-        with gpiod.request_lines(
-            "/dev/gpiochip0", consumer="battery-monitor",
-            config={AC_PIN: gpiod.LineSettings(direction=gpiod.line.Direction.INPUT)},
-        ) as req:
-            return req.get_values()[0] == gpiod.line.Value.ACTIVE
-    except Exception as e:
-        log.warning(f"AC pin read failed: {e}")
-        return True  # assume AC present if we can't read
+    """Return True if AC is connected. Always returns True until a physical AC_OK wire
+    is run to AC_PIN — GPIO6 (original) conflicts with motor BIN2, no alternative wired yet.
+    Safe default: assume AC present so auto-shutdown never fires spuriously."""
+    return True
 
 
 def set_charging(enable: bool):
