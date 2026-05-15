@@ -539,6 +539,15 @@ async def main() -> None:
     await setup_event_handlers()
     asyncio.create_task(alone_watcher())
 
+    # Debug HTTP API — GET /state, /memory/recent, /health, POST /trigger/describe
+    try:
+        from services.api import service as api_service
+        api_service.wire_state(_state, _state["events"])
+        await api_service.start()
+        console.print("[green]✓ Debug API — http://localhost:8000/docs[/green]")
+    except Exception as e:
+        console.print(f"[yellow]⚠ Debug API failed: {e}[/yellow]")
+
     console.print(f"\n[bold green]Cosmo is alive! {personality.describe()}[/bold green]")
     if enrolled:
         console.print(f'[dim]Walk in — Cosmo knows {", ".join(enrolled)}[/dim]')
@@ -556,6 +565,11 @@ async def main() -> None:
         pass
     finally:
         console.print("\n[dim]Shutting down...[/dim]")
+        try:
+            from services.api import service as api_service
+            await api_service.stop()
+        except Exception:
+            pass
         if conversation.in_conversation:
             await conversation.end_session()
         await cosmo_mind.stop()

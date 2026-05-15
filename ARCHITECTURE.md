@@ -1,8 +1,8 @@
 # Cosmo — System Architecture
 
-**Version:** Phase 0.1  
+**Version:** Phase 0.2  
 **Platform:** Raspberry Pi 5, 8GB RAM, Debian Trixie (64-bit)  
-**Last Updated:** 2026-05-13
+**Last Updated:** 2026-05-15
 
 ---
 
@@ -325,3 +325,91 @@ python3 -m pytest tests/simulation/ -v
 # Hardware required
 python3 -m pytest tests/hardware/ -v -m hardware
 ```
+
+---
+
+## Current Flat Layout → Target services/ Mapping
+
+**DO NOT move files yet.** This table is a migration reference only.
+Files move only when their subsystem has tests and a `service.py` wrapper.
+
+| Target `services/` path | Current file(s) | Status |
+|---|---|---|
+| `services/event_bus/` | `core/event_bus.py` | EXISTS — needs `service.py` wrapper |
+| `services/perception/vision/` | `perception/vision/vision_loop.py`, `face.py`, `emotion.py`, `person.py`, `camera.py` | EXISTS |
+| `services/perception/audio/` | `perception/audio/pipeline.py`, `wake_word.py`, `vad.py`, `stt.py`, `mic.py` | EXISTS |
+| `services/emotion_engine/` | `core/personality.py`, `core/state_machine.py` | EXISTS |
+| `services/attention/` | `perception/vision/vision_loop.py` (embedded, not isolated) | EXISTS (partial) |
+| `services/memory/` | `core/memory/episodic.py`, `working.py`, `spatial.py` | EXISTS |
+| `services/behavior/` | `behavior/engine.py`, `behavior/navigation.py`, `cognition/mind.py` | EXISTS |
+| `services/cognition/` | `cognition/llm.py`, `cognition/intent.py`, `cognition/conversation.py` | EXISTS |
+| `services/voice/` | `expression/speech.py` (TTS) + `perception/audio/` (STT/wake) | EXISTS — split across two dirs |
+| `services/hardware/motors/` | `hardware/motors.py` | EXISTS |
+| `services/hardware/sensors/` | `hardware/sensor_manager.py`, `hardware/sensors/` | EXISTS (stub) |
+| `services/hardware/display/` | `hardware/display/`, `expression/eyes.py` | EXISTS |
+| `services/hardware/audio/` | `expression/sounds.py`, `expression/speech.py` | EXISTS |
+| `services/api/` | `services/api/service.py` | **DONE** (2026-05-14) |
+
+---
+
+## Actual Entry Point
+
+PM2 runs **`tools/cosmo_demo.py`** — not `main.py`.
+`main.py` is an older standalone version.
+
+```
+tools/cosmo_demo.py  (PM2 entry)
+  ├── core/event_bus.py
+  ├── perception/vision/vision_loop.py
+  ├── perception/audio/pipeline.py
+  ├── cognition/mind.py          (two-tier brain)
+  ├── cognition/llm.py           (Ollama primary, Claude fallback)
+  ├── expression/speech.py       (Piper TTS → ffmpeg → pw-play)
+  ├── expression/sounds.py
+  ├── expression/eyes.py
+  └── services/api/service.py    (FastAPI :8000)
+```
+
+---
+
+## Two-Tier Brain Logic (cognition/mind.py)
+
+```
+Rule engine — free, every 5s, no API call
+  dist < 25cm        → stop motors + SURPRISED
+  lux < 50           → SCARED + speak trigger (cooldown 10min)
+  idle > 120s        → random wander
+  idle > 300s        → speak "alone" trigger
+
+Claude speech triggers — event-driven, rate-limited
+  FACE_RECOGNIZED    → speak("face_seen")      cooldown 120s
+  EMOTION_DETECTED   → speak("emotion_X")      cooldown 180s
+  TOUCH_DETECTED     → speak("touched")        cooldown  30s
+
+Daily budget: 100,000 tokens hard ceiling
+  Logged: cosmo_mind.tokens, cosmo_mind.budget_exceeded, cosmo_mind.daily_summary
+```
+
+---
+
+## LLM Credit Usage Map
+
+| Location | Trigger | Model | Max out tokens | Est. cost/call |
+|---|---|---|---|---|
+| `cognition/mind.py` | Event-triggered speech | claude-haiku-4-5 | 60 | ~$0.00004 |
+| `cognition/llm.py` | User speech reply | Ollama (free) / claude-haiku-4-5 fallback | 200 | $0 / ~$0.00013 |
+| `services/api/service.py /trigger/describe` | Manual HTTP POST only | claude-sonnet-4-6 (vision) | 150 | ~$0.003 |
+
+---
+
+## Key Data Paths
+
+| Data | Path |
+|---|---|
+| Episodic memory DB | `~/.robot/memory/episodic.db` |
+| Robot logs | `~/.robot/logs/cosmo.log` |
+| Face models | `~/.robot/models/face_recognizer.yml` |
+| Calibration | `/home/pi/robot/calibration.json` |
+| Config files | `/home/pi/robot/config/` |
+| PM2 config | `/home/pi/robot/ecosystem.config.js` |
+| Claude memory repo | `/home/pi/claude-memory/` |

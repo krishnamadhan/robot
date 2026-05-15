@@ -115,6 +115,33 @@ class LLMInterface:
         except Exception:
             return False
 
+    async def _fetch_memory_context(self, person_id: Optional[str] = None) -> str:
+        """
+        Pull last 5 meaningful episodes from DB, format as compact summary.
+        Kept under ~300 tokens. Returns empty string if DB empty or fails.
+        """
+        try:
+            from core.memory.episodic import episodic
+            episodes = await episodic.retrieve(
+                limit=5,
+                person_id=person_id,
+                min_importance=0.3,
+            )
+            if not episodes:
+                # Broaden — try without person filter
+                episodes = await episodic.retrieve(limit=5, min_importance=0.3)
+            if not episodes:
+                return ""
+
+            lines = []
+            for e in episodes:
+                ts = time.strftime("%m-%d %H:%M", time.localtime(e.timestamp))
+                mood = "happy" if e.emotional_valence > 0.3 else ("sad" if e.emotional_valence < -0.3 else "neutral")
+                lines.append(f"[{ts}] {e.summary} (mood:{mood})")
+            return "; ".join(lines)
+        except Exception:
+            return ""
+
     async def generate(
         self,
         user_message: str,
@@ -125,7 +152,16 @@ class LLMInterface:
         Generate a Cosmo response.
         Returns dict with: text, backend, latency_ms, tokens
         """
-        system_prompt = self._build_system_prompt(context or {})
+        ctx = dict(context or {})
+
+        # Inject episodic memories if not already provided
+        if not ctx.get("memories"):
+            person_id = ctx.get("person_id")
+            ctx["memories"] = await self._fetch_memory_context(person_id)
+            if ctx["memories"]:
+                log.debug("llm.memory_injected", snippet=ctx["memories"][:80])
+
+        system_prompt = self._build_system_prompt(ctx)
         messages = list(conversation_history or [])
         messages.append({"role": "user", "content": user_message})
 
