@@ -1,0 +1,31 @@
+## Robot GPIO Pin Mapping
+## Confirmed working configuration
+
+# L298N → Raspberry Pi 5
+# Signal        GPIO  Pi Pin
+# IN1 (L fwd)   17    11
+# IN2 (L bwd)   18    12
+# IN3 (R fwd)   27    13
+# IN4 (R bwd)   22    15
+# GND           —     6
+
+# Motor speeds (gpiozero 0.0–1.0)
+# LEFT_SPEED  = 0.7  (tune in move.py if one motor is faster)
+# RIGHT_SPEED = 0.7
+
+# If a motor spins wrong direction:
+#   Option A: swap IN pins in move.py (e.g. left=(18, 17) instead of (17, 18))
+#   Option B: physically swap the two wires at L298N OUT1/OUT2 terminals
+
+## HC-SR04 Wiring Plan (not connected yet)
+# HC-SR04 VCC  → 5V (Pin 2)
+# HC-SR04 GND  → GND (Pin 6)
+# HC-SR04 TRIG → Logic Level Converter → GPIO 23 (Pin 16)
+# HC-SR04 ECHO → Logic Level Converter → GPIO 24 (Pin 18)
+# LLC HV ref   → 5V (Pin 4)
+# LLC LV ref   → 3.3V (Pin 1)
+
+## DFRobot FIT0992 UPS HAT
+# I2C bus: 1
+# INA219 address: auto-detected by battery_check.py (typically 0x42)
+# config.txt: POWER_OFF_ON_HALT=1, PSU_MAX_CURRENT=5000, I2C enabled

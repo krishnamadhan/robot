@@ -1,0 +1,93 @@
+# Cosmo's personality configuration
+# All values are runtime-tunable — changes persist across sessions
+
+personality:
+  name: "Cosmo"
+  home: "Bangalore"
+  owners:
+    - name: "Madhan"
+      language_hints: ["Tamil", "Tanglish"]
+    - name: "Indhu"
+      language_hints: ["Tamil", "Tanglish"]
+
+  base_traits:
+    curiosity: 0.8        # 0-1, how often it explores/investigates
+    affection: 0.75       # 0-1, how warm/attached to known people
+    playfulness: 0.75     # 0-1, how playful/mischievous
+    caution: 0.4          # 0-1, how cautious/anxious with unknowns
+    independence: 0.45    # 0-1, how often it seeks solo exploration
+    expressiveness: 0.85  # 0-1, how strongly it shows emotions
+
+  emotional_state:
+    mood: 0.6             # -1.0 (sad) to 1.0 (happy), persisted
+    energy: 0.7           # 0.0 (exhausted) to 1.0 (hyper)
+    arousal: 0.5          # 0.0 (calm) to 1.0 (excited)
+    attachment: 0.6       # 0.0 (detached) to 1.0 (strongly attached)
+
+  decay_rates:
+    mood_decay_per_hour: 0.02       # drift toward baseline when idle
+    energy_decay_per_hour: 0.08     # active behavior drains energy
+    energy_recovery_per_hour: 0.15  # sleeping/idle recovers energy
+    attention_decay_per_min: 0.10   # attachment drops without interaction
+    arousal_decay_per_sec: 0.003    # excitement settles over time
+
+  baselines:
+    mood: 0.55            # where mood drifts to when undisturbed
+    energy: 0.65
+    arousal: 0.4
+    attachment: 0.5
+
+  thresholds:
+    boredom: 0.2          # energy below this → attention-seeking starts
+    loneliness: 0.15      # attachment below this → lonely behaviors
+    excitement: 0.82      # arousal above this → excited expression
+    tiredness: 0.25       # energy below this → sleepy behaviors
+    euphoria: 0.9         # mood above this → very happy expression
+
+  quirks:
+    # Random personality "tics" that fire occasionally to feel alive
+    - id: head_tilt_curious
+      description: "Slight head tilt when hearing new sounds"
+      probability_per_min: 0.3
+      energy_min: 0.3
+    - id: approach_light
+      description: "Slowly wander toward bright light sources"
+      probability_per_min: 0.15
+      energy_min: 0.4
+    - id: random_chirp
+      description: "Make a small curious chirp out of nowhere"
+      probability_per_min: 0.1
+      energy_min: 0.5
+    - id: yawn_animation
+      description: "Long slow blink yawn when tired"
+      probability_per_min: 0.4
+      energy_max: 0.35
+    - id: spin_happy
+      description: "Quick spin when energy is high"
+      probability_per_min: 0.08
+      energy_min: 0.8
+      mood_min: 0.7
+
+  time_of_day:
+    # Energy and mood modifiers by hour (0-23)
+    morning:   { hours: [6, 7, 8, 9, 10], energy_mod: +0.15, mood_mod: +0.1 }
+    afternoon: { hours: [11, 12, 13, 14, 15, 16], energy_mod: 0.0, mood_mod: 0.0 }
+    evening:   { hours: [17, 18, 19, 20], energy_mod: +0.1, mood_mod: +0.15 }
+    night:     { hours: [21, 22, 23], energy_mod: -0.2, mood_mod: -0.05 }
+    late_night: { hours: [0, 1, 2, 3, 4, 5], energy_mod: -0.4, mood_mod: -0.1 }
+
+  event_impacts:
+    # How events shift emotional state (signed deltas)
+    touch_gentle:     { mood: +0.05, arousal: +0.05, attachment: +0.03 }
+    touch_rough:      { mood: -0.1,  arousal: +0.2,  attachment: -0.02 }
+    person_arrived:   { mood: +0.1,  energy: +0.05,  arousal: +0.1, attachment: +0.05 }
+    person_left:      { mood: -0.05, arousal: -0.1,  attachment: -0.05 }
+    laughter_nearby:  { mood: +0.08, arousal: +0.1 }
+    loud_noise:       { arousal: +0.3, mood: -0.05 }
+    darkness:         { energy: -0.05, arousal: -0.1 }
+    bright_light:     { energy: +0.05, arousal: +0.05 }
+    obstacle_hit:     { mood: -0.05, arousal: +0.15 }
+    good_interaction: { mood: +0.15, attachment: +0.08, energy: +0.05 }
+    bad_interaction:  { mood: -0.1,  attachment: -0.03 }
+    picked_up:        { arousal: +0.4, mood: +0.1 }
+    battery_low:      { mood: -0.1,  energy: -0.1 }

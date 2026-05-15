@@ -1,0 +1,49 @@
+# Sensor thresholds — all values tunable without code changes
+
+safety:
+  cliff_trigger: true           # any cliff sensor → immediate stop
+  obstacle_critical_cm: 5       # distance below this → emergency stop
+  obstacle_warning_cm: 20       # distance below this → slow down
+  pickup_accel_threshold: 2.5   # g-force above this = being picked up
+  battery_critical_v: 6.8       # LiPo voltage → motors off
+  battery_low_v: 7.2            # LiPo voltage → return to dock
+  pi_temp_throttle_c: 75        # reduce processing above this
+  pi_temp_stop_c: 82            # stop all non-essential above this
+  motor_max_runtime_s: 30       # motors must pause for sensor update
+
+light:
+  dark_lux: 10                  # below this = dark room
+  dim_lux: 100                  # below this = dim
+  normal_lux: 500               # 100-500 = normal indoor
+  bright_lux: 1000              # above this = very bright
+
+motion:
+  pir_cooldown_s: 2.0           # seconds before re-trigger
+  camera_motion_threshold: 800  # pixel difference for motion event
+  imu_still_threshold: 0.05     # g below this = stationary
+
+sound:
+  ambient_baseline_db: 40       # typical home noise floor
+  sound_event_threshold_db: 60  # above this = interesting sound
+  voice_threshold_db: 55        # speech range
+
+touch:
+  debounce_ms: 50               # ignore re-triggers within this window
+  long_press_ms: 1000           # ms held = long press event
+
+distance:
+  personal_space_cm: 50         # closer than this = very close
+  interaction_range_cm: 150     # within this = interaction possible
+  awareness_range_cm: 300       # ultrasonic max useful range
+
+attention:
+  saliency_decay_s: 5           # seconds before attention target fades
+  attention_momentum_s: 2       # min time before switching attention target
+  novelty_window_s: 60          # same event within this window = not novel
+
+vision:
+  person_confidence_min: 0.5    # YOLO confidence threshold
+  face_recognition_threshold: 0.6  # cosine distance for recognition
+  motion_fps: 20                # target FPS for motion detection
+  detection_fps: 8              # target FPS for YOLO person detection
+  recognition_fps: 3            # target FPS for face recognition

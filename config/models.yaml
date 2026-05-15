@@ -1,0 +1,67 @@
+# AI model configuration — paths, backends, parameters
+
+person_detection:
+  model: yolov8n            # YOLOv8 nano — best speed/accuracy on Pi 5
+  weights: yolov8n.pt       # auto-downloaded by ultralytics on first run
+  device: cpu
+  conf_threshold: 0.5
+  iou_threshold: 0.45
+  classes: [0]              # class 0 = person in COCO dataset
+  input_size: 320           # smaller = faster (vs 640 default)
+  # Alternative: opencv_hog (no torch needed, lower accuracy)
+  fallback: opencv_hog
+
+face_detection:
+  model: opencv_dnn
+  weights: res10_300x300_ssd_iter_140000.caffemodel
+  config: deploy.prototxt
+  conf_threshold: 0.7
+
+face_recognition:
+  method: lbph              # OpenCV LBPH — no dlib required
+  model_path: ~/.robot/models/face_recognizer.yml
+  # Future: switch to insightface when Python 3.13 wheels available
+
+emotion_detection:
+  enabled: false            # enable when lightweight model identified
+  # FER2013-based tiny CNN if available
+
+scene_classification:
+  enabled: false            # visual room fingerprinting (custom, no pretrained)
+
+llm:
+  preferred: ollama
+  backends:
+    ollama:
+      base_url: http://127.0.0.1:11434
+      model: llama3.2:1b    # fits comfortably in Pi 5 RAM
+      fallback_model: gemma2:2b
+      timeout_s: 15
+      temperature: 0.8
+      max_tokens: 200       # keep responses concise
+    claude:
+      model: claude-haiku-4-5-20251001
+      max_tokens: 300
+      temperature: 0.8
+    openai:
+      model: gpt-4o-mini
+      max_tokens: 300
+
+speech:
+  stt:
+    engine: faster_whisper
+    model: tiny.en          # ~75MB, ~2s latency on Pi 5
+    language: en
+    condition_on_previous: true
+  wake_word:
+    engine: openwakeword
+    model: hey_cosmo         # custom wake word
+    threshold: 0.5
+  tts:
+    engine: piper
+    voice: en_US-lessac-medium
+    speed: 1.0
+    fallback: espeak
+
+embeddings:
+  model: null               # future: sentence-transformers for memory search

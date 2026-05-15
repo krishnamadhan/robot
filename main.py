@@ -1,0 +1,237 @@
+"""
+Cosmo — main entry point.
+
+Brings up all subsystems in dependency order:
+  1. Config + logging (no deps)
+  2. Event bus (no deps)
+  3. Hardware layer (deps: config)
+  4. Memory system (deps: config, logging)
+  5. Personality engine (deps: memory, config)
+  6. State machine (deps: event bus, personality)
+  7. Perception pipeline (deps: hardware, event bus)
+  8. Behavior engine (deps: all above)
+
+Graceful shutdown on SIGINT/SIGTERM.
+"""
+
+import asyncio
+import os
+import signal
+import sys
+from pathlib import Path
+
+# Ensure robot root is on path regardless of working directory
+sys.path.insert(0, str(Path(__file__).parent))
+
+from utils.config import cfg
+from utils.logger import get_logger, bind_context
+from utils.telemetry import telemetry
+
+log = get_logger("main")
+
+
+class CosmoRobot:
+    """Top-level coordinator — owns all subsystems."""
+
+    def __init__(self) -> None:
+        self._running = False
+        self._subsystems = []
+
+    async def start(self) -> None:
+        bind_context(robot=cfg.personality.name)
+        log.info("cosmo.starting", name=cfg.personality.name,
+                  simulation=cfg.simulation_enabled())
+
+        # ── Event bus ────────────────────────────────────────────────────────
+        from core.event_bus import bus
+        await bus.start()
+        log.info("cosmo.subsystem_ok", name="event_bus")
+
+        # ── Hardware layer ────────────────────────────────────────────────────
+        from hardware.mock import mock_hardware
+        hw_results = await mock_hardware.initialize_all()
+        for name, ok in hw_results.items():
+            if not ok:
+                log.warning("cosmo.hardware_init_failed", component=name)
+        log.info("cosmo.subsystem_ok", name="hardware",
+                  initialized=sum(hw_results.values()), total=len(hw_results))
+
+        # ── Memory system ─────────────────────────────────────────────────────
+        from core.memory.episodic import episodic
+        from core.memory.spatial import spatial
+        episodic.initialize()
+        log.info("cosmo.subsystem_ok", name="memory")
+
+        # ── Personality engine ────────────────────────────────────────────────
+        from core.personality import personality
+        await personality.start()
+        log.info("cosmo.subsystem_ok", name="personality",
+                  state=personality.describe())
+
+        # ── State machine ─────────────────────────────────────────────────────
+        from core.state_machine import sm, RobotState
+        await sm.start(RobotState.IDLE_CALM)
+        log.info("cosmo.subsystem_ok", name="state_machine",
+                  initial_state=sm.current)
+
+        # ── Camera pipeline ───────────────────────────────────────────────────
+        from perception.vision.camera import camera
+        cam_ok = await camera.start()
+        if cam_ok:
+            log.info("cosmo.subsystem_ok", name="camera")
+        else:
+            log.warning("cosmo.camera_unavailable")
+
+        # ── Person detector ───────────────────────────────────────────────────
+        if cam_ok:
+            from perception.vision.person import person_detector
+            await person_detector.start()
+            log.info("cosmo.subsystem_ok", name="person_detector",
+                      backend="yolov8n" if person_detector._use_yolo else "hog")
+
+        # ── Wire event handlers ───────────────────────────────────────────────
+        self._wire_handlers(bus, sm, personality)
+
+        self._running = True
+        log.info("cosmo.ready", mood=personality.describe())
+        print(f"\n{'='*50}")
+        print(f"  Cosmo is awake! {personality.describe()}")
+        print(f"  State: {sm.current}")
+        print(f"  Simulation: {cfg.simulation_enabled()}")
+        print(f"{'='*50}\n")
+
+    def _wire_handlers(self, bus, sm, personality) -> None:
+        from core.event_bus import EventType, Event
+        from core.state_machine import RobotState
+
+        @bus.on(EventType.PERSON_DETECTED)
+        async def on_person(event: Event) -> None:
+            personality.process_event("person_arrived")
+            if not sm.in_state(RobotState.INTERACTIVE, RobotState.ALERT):
+                await sm.transition_to(RobotState.ALERT_PERSON, trigger="person_detected")
+
+        @bus.on(EventType.PERSON_LOST)
+        async def on_person_lost(event: Event) -> None:
+            personality.process_event("person_left")
+            if sm.in_state(RobotState.ALERT):
+                await sm.transition_to(RobotState.IDLE_CURIOUS, trigger="person_lost")
+
+        @bus.on(EventType.TOUCH_DETECTED)
+        async def on_touch(event: Event) -> None:
+            personality.process_event("touch_gentle")
+            await sm.transition_to(RobotState.EXPRESSING_HAPPY, trigger="touch")
+
+        @bus.on(EventType.CLIFF_DETECTED)
+        async def on_cliff(event: Event) -> None:
+            log.warning("cosmo.cliff_detected")
+            await sm.transition_to(RobotState.SAFE_MODE, trigger="cliff", force=True)
+
+        @bus.on(EventType.BATTERY_CRITICAL)
+        async def on_battery_critical(event: Event) -> None:
+            personality.process_event("battery_low")
+            await sm.transition_to(RobotState.SAFE_MODE, trigger="battery_critical", force=True)
+
+        @bus.on(EventType.LIGHT_CHANGED)
+        async def on_light(event: Event) -> None:
+            lux = event.data.get("lux", 200)
+            if lux < 10:
+                personality.process_event("darkness")
+            elif lux > 1000:
+                personality.process_event("bright_light")
+
+        @bus.on(EventType.STATE_CHANGED)
+        async def on_state_changed(event: Event) -> None:
+            log.info("cosmo.state", state=event.data.get("to"))
+
+    async def run(self) -> None:
+        """Main loop — keeps robot alive until shutdown."""
+        tick = 0
+        while self._running:
+            await asyncio.sleep(5.0)
+            tick += 1
+
+            # Periodic housekeeping
+            if tick % 12 == 0:   # every minute
+                from core.personality import personality
+                snap = telemetry.snapshot()
+                log.info("cosmo.heartbeat",
+                          cpu=snap.get("cpu_percent"),
+                          temp=snap.get("cpu_temp_c"),
+                          mood=round(personality.state.mood, 2),
+                          energy=round(personality.state.energy, 2))
+
+            # Quirk system — pick a random personality quirk
+            if tick % 6 == 0:    # every 30 seconds
+                from core.personality import personality
+                quirk = personality.pick_quirk()
+                if quirk:
+                    log.debug("cosmo.quirk", id=quirk.get("id"))
+                    # Behavior engine would execute this quirk
+
+    async def stop(self) -> None:
+        log.info("cosmo.stopping")
+        self._running = False
+
+        # Shutdown in reverse order
+        try:
+            from perception.vision.camera import camera
+            await camera.stop()
+        except Exception:
+            pass
+
+        try:
+            from perception.vision.person import person_detector
+            await person_detector.stop()
+        except Exception:
+            pass
+
+        try:
+            from core.personality import personality
+            await personality.stop()
+        except Exception:
+            pass
+
+        try:
+            from hardware.mock import mock_hardware
+            await mock_hardware.shutdown_all()
+        except Exception:
+            pass
+
+        try:
+            from core.event_bus import bus
+            await bus.stop()
+        except Exception:
+            pass
+
+        try:
+            from core.memory.episodic import episodic
+            episodic.close()
+        except Exception:
+            pass
+
+        log.info("cosmo.stopped")
+
+
+async def main() -> None:
+    robot = CosmoRobot()
+
+    loop = asyncio.get_event_loop()
+
+    def _handle_signal() -> None:
+        log.info("cosmo.signal_received")
+        asyncio.create_task(robot.stop())
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, _handle_signal)
+
+    try:
+        await robot.start()
+        await robot.run()
+    except Exception as e:
+        log.error("cosmo.fatal_error", error=str(e), exc_info=True)
+    finally:
+        await robot.stop()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

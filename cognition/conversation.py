@@ -1,0 +1,192 @@
+"""
+Conversation manager — orchestrates the full interaction loop.
+
+Triggered by: person detected + input (keyboard now, wake word later).
+Pipeline: context gather → LLM generate → TTS speak → update memory
+
+Context assembly pulls from:
+  - Working memory (current session)
+  - Episodic memory (past interactions with this person)
+  - Personality engine (current mood/energy)
+  - Vision loop (who is present, their emotion)
+  - Spatial memory (what room we're in)
+"""
+
+import asyncio
+import time
+from typing import Any, Dict, List, Optional
+
+from cognition.llm import llm
+from core.event_bus import Event, EventType, bus
+from core.memory.episodic import Episode, episodic
+from core.memory.working import wm
+from core.personality import personality
+from expression.speech import tts
+from utils.logger import get_logger
+from utils.telemetry import telemetry
+
+log = get_logger(__name__)
+
+MEMORY_RECALL_LIMIT = 3   # inject this many past memories into prompt
+
+
+class ConversationManager:
+    """
+    Manages a conversation session with a person.
+
+    Usage:
+        cm = ConversationManager()
+        response = await cm.respond("How are you feeling?", person_id="madhan")
+        print(response["text"])
+    """
+
+    def __init__(self) -> None:
+        self._active_person_id: Optional[str] = None
+        self._active_person_name: Optional[str] = None
+        self._their_emotion: Optional[str] = None
+        self._session_start: float = 0.0
+        self._in_conversation = False
+
+    def set_person(self, person_id: str, name: Optional[str], emotion: Optional[str] = None) -> None:
+        self._active_person_id = person_id
+        self._active_person_name = name or person_id
+        self._their_emotion = emotion
+
+    def set_emotion(self, emotion: str) -> None:
+        self._their_emotion = emotion
+
+    async def start_session(self, person_id: str, name: Optional[str] = None) -> None:
+        if self._in_conversation:
+            return
+        self._active_person_id = person_id
+        self._active_person_name = name
+        self._session_start = time.monotonic()
+        self._in_conversation = True
+        wm.clear_conversation()
+
+        await bus.publish(Event(
+            type=EventType.CONVERSATION_START,
+            data={"person_id": person_id, "name": name},
+            source="conversation",
+        ))
+        log.info("conversation.started", person_id=person_id, name=name)
+
+    async def end_session(self) -> None:
+        if not self._in_conversation:
+            return
+        duration_s = time.monotonic() - self._session_start
+        self._in_conversation = False
+
+        # Store episode in long-term memory
+        conv = wm.get_conversation()
+        if conv:
+            turns = len([m for m in conv if m["role"] == "user"])
+            await episodic.store(Episode(
+                episode_type="conversation",
+                summary=f"Chat with {self._active_person_name or 'someone'} ({turns} turns)",
+                emotional_valence=personality.state.mood,
+                importance=min(1.0, 0.3 + turns * 0.05),
+                person_id=self._active_person_id,
+                raw_data={"turns": turns, "duration_s": round(duration_s, 1)},
+            ))
+
+        wm.clear_conversation()
+        await bus.publish(Event(
+            type=EventType.CONVERSATION_END,
+            data={"person_id": self._active_person_id, "duration_s": round(duration_s, 1)},
+            source="conversation",
+        ))
+        log.info("conversation.ended", duration_s=round(duration_s, 1))
+
+    async def respond(
+        self,
+        user_text: str,
+        person_id: Optional[str] = None,
+        speak: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Generate and optionally speak a Cosmo response.
+        Returns dict with text, backend, latency_ms.
+        """
+        pid = person_id or self._active_person_id
+        pname = self._active_person_name
+
+        # Build context for LLM
+        context = await self._build_context(pid)
+
+        # Get conversation history from working memory
+        history = wm.get_conversation()
+
+        # Generate response
+        t0 = time.monotonic()
+        result = await llm.generate(
+            user_message=user_text,
+            conversation_history=history,
+            context=context,
+        )
+
+        response_text = result["text"]
+
+        # Update working memory
+        wm.add_turn("user", user_text)
+        wm.add_turn("assistant", response_text)
+
+        # Update personality — good interaction
+        if pid:
+            personality.update_person(pid, name=pname)
+        personality.process_event("good_interaction", person_id=pid)
+
+        # Speak response
+        if speak:
+            asyncio.create_task(tts.speak(response_text))
+
+        # Publish event
+        await bus.publish(Event(
+            type=EventType.RESPONSE_READY,
+            data={"text": response_text, "backend": result.get("backend")},
+            source="conversation",
+        ))
+
+        telemetry.increment("conversation.turns")
+        log.info("conversation.response",
+                  backend=result.get("backend"),
+                  latency_ms=result.get("latency_ms"),
+                  text_preview=response_text[:60])
+
+        return result
+
+    async def _build_context(self, person_id: Optional[str]) -> Dict[str, Any]:
+        """Assemble context dict for LLM prompt injection."""
+        persons_present = []
+        if person_id:
+            p = personality.get_person(person_id)
+            name = p.name if p else (self._active_person_name or "someone")
+            persons_present = [name]
+
+        # Recall relevant memories
+        memories = ""
+        if person_id:
+            try:
+                episodes = await episodic.retrieve(
+                    person_id=person_id,
+                    limit=MEMORY_RECALL_LIMIT,
+                    min_importance=0.2,
+                )
+                if episodes:
+                    memories = "; ".join(e.summary for e in episodes)
+            except Exception:
+                pass
+
+        return {
+            "mood_desc": personality.describe(),
+            "persons_present": persons_present,
+            "their_emotion": self._their_emotion,
+            "memories": memories,
+        }
+
+    @property
+    def in_conversation(self) -> bool:
+        return self._in_conversation
+
+
+conversation = ConversationManager()

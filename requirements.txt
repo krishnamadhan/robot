@@ -1,0 +1,56 @@
+# Cosmo robot dependencies
+# Install: pip3 install -r requirements.txt --break-system-packages
+
+# ── Core async ─────────────────────────────────────────────────────────────
+aiofiles>=25.0
+
+# ── Data validation + config ───────────────────────────────────────────────
+pydantic>=2.0
+PyYAML>=6.0
+
+# ── Logging + monitoring ───────────────────────────────────────────────────
+structlog>=25.0
+rich>=13.0
+
+# ── Computer vision ────────────────────────────────────────────────────────
+# opencv-contrib-python-headless is already installed system-wide
+# (comes with Pi OS - do not reinstall)
+# opencv-contrib-python-headless>=4.8
+
+# YOLOv8 person detection (installs torch as dependency)
+ultralytics>=8.4
+
+# Image processing
+Pillow>=10.0
+
+# ── Hardware ───────────────────────────────────────────────────────────────
+# gpiozero, smbus2, luma.oled already system-installed on Pi OS
+# gpiozero>=2.0     (system package)
+# smbus2>=0.4       (system package)
+# luma.oled>=3.0    (system package)
+
+# ── AI/ML ─────────────────────────────────────────────────────────────────
+torch>=2.0              # CPU inference on Pi 5
+numpy>=1.24
+scipy>=1.10             # sound generation
+
+# Claude API fallback
+anthropic>=0.100
+
+# ── NOT YET AVAILABLE for Python 3.13 ─────────────────────────────────────
+# mediapipe        — no py3.13 wheel; using OpenCV DNN + HOG instead
+# face_recognition — dlib compilation required; using OpenCV LBPH instead
+
+# ── FUTURE (Phase 4: Voice) ────────────────────────────────────────────────
+# pyaudio
+# webrtcvad
+# faster-whisper
+# openwakeword
+# piper-tts
+
+# ── FUTURE (Phase 5: Mapping) ─────────────────────────────────────────────
+# faiss-cpu
+
+# ── Development tools ──────────────────────────────────────────────────────
+# pytest
+# pytest-asyncio

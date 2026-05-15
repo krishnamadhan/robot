@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.onnx
+*.onnx.json
+*.pkl
+*.db
+*.log
+*.wav
+*.mp3
+*.png
+*.jpg
+~/.robot/
+/config/hardware.yaml.bak

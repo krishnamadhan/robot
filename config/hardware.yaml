@@ -1,0 +1,124 @@
+# Hardware configuration — GPIO pins, I2C addresses, PWM channels
+# All pin numbers are BCM GPIO numbering
+# Last corrected: 2026-05-14 against CONTEXT_Part2.md wiring table v2.0
+
+simulation:
+  enabled: auto           # auto (detect hardware), always, never
+  noise_level: 0.05       # 5% Gaussian noise on sensor values
+  latency_simulation: true
+  scenario: null          # path to scenario file for replay
+
+i2c:
+  bus: 1                  # /dev/i2c-1
+
+motors:
+  driver: TB6612FNG
+  # Left motor — CORRECTED to match actual wiring (Context Part 2 v2.0)
+  ain1: 17                # GPIO17 — left forward  (Pin 11)
+  ain2: 22                # GPIO22 — left backward (Pin 15)
+  pwm_a: 18               # GPIO18 — left PWM, hardware PWM0 (Pin 12)
+  # Right motor
+  bin1: 23                # GPIO23 — right forward (Pin 16)
+  bin2: 6                 # GPIO6  — right backward (Pin 31)
+  pwm_b: 13               # GPIO13 — right PWM, hardware PWM1 (Pin 33)
+  stby: 27                # GPIO27 — standby, active HIGH = enabled (Pin 13)
+  max_speed: 100          # % 0-100
+  default_speed: 60       # % 0-100
+  ramp_ms: 200            # acceleration ramp in ms
+  stall_detect_ms: 500    # ms without encoder change = stall
+
+servos:
+  driver: PCA9685
+  i2c_address: 0x40
+  frequency: 50           # Hz
+  channels:
+    camera_pan: 0
+    camera_tilt: 1
+    ultrasonic_rotate: 2
+  limits:
+    camera_pan:   { min: 30, max: 150, center: 90 }
+    camera_tilt:  { min: 60, max: 120, center: 90 }
+    ultrasonic_rotate: { min: 0, max: 180, center: 90 }
+
+displays:
+  left_eye:
+    i2c_address: 0x3C
+    width: 128
+    height: 64
+    driver: SSD1306
+  right_eye:
+    i2c_address: 0x3D     # A0 pad bridged with solder blob for 0x3D
+    width: 128
+    height: 64
+    driver: SSD1306
+
+sensors:
+  bh1750:
+    i2c_address: 0x23
+    mode: continuous_high_res
+    available: true        # wired and tested
+
+  mpu6050:
+    i2c_address: 0x68
+    available: false       # set true when wired
+
+  ultrasonic:
+    trigger_pin: 16        # GPIO16 — TRIG direct (Pin 36, 3.3V OK)
+    echo_pin: 24           # GPIO24 — ECHO via LLC ch1 (Pin 18)
+    timeout_s: 0.03
+    max_distance_cm: 400
+    available: true
+
+  pir:
+    pin: 8                 # GPIO8  — CORRECTED from 16 (was conflicting with HC-SR04 TRIG)
+    warmup_s: 30
+    available: false       # set true when wired
+
+  apds9960:
+    i2c_address: 0x39
+    int_pin: 12            # GPIO12 — interrupt (optional, Pin 32)
+    available: false       # set true when pin headers soldered and wired
+
+  touch:
+    # CORRECTED: removed GPIO6 (=motor BIN2) and GPIO12 (=APDS9960 INT)
+    # New safe assignment: GPIO5, 25 (original), 4, 7 (all free)
+    pins: [5, 25, 4, 7]   # head=GPIO5, belly=GPIO25, left=GPIO4, right=GPIO7
+    available: false       # set true when wired
+
+  cliff:
+    pins: [20, 21]         # GPIO20 LEFT, GPIO21 RIGHT (TCRT5000 via LLC ch3+4)
+    available: false       # set true when LLC soldered and wired
+
+  vibration:
+    pin: 26                # GPIO26 — SW-420 via 10kΩ+10kΩ divider (Pin 37)
+    available: false       # set true when wired
+
+  sound:
+    pin: 19                # GPIO19 — KY-038 via 10kΩ+10kΩ divider (Pin 35)
+    available: false       # set true when wired
+
+battery:
+  ups_hat:
+    i2c_address: 0x36
+    driver: MAX17043
+    available: true        # wired and working
+  lipo:
+    critical_voltage: 6.8
+    low_voltage: 7.0
+    full_voltage: 8.4
+    cells: 2
+
+camera:
+  device: 0               # /dev/video0 (Logitech C920 USB)
+  width: 640
+  height: 480
+  fps: 30
+  backend: opencv
+
+audio:
+  mic:
+    device: auto           # USB mic on Logitech C920
+    available: true        # Logitech C920 USB mic
+  speaker:
+    device: auto           # JBL Flip 5 BT via PipeWire
+    available: true
