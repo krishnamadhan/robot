@@ -94,7 +94,8 @@ class BehaviorEngine:
         self._behaviors: List[Behavior] = [
             Behavior("look_left_right", 0.30, 15,  self._look_around,  energy_min=0.2),
             Behavior("slow_blink",      0.25,  8,  self._slow_blink),
-            Behavior("curious_sound",   0.15, 30,  self._curious_sound, energy_min=0.4),
+            Behavior("curious_sound",   0.25, 15,  self._curious_sound, energy_min=0.4),
+            Behavior("purr_idle",       0.20, 40,  self._purr_idle,     energy_max=0.5),
             Behavior("wander",          0.10, 60,  self._wander,        energy_min=0.5),
             Behavior("seek_attention",  0.20, 120, self._seek_attention, energy_max=0.3),
             Behavior("breathing",       0.35,  5,  self._breathe),
@@ -289,6 +290,10 @@ class BehaviorEngine:
     async def _curious_sound(self) -> None:
         await sounds.play("chirp_curious")
         eye_engine.set_expression(EyeExpression.CURIOUS, duration=2.0)
+
+    async def _purr_idle(self) -> None:
+        await sounds.play("purr_content")
+        eye_engine.set_expression(EyeExpression.SLEEPY, duration=3.0)
 
     async def _wander(self) -> None:
         await navigation.wander(duration=20)
