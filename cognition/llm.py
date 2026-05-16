@@ -15,8 +15,9 @@ Cosmo never breaks character. The system prompt injects:
 
 import asyncio
 import os
+import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from utils.config import cfg
 from utils.logger import get_logger
@@ -290,6 +291,64 @@ class LLMInterface:
             time_of_day=tod,
         )
         return COSMO_SYSTEM_PROMPT.format(context=ctx_str)
+
+    _SENTENCE_SPLIT = re.compile(r'(?<=[.!?])\s+')
+
+    async def generate_streaming(
+        self,
+        user_message: str,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> AsyncGenerator[str, None]:
+        """
+        Async generator that yields complete sentences as Claude streams them.
+        Falls back to single-shot yield if streaming unavailable.
+        """
+        ctx = dict(context or {})
+        if not ctx.get("memories"):
+            ctx["memories"] = await self._fetch_memory_context(ctx.get("person_id"))
+
+        system_prompt = self._build_system_prompt(ctx)
+        messages = list(conversation_history or [])
+        messages.append({"role": "user", "content": user_message})
+
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            result = await self.generate(user_message, conversation_history, context)
+            yield result["text"]
+            return
+
+        if self._anthropic_client is None:
+            import anthropic
+            self._anthropic_client = anthropic.AsyncAnthropic(api_key=api_key)
+
+        buffer = ""
+        try:
+            async with self._anthropic_client.messages.stream(
+                model=self._claude_model,
+                max_tokens=self.MAX_TOKENS,
+                system=system_prompt,
+                messages=messages,
+            ) as stream:
+                async for chunk in stream.text_stream:
+                    buffer += chunk
+                    parts = self._SENTENCE_SPLIT.split(buffer)
+                    for sentence in parts[:-1]:
+                        s = sentence.strip()
+                        if s:
+                            yield s
+                    buffer = parts[-1]
+
+            if buffer.strip():
+                yield buffer.strip()
+
+        except Exception as e:
+            log.warning("llm.stream_error", error=str(e)[:200])
+            if buffer.strip():
+                yield buffer.strip()
+            else:
+                result = await self.generate(user_message, conversation_history, context)
+                yield result["text"]
 
     async def is_ollama_ready(self) -> bool:
         ready = await self._check_ollama()

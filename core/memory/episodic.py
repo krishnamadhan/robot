@@ -291,6 +291,60 @@ class EpisodicMemory:
 
     # ── Maintenance ──────────────────────────────────────────────────────────
 
+    async def get_context_for_person(
+        self,
+        person_id: str,
+        limit: int = 5,
+    ) -> dict:
+        """
+        Structured memory context for LLM injection.
+        Returns familiarity, recent memories, last mood, total interactions.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None, self._get_context_sync, person_id, limit
+        )
+
+    def _get_context_sync(self, person_id: str, limit: int) -> dict:
+        cutoff = time.time() - 30 * 86400  # last 30 days
+        rows = self._conn.execute(
+            """SELECT summary, timestamp, emotional_valence, episode_type
+               FROM episodes
+               WHERE person_id = ? AND timestamp > ?
+               ORDER BY importance DESC, timestamp DESC LIMIT ?""",
+            (person_id, cutoff, limit),
+        ).fetchall()
+
+        last_row = self._conn.execute(
+            "SELECT emotional_valence FROM episodes WHERE person_id = ? ORDER BY timestamp DESC LIMIT 1",
+            (person_id,),
+        ).fetchone()
+
+        total = self._conn.execute(
+            "SELECT COUNT(*) FROM episodes WHERE person_id = ?",
+            (person_id,),
+        ).fetchone()[0]
+
+        memories = []
+        for summary, ts, valence, ep_type in rows:
+            age_s = time.time() - ts
+            if age_s < 3600:
+                when = "just now"
+            elif age_s < 86400:
+                when = f"{int(age_s / 3600)}h ago"
+            else:
+                when = f"{int(age_s / 86400)}d ago"
+            mood_word = ("happy" if valence > 0.3 else
+                         "sad" if valence < -0.3 else "neutral")
+            memories.append(f"[{when}, {mood_word}] {summary}")
+
+        return {
+            "memories": memories,
+            "last_mood": last_row[0] if last_row else 0.0,
+            "total_interactions": total,
+            "familiarity": min(1.0, total / 20.0),
+        }
+
     async def apply_forgetting_curve(self) -> int:
         """Decay importance of old memories. Run daily."""
         loop = asyncio.get_event_loop()

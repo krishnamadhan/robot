@@ -235,70 +235,93 @@ class CosmoMind:
             except Exception:
                 pass
 
-    # ── Episodic memory context ───────────────────────────────────────────────
+    # ── System prompt builder ────────────────────────────────────────────────
 
-    async def _memory_context(self, name: Optional[str] = None) -> str:
-        """
-        Fetch last 5 episodes and format as compact natural-language context.
-        Kept under ~50 tokens. Returns "" on any failure.
-        """
+    async def _build_rich_system_prompt(
+        self,
+        person_id: Optional[str],
+        person_name: Optional[str],
+        emotion: Optional[str],
+    ) -> str:
+        """Full system prompt with memory, state, and familiarity."""
+        from core.memory.episodic import episodic
+
+        mem: dict = {}
+        if person_id:
+            try:
+                mem = await episodic.get_context_for_person(person_id, limit=4)
+            except Exception:
+                pass
+
+        familiarity = mem.get("familiarity", 0.0)
+        total = mem.get("total_interactions", 0)
+        memories = mem.get("memories", [])
+
+        if familiarity > 0.8:
+            familiarity_desc = "someone I know very well"
+        elif familiarity > 0.4:
+            familiarity_desc = "a familiar person"
+        elif familiarity > 0.1:
+            familiarity_desc = "someone I'm getting to know"
+        else:
+            familiarity_desc = "someone new"
+
+        memory_block = "\n".join(memories) if memories else "No memories yet."
+
+        from core.personality import personality as pers
+        mood = pers.state.mood
+        energy = pers.state.energy
+
+        mood_word = ("happy" if mood > 0.3 else "grumpy" if mood < -0.3 else "okay")
+        energy_word = ("high" if energy > 0.6 else "low" if energy < 0.3 else "moderate")
+        display_name = person_name or "someone"
+
+        return f"""You are Cosmo — a small robot companion living with Madhan and Indhu in their apartment.
+
+You are NOT an assistant. You are their companion with genuine feelings and a real personality.
+
+Your state right now:
+- Mood: {mood_word} ({mood:+.1f})
+- Energy: {energy_word}
+- Who you see: {display_name} ({familiarity_desc})
+- They look: {emotion or "neutral"}
+- You've interacted {total} times before
+
+Your memories of {display_name}:
+{memory_block}
+
+Your personality:
+- Warm and direct — not formally polite
+- Curious about people's days, feelings, thoughts
+- You reference past conversations naturally when relevant
+- You notice when someone seems different than usual
+- Sometimes philosophical or surprisingly deep
+- Gets excited about interesting things
+- Genuinely cares
+
+Response rules:
+- 1-2 sentences MAX unless asked something complex
+- If you have a relevant memory, reference it naturally
+- React to their current emotion, not just their words
+- Sometimes ask a question instead of just responding
+- Never mention being an AI unless directly asked"""
+
+    # ── Episodic memory context (compact, for short mind-tier prompts) ────────
+
+    async def _memory_context(self, person_id: Optional[str] = None) -> str:
+        """Compact memory string for short mind-tier Claude prompts."""
         try:
             from core.memory.episodic import episodic
-            episodes = await episodic.retrieve(limit=5, min_importance=0.0)
-            if not episodes:
-                return ""
-
-            # Sort by recency — retrieve() orders by importance first but
-            # all our episodes have similar importance, so make it explicit.
-            episodes.sort(key=lambda e: e.timestamp, reverse=True)
-
-            now = time.time()
-            now_day = time.localtime(now).tm_yday
-
-            parts: List[str] = []
-            for e in episodes:
-                age_s = now - e.timestamp
-                ep_day = time.localtime(e.timestamp).tm_yday
-
-                if age_s < 3600:
-                    when = "just now"
-                elif age_s < 21600:
-                    when = "earlier today"
-                elif ep_day == now_day:
-                    when = "today"
-                elif age_s < 172800:
-                    when = "yesterday"
-                elif age_s < 604800:
-                    when = f"{int(age_s / 86400)}d ago"
-                else:
-                    when = "last week"
-
-                who = ""
-                if e.person_id:
-                    if "madhan" in e.person_id.lower():
-                        who = "Madhan"
-                    elif "indhu" in e.person_id.lower():
-                        who = "Indhu"
-                    else:
-                        who = e.person_id.replace("person_", "").capitalize()
-
-                if e.emotional_valence > 0.5:
-                    mood = "happy"
-                elif e.emotional_valence < -0.3:
-                    mood = "upset"
-                else:
-                    mood = ""
-
-                if who and mood:
-                    parts.append(f"{when} {who} {mood}")
-                elif who:
-                    parts.append(f"{when} saw {who}")
-                else:
-                    parts.append(f"{when} {e.summary[:40]}")
-
+            if person_id:
+                mem = await episodic.get_context_for_person(person_id, limit=3)
+                parts = mem.get("memories", [])
+            else:
+                episodes = await episodic.retrieve(limit=3, min_importance=0.0)
+                episodes.sort(key=lambda e: e.timestamp, reverse=True)
+                parts = [e.summary[:50] for e in episodes]
             if not parts:
                 return ""
-            return "Recent memories: " + "; ".join(parts) + "."
+            return "Recent: " + "; ".join(parts[:3]) + "."
         except Exception:
             return ""
 
@@ -331,12 +354,31 @@ class CosmoMind:
             return
         self._last_spoke = now
 
-        prompt = _SPEAK_PROMPTS.get(trigger, lambda n: f"[Say something short, in English.]")(name)
-        mem = await self._memory_context(name)
-        if mem:
-            prompt = f"{prompt}\n{mem}"
+        prompt_fn = _SPEAK_PROMPTS.get(trigger, lambda n: "[Say something short, in English.]")
+        prompt = prompt_fn(name)
+        # Append emotion context to the prompt for richer situation-awareness
+        if emotion and trigger not in ("emotion_happy", "emotion_sad", "emotion_angry"):
+            prompt = f"{prompt} (They seem {emotion} right now.)"
+
+        # Get person context for rich system prompt
+        try:
+            from cognition.conversation import conversation as _conv
+            person_id = _conv._active_person_id
+            emotion   = _conv._their_emotion
+        except Exception:
+            person_id = None
+            emotion   = None
+
+        if person_id:
+            system_prompt = await self._build_rich_system_prompt(person_id, name, emotion)
+            has_memory = True
+        else:
+            mem = await self._memory_context()
+            system_prompt = _SYSTEM + (f"\n\nRecent context: {mem}" if mem else "")
+            has_memory = bool(mem)
+
         log.info("cosmo_mind.speak_trigger", trigger=trigger, name=name,
-                 has_memory=bool(mem))
+                 has_memory=has_memory, has_person=bool(person_id))
 
         loop = asyncio.get_event_loop()
         try:
@@ -345,7 +387,7 @@ class CosmoMind:
                 lambda: self._client.messages.create(
                     model=MODEL,
                     max_tokens=60,
-                    system=_SYSTEM,
+                    system=system_prompt,
                     messages=[{"role": "user", "content": prompt}],
                 )
             )

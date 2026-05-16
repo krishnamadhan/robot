@@ -13,6 +13,7 @@ Context assembly pulls from:
 """
 
 import asyncio
+import os
 import time
 from typing import Any, Dict, List, Optional
 
@@ -40,6 +41,9 @@ class ConversationManager:
         print(response["text"])
     """
 
+    # Resume a prior thread within this window (seconds)
+    THREAD_RESUME_WINDOW = 600
+
     def __init__(self) -> None:
         self._active_person_id: Optional[str] = None
         self._active_person_name: Optional[str] = None
@@ -47,6 +51,8 @@ class ConversationManager:
         self._session_start: float = 0.0
         self._in_conversation = False
         self._respond_lock: Optional[asyncio.Lock] = None
+        # Per-person thread cache: person_id → {history, last_active, name}
+        self._threads: Dict[str, Dict] = {}
 
     @property
     def _lock(self) -> asyncio.Lock:
@@ -69,14 +75,25 @@ class ConversationManager:
         self._active_person_name = name
         self._session_start = time.monotonic()
         self._in_conversation = True
-        wm.clear_conversation()
+
+        # Resume prior thread if within the window, else start fresh
+        thread = self._threads.get(person_id)
+        now = time.monotonic()
+        if thread and (now - thread["last_active"]) < self.THREAD_RESUME_WINDOW:
+            wm.clear_conversation()
+            for role, content in thread["history"]:
+                wm.add_turn(role, content)
+            log.info("conversation.resumed_thread", person_id=person_id,
+                     turns=len(thread["history"]))
+        else:
+            wm.clear_conversation()
+            log.info("conversation.started", person_id=person_id, name=name)
 
         await bus.publish(Event(
             type=EventType.CONVERSATION_START,
             data={"person_id": person_id, "name": name},
             source="conversation",
         ))
-        log.info("conversation.started", person_id=person_id, name=name)
 
     async def end_session(self) -> None:
         if not self._in_conversation:
@@ -115,6 +132,15 @@ class ConversationManager:
                     "messages": user_msgs[:5],
                 },
             ))
+
+        # Save thread for possible resume within THREAD_RESUME_WINDOW
+        if self._active_person_id and conv:
+            # Keep last 10 turns (20 messages) to cap memory
+            self._threads[self._active_person_id] = {
+                "history": [(m["role"], m["content"]) for m in conv[-20:]],
+                "last_active": time.monotonic(),
+                "name": self._active_person_name,
+            }
 
         wm.clear_conversation()
         await bus.publish(Event(
@@ -156,22 +182,38 @@ class ConversationManager:
         # Get conversation history from working memory
         history = wm.get_conversation()
 
-        # Generate response
+        # Generate response — use streaming for lower perceived latency
         t0 = time.monotonic()
-        result = await llm.generate(
-            user_message=user_text,
-            conversation_history=history,
-            context=context,
-        )
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        use_streaming = bool(api_key) and speak
 
-        response_text = result["text"]
+        if use_streaming:
+            sentence_gen = llm.generate_streaming(
+                user_message=user_text,
+                conversation_history=history,
+                context=context,
+            )
+            response_text = await tts.speak_streaming(sentence_gen)
+            result = {
+                "text": response_text,
+                "backend": f"claude/{llm._claude_model}+stream",
+                "latency_ms": int((time.monotonic() - t0) * 1000),
+            }
+        else:
+            result = await llm.generate(
+                user_message=user_text,
+                conversation_history=history,
+                context=context,
+            )
+            response_text = result["text"]
+            if speak:
+                asyncio.create_task(tts.speak(response_text))
 
         # Update working memory
         wm.add_turn("user", user_text)
         wm.add_turn("assistant", response_text)
 
         # Store per-turn episode immediately (don't wait for session end)
-        # This lets memory accumulate mid-session and survive restarts
         if pid and user_text.strip():
             asyncio.create_task(episodic.store(Episode(
                 episode_type="conversation_turn",
@@ -188,10 +230,6 @@ class ConversationManager:
         if pid:
             personality.update_person(pid, name=pname)
         personality.process_event("good_interaction", person_id=pid)
-
-        # Speak response
-        if speak:
-            asyncio.create_task(tts.speak(response_text))
 
         # Publish event
         await bus.publish(Event(

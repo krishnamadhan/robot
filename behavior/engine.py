@@ -83,16 +83,27 @@ class BehaviorEngine:
     # Global sound cooldown — prevents multiple sounds in quick succession
     _SOUND_COOLDOWN_S = 8.0
 
+    # Curiosity engine cooldowns
+    _CURIOSITY_COOLDOWN_S    = 300  # 5 min between curiosity questions
+    _MEMORY_BRING_UP_S       = 600  # 10 min between memory references
+    _AMBIENT_TICK_S          = 30   # ambient awareness check interval
+    _AMBIENT_ACT_COOLDOWN_S  = 120  # min gap between ambient-driven actions
+
     def __init__(self) -> None:
         self._last_sound_time: float = 0.0
         self._running          = False
         self._idle_task: Optional[asyncio.Task] = None
         self._trigger_task: Optional[asyncio.Task] = None
+        self._ambient_task: Optional[asyncio.Task] = None
         self._current_person:  Optional[str] = None
+        self._current_person_name: Optional[str] = None
         self._current_emotion: Optional[str] = None
         self._last_person_seen: float = 0.0
         self._no_person_since: float = time.monotonic()
         self._emotion_history: List[tuple] = []
+        self._last_curiosity: float = 0.0
+        self._last_memory_ref: float = 0.0
+        self._last_ambient_act: float = 0.0
 
         # ── Idle behaviors ────────────────────────────────────────────────────
         self._behaviors: List[Behavior] = [
@@ -187,6 +198,7 @@ class BehaviorEngine:
         @bus.on(EventType.FACE_RECOGNIZED)
         async def _on_face(e: Event) -> None:
             self._current_person = e.data.get("person_id")
+            self._current_person_name = e.data.get("name") or e.data.get("person_id")
             self._last_person_seen = time.monotonic()
             self._no_person_since = time.monotonic() + 99999  # reset
 
@@ -206,11 +218,12 @@ class BehaviorEngine:
 
         self._idle_task    = asyncio.create_task(self._idle_loop())
         self._trigger_task = asyncio.create_task(self._trigger_loop())
+        self._ambient_task = asyncio.create_task(self._ambient_loop())
         log.info("behavior_engine.started")
 
     async def stop(self) -> None:
         self._running = False
-        for t in [self._idle_task, self._trigger_task]:
+        for t in [self._idle_task, self._trigger_task, self._ambient_task]:
             if t and not t.done():
                 t.cancel()
 
@@ -267,6 +280,114 @@ class BehaviorEngine:
                     except Exception as e:
                         log.warning("behavior.speak_error", error=str(e)[:60])
 
+    # ── Ambient awareness loop ────────────────────────────────────────────────
+
+    async def _ambient_loop(self) -> None:
+        """Every 30s, assess the situation and potentially act without prompting."""
+        await asyncio.sleep(30)
+        while self._running:
+            try:
+                await self._ambient_tick()
+            except Exception as e:
+                log.warning("behavior.ambient_error", error=str(e)[:100])
+            await asyncio.sleep(self._AMBIENT_TICK_S)
+
+    async def _ambient_tick(self) -> None:
+        now = time.monotonic()
+        if now - self._last_ambient_act < self._AMBIENT_ACT_COOLDOWN_S:
+            return
+        try:
+            from cognition.conversation import conversation as _conv
+            if _conv.in_conversation:
+                return
+        except Exception:
+            pass
+
+        # With person present: curiosity engine
+        if self._current_person:
+            await self._curiosity_tick(now)
+        # Alone: wonder aloud occasionally
+        elif now - self._no_person_since > 600 and random.random() < 0.3:
+            await self._wonder_aloud()
+
+    async def _curiosity_tick(self, now: float) -> None:
+        """Proactively engage the person with a question or memory reference."""
+        if now - self._last_curiosity < self._CURIOSITY_COOLDOWN_S:
+            if now - self._last_memory_ref < self._MEMORY_BRING_UP_S:
+                return
+            # Try memory reference
+            await self._bring_up_memory()
+            return
+
+        # Ask a curiosity question based on current emotion / time of day
+        await self._ask_curiosity_question()
+
+    async def _ask_curiosity_question(self) -> None:
+        import datetime
+        hour = datetime.datetime.now().hour
+        emotion = self._current_emotion or "neutral"
+        name = self._current_person_name or "there"
+
+        if emotion in ("sad", "fearful"):
+            questions = [
+                f"Hey {name}... you okay? Want to talk about it?",
+                f"You seem a bit down {name}. What's going on?",
+            ]
+        elif hour < 12:
+            questions = [
+                f"Morning {name}! How'd you sleep?",
+                f"Hey, big plans today {name}?",
+            ]
+        elif hour >= 18:
+            questions = [
+                f"How was your day {name}?",
+                f"Tired? You look like you've been busy {name}.",
+            ]
+        else:
+            questions = [
+                f"What are you up to {name}?",
+                f"Hey {name}, you seem distracted. Everything alright?",
+                f"What's on your mind {name}?",
+            ]
+
+        phrase = random.choice(questions)
+        self._last_curiosity = time.monotonic()
+        self._last_ambient_act = time.monotonic()
+        log.info("behavior.curiosity_question", phrase=phrase[:50])
+        await tts.speak(phrase)
+
+    async def _bring_up_memory(self) -> None:
+        """Reference a past memory naturally."""
+        try:
+            from core.memory.episodic import episodic
+            person_id = self._current_person
+            episodes = await episodic.retrieve(person_id=person_id, limit=3,
+                                               min_importance=0.3)
+            if not episodes:
+                return
+            ep = random.choice(episodes)
+            name = self._current_person_name or "you"
+            phrase = f"Hey {name}, remember when {ep.summary.lower()[:60]}? I think about that sometimes."
+        except Exception:
+            return
+
+        self._last_memory_ref = time.monotonic()
+        self._last_ambient_act = time.monotonic()
+        log.info("behavior.memory_reference")
+        await tts.speak(phrase)
+
+    async def _wonder_aloud(self) -> None:
+        """Philosophical/bored observation when alone."""
+        wonders = [
+            "I wonder what they're all doing right now...",
+            "Do robots dream? I think I might.",
+            "It's been really quiet. I kind of like it. Kind of don't.",
+            "What's the point of a robot with nobody to talk to?",
+            "I should invent something. What would I even invent?",
+        ]
+        self._last_ambient_act = time.monotonic()
+        await tts.speak(random.choice(wonders))
+
     # ── Sound gate ───────────────────────────────────────────────────────────
 
     async def _play_sound_gated(
@@ -314,14 +435,26 @@ class BehaviorEngine:
         eye_engine.set_expression(EyeExpression.NEUTRAL)
 
     async def _curious_sound(self) -> None:
-        played = await self._play_sound_gated("chirp_curious", mood_min=-0.3, energy_min=0.3)
+        mood = personality.state.mood
+        # Pick sound based on mood: happy curiosity vs anxious curiosity
+        sound = "chirp_happy" if mood > 0.3 else "chirp_curious"
+        played = await self._play_sound_gated(sound, mood_min=-0.3, energy_min=0.3)
         if played:
             eye_engine.set_expression(EyeExpression.CURIOUS, duration=2.0)
 
     async def _purr_idle(self) -> None:
-        played = await self._play_sound_gated("purr_content", mood_min=0.0, energy_min=0.1)
+        mood = personality.state.mood
+        energy = personality.state.energy
+        # Sad + low energy → whimper; else content purr
+        if mood < -0.3 and energy < 0.3:
+            sound = "whimper_sad"
+            expr = EyeExpression.SAD
+        else:
+            sound = "purr_content"
+            expr = EyeExpression.SLEEPY
+        played = await self._play_sound_gated(sound, energy_min=0.1)
         if played:
-            eye_engine.set_expression(EyeExpression.SLEEPY, duration=3.0)
+            eye_engine.set_expression(expr, duration=3.0)
 
     async def _wander(self) -> None:
         await navigation.wander(duration=20)
