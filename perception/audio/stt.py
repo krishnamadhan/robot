@@ -16,7 +16,7 @@ from utils.logger import get_logger
 
 log = get_logger(__name__)
 
-MODEL_SIZE = "tiny.en"
+MODEL_SIZE = "base.en"
 SAMPLE_RATE = 16000
 
 _FILLER_WORDS = {"you", "the", "a", "um", "uh", "hmm", "hm", "ah", "oh", ""}
@@ -64,7 +64,11 @@ class SpeechToText:
                 audio,
                 language="en",
                 vad_filter=vad_filter,
-                beam_size=1,
+                beam_size=5,
+                initial_prompt=(
+                    "Cosmo is talking to Madhan or Indhu in their home. "
+                    "Indian English accent. Casual conversation."
+                ),
             )
             text = " ".join(s.text for s in segments).strip()
             duration_ms = int(len(audio) / SAMPLE_RATE * 1000)

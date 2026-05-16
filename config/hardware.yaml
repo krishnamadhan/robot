@@ -110,8 +110,8 @@ battery:
 
 camera:
   device: 0               # /dev/video0 (Logitech C920 USB)
-  width: 640
-  height: 480
+  width: 320
+  height: 240
   fps: 30
   backend: opencv
 

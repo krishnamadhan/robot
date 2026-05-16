@@ -170,6 +170,20 @@ class ConversationManager:
         wm.add_turn("user", user_text)
         wm.add_turn("assistant", response_text)
 
+        # Store per-turn episode immediately (don't wait for session end)
+        # This lets memory accumulate mid-session and survive restarts
+        if pid and user_text.strip():
+            asyncio.create_task(episodic.store(Episode(
+                episode_type="conversation_turn",
+                summary=(
+                    f'{pname or "someone"} said: "{user_text[:80].rstrip()}"'
+                    + (f'… Cosmo: "{response_text[:60].rstrip()}"' if response_text else "")
+                ),
+                emotional_valence=personality.state.mood,
+                importance=0.4,
+                person_id=pid,
+            )))
+
         # Update personality — good interaction
         if pid:
             personality.update_person(pid, name=pname)

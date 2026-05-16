@@ -82,7 +82,7 @@ class LLMInterface:
     """
 
     OLLAMA_TIMEOUT_S = 90.0
-    MAX_TOKENS = 200
+    MAX_TOKENS = 150
 
     def __init__(self) -> None:
         self._llm_cfg = cfg.models.llm

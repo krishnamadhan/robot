@@ -80,7 +80,11 @@ class BehaviorEngine:
 
     IDLE_CHECK_INTERVAL = 4.0   # seconds between behavior candidates
 
+    # Global sound cooldown — prevents multiple sounds in quick succession
+    _SOUND_COOLDOWN_S = 8.0
+
     def __init__(self) -> None:
+        self._last_sound_time: float = 0.0
         self._running          = False
         self._idle_task: Optional[asyncio.Task] = None
         self._trigger_task: Optional[asyncio.Task] = None
@@ -263,6 +267,28 @@ class BehaviorEngine:
                     except Exception as e:
                         log.warning("behavior.speak_error", error=str(e)[:60])
 
+    # ── Sound gate ───────────────────────────────────────────────────────────
+
+    async def _play_sound_gated(
+        self,
+        sound_name: str,
+        mood_min: float = -1.0,
+        energy_min: float = 0.0,
+        cooldown_s: float = None,
+    ) -> bool:
+        """Play sound only if personality state and cooldown allow it."""
+        cooldown = cooldown_s if cooldown_s is not None else self._SOUND_COOLDOWN_S
+        now = time.monotonic()
+        if now - self._last_sound_time < cooldown:
+            return False
+        if personality.state.mood < mood_min:
+            return False
+        if personality.state.energy < energy_min:
+            return False
+        self._last_sound_time = now
+        await sounds.play(sound_name)
+        return True
+
     # ── Behavior implementations ──────────────────────────────────────────────
 
     async def _look_around(self) -> None:
@@ -288,12 +314,14 @@ class BehaviorEngine:
         eye_engine.set_expression(EyeExpression.NEUTRAL)
 
     async def _curious_sound(self) -> None:
-        await sounds.play("chirp_curious")
-        eye_engine.set_expression(EyeExpression.CURIOUS, duration=2.0)
+        played = await self._play_sound_gated("chirp_curious", mood_min=-0.3, energy_min=0.3)
+        if played:
+            eye_engine.set_expression(EyeExpression.CURIOUS, duration=2.0)
 
     async def _purr_idle(self) -> None:
-        await sounds.play("purr_content")
-        eye_engine.set_expression(EyeExpression.SLEEPY, duration=3.0)
+        played = await self._play_sound_gated("purr_content", mood_min=0.0, energy_min=0.1)
+        if played:
+            eye_engine.set_expression(EyeExpression.SLEEPY, duration=3.0)
 
     async def _wander(self) -> None:
         await navigation.wander(duration=20)
@@ -315,7 +343,7 @@ class BehaviorEngine:
     async def dance(self) -> None:
         log.info("behavior.dance")
         eye_engine.set_expression(EyeExpression.EXCITED)
-        await sounds.play("trill_excited")
+        await self._play_sound_gated("trill_excited", cooldown_s=2.0)
         await navigation.turn_left(speed=0.4, duration=0.4)
         await navigation.turn_right(speed=0.4, duration=0.4)
         await navigation.turn_left(speed=0.4, duration=0.4)
@@ -326,7 +354,7 @@ class BehaviorEngine:
     async def happy_reaction(self) -> None:
         log.info("behavior.happy_reaction")
         eye_engine.set_expression(EyeExpression.HAPPY, duration=4.0)
-        await sounds.play("chirp_happy")
+        await self._play_sound_gated("chirp_happy", mood_min=0.1, cooldown_s=3.0)
         await tts.speak(random.choice([
             "Thank you! That made me happy!",
             "You're the best!",

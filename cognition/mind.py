@@ -26,8 +26,20 @@ log = get_logger(__name__)
 
 MODEL             = "claude-haiku-4-5-20251001"
 RULE_INTERVAL     = 5.0    # seconds between rule-engine ticks
-SPEAK_COOLDOWN_S  = 180    # minimum gap between spontaneous Claude speech (3 min)
+SPEAK_COOLDOWN_S  = 45     # minimum gap between spontaneous Claude speech (45s)
 DAILY_TOKEN_LIMIT = 100_000
+
+# Per-trigger cooldown overrides (seconds)
+_TRIGGER_COOLDOWNS = {
+    "face_seen":       45,
+    "emotion_happy":   60,
+    "emotion_sad":     90,
+    "emotion_angry":   120,
+    "touched":         30,
+    "alone_long":      180,
+    "obstacle":        30,
+    "dark_room":       90,
+}
 
 # Prompts sent to Claude — short, focused on speech only
 _SPEAK_PROMPTS = {
@@ -184,7 +196,7 @@ class CosmoMind:
             if not self._was_dark:
                 self._was_dark = True
                 eye_engine.set_expression(EyeExpression.SCARED, duration=5.0)
-                await self._maybe_speak("dark_room", None, cooldown=120)
+                await self._maybe_speak("dark_room", None)
             return
         self._was_dark = False
 
@@ -194,7 +206,7 @@ class CosmoMind:
                 self._obstacle_warn = True
                 eye_engine.set_expression(EyeExpression.SURPRISED, duration=2.0)
                 await motor_controller.stop()
-                await self._maybe_speak("obstacle", None, cooldown=60)
+                await self._maybe_speak("obstacle", None)
             return
         self._obstacle_warn = False
 
@@ -211,7 +223,7 @@ class CosmoMind:
                 pass
 
         if idle_s > 300:
-            await self._maybe_speak("alone_long", None, cooldown=300)
+            await self._maybe_speak("alone_long", None)
 
         # ── Bright + clear → occasionally explore ──
         elif dist > 80 and idle_s > 60 and not moving and random.random() < 0.15:
@@ -292,11 +304,15 @@ class CosmoMind:
 
     # ── Claude speech (paid, rate-limited) ───────────────────────────────────
 
+    def _get_cooldown(self, trigger: str, override: Optional[int] = None) -> float:
+        base = override if override is not None else _TRIGGER_COOLDOWNS.get(trigger, SPEAK_COOLDOWN_S)
+        return base * random.uniform(0.8, 1.2)
+
     async def _maybe_speak(
         self,
         trigger: str,
         name: Optional[str],
-        cooldown: int = SPEAK_COOLDOWN_S,
+        cooldown: Optional[int] = None,
     ) -> None:
         """Call Claude to produce speech, but only if cooldown passed and budget ok."""
         if not self._enabled:
@@ -310,7 +326,8 @@ class CosmoMind:
             return
 
         now = time.monotonic()
-        if now - self._last_spoke < cooldown:
+        effective_cooldown = self._get_cooldown(trigger, cooldown)
+        if now - self._last_spoke < effective_cooldown:
             return
         self._last_spoke = now
 

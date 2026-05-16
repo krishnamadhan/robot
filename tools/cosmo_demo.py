@@ -546,7 +546,7 @@ async def main() -> None:
     if audio_ok:
         from perception.audio.mic import mic
         console.print(f"[green]✓ Mic: {mic.device_name}[/green]")
-        console.print(f"[green]✓ STT: Whisper tiny.en[/green]")
+        console.print(f"[green]✓ STT: Whisper base.en (beam=5, Indian English)[/green]")
         console.print(f"[green]✓ Speaker: JBL Flip 5 (BT)[/green]")
     else:
         console.print("[yellow]⚠ Audio pipeline unavailable (no mic?)[/yellow]")

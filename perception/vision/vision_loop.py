@@ -56,12 +56,20 @@ class VisionLoop:
     """
     Async vision pipeline — runs as a background task.
     Integrates person detection + face recognition + emotion.
+
+    Tiered detection:
+      Every frame (10 FPS):  haarcascade face detection (fast, ~10ms @ 320x240)
+      Every 5th frame (2/s): SFace recognition (slower, ~50ms)
+      Every 10th frame (1/s): emotion detection (expensive, ~200ms)
     """
 
-    RECOGNITION_FPS = 3.0           # how often to run face+emotion pipeline
-    PERSON_ARRIVAL_ALONE_S = 60.0   # if alone for this long, treat next arrival as "exciting"
-    CONFIRM_FRAMES     = 3          # consecutive positive frames before firing FACE_RECOGNIZED
-    REFIRE_COOLDOWN_S  = 30.0       # don't re-fire FACE_RECOGNIZED for the same person within this window
+    RECOGNITION_FPS    = 10.0          # increased from 3 — fast at 320x240
+    PERSON_ARRIVAL_ALONE_S = 60.0
+    CONFIRM_FRAMES     = 3
+    REFIRE_COOLDOWN_S  = 30.0
+
+    FACE_RECOG_EVERY   = 5             # run SFace every N frames
+    EMOTION_EVERY      = 10            # run emotion every N frames
 
     def __init__(self) -> None:
         self._face_engine = FaceEngine()
@@ -70,10 +78,9 @@ class VisionLoop:
         self._task: Optional[asyncio.Task] = None
         self._last_person_seen: float = 0.0
         self._was_alone = True
-        # Consecutive-frames gate: track_id → consecutive hit count
         self._consec: Dict[str, int] = {}
-        # Debounce: person_id → last time FACE_RECOGNIZED was fired
         self._last_fired: Dict[str, float] = {}
+        self._frame_counter: int = 0
 
     async def start(self) -> None:
         # Load models (synchronous but fast after first run)
@@ -120,14 +127,14 @@ class VisionLoop:
 
     async def _process_frame(self, frame: np.ndarray) -> None:
         loop = asyncio.get_event_loop()
+        self._frame_counter = (self._frame_counter + 1) % 30
 
-        # Run face detection in executor (OpenCV cascade is sync)
+        # Every frame: fast haarcascade detection (cheap at 320x240)
         detections = await loop.run_in_executor(
             None, self._face_engine.detect_faces, frame
         )
 
         if not detections:
-            # No faces this frame — reset consecutive counters
             self._consec.clear()
             now = time.monotonic()
             if not self._was_alone and (now - self._last_person_seen) > 5.0:
@@ -142,7 +149,6 @@ class VisionLoop:
                 log.info("vision_loop.person_left")
             return
 
-        # Capture alone_duration BEFORE updating _last_person_seen
         alone_duration = time.monotonic() - self._last_person_seen
         self._last_person_seen = time.monotonic()
         just_arrived = self._was_alone
@@ -151,7 +157,6 @@ class VisionLoop:
         if just_arrived:
             personality.process_event("person_arrived")
             if alone_duration > self.PERSON_ARRIVAL_ALONE_S:
-                # Exciting return after long absence
                 personality.state.arousal = min(1.0, personality.state.arousal + 0.2)
             await bus.publish(Event(
                 type=EventType.PERSON_DETECTED,
@@ -159,16 +164,28 @@ class VisionLoop:
                 source="vision_loop",
             ))
 
+        # Every 5th frame: SFace recognition (slower)
+        run_recog = (self._frame_counter % self.FACE_RECOG_EVERY == 0)
+        # Every 10th frame: emotion (most expensive)
+        run_emotion = (self._frame_counter % self.EMOTION_EVERY == 0)
+
         for det in detections:
-            # Recognition
-            result = await loop.run_in_executor(None, self._face_engine.recognize, det)
-            await self._handle_recognition(result, frame, det)
+            if run_recog:
+                result = await loop.run_in_executor(None, self._face_engine.recognize, det)
+            else:
+                # Detection only — skip recognition to save CPU
+                result = type('R', (), {
+                    'bbox': det.bbox, 'person_id': None, 'name': None,
+                    'confidence': 0.0, 'face_img': det.face_img
+                })()
+            await self._handle_recognition(result, frame, det, run_emotion=run_emotion)
 
     async def _handle_recognition(
         self,
         result: RecognitionResult,
         frame: np.ndarray,
         det,
+        run_emotion: bool = True,
     ) -> None:
         x, y, w, h = result.bbox
         frame_w = frame.shape[1] if frame is not None else 640
@@ -213,8 +230,8 @@ class VisionLoop:
             # Unknown person raises caution + curiosity
             personality.state.arousal = min(1.0, personality.state.arousal + 0.15)
 
-        # Emotion detection (only if face crop is large enough)
-        if w >= 48 and h >= 48 and self._emotion_detector.is_available:
+        # Emotion detection (only if face crop is large enough AND it's an emotion frame)
+        if run_emotion and w >= 48 and h >= 48 and self._emotion_detector.is_available:
             person_id = result.person_id
             emotion_result = await self._emotion_detector.process_and_emit(
                 face_crop, track_id=track_id, person_id=person_id
