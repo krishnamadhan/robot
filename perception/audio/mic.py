@@ -143,13 +143,13 @@ class MicrophoneInput:
             pa.terminate()
 
     def _to_mono(self, raw: bytes) -> bytes:
-        """Downmix stereo to mono by averaging channels."""
+        # INMP441 outputs audio on left channel only; right is silent.
+        # Take L channel (index 0) rather than averaging to avoid halving amplitude.
         if self._device_channels == 1:
             return raw
         arr = np.frombuffer(raw, dtype=np.int16)
         arr = arr.reshape(-1, self._device_channels)
-        mono = arr.mean(axis=1).astype(np.int16)
-        return mono.tobytes()
+        return arr[:, 0].tobytes()
 
     async def _enqueue(self, chunk: bytes) -> None:
         try:

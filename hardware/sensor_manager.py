@@ -411,7 +411,7 @@ class UPSHATSensor:
         try:
             raw_soc = self._bus.read_i2c_block_data(self.ADDR, self.SOC_REG, 2)
             raw_volt = self._bus.read_i2c_block_data(self.ADDR, self.VOLTAGE_REG, 2)
-            pct = ((raw_soc[0] << 8) | raw_soc[1]) / 256.0
+            pct = min(100.0, ((raw_soc[0] << 8) | raw_soc[1]) / 256.0)
             volt = ((raw_volt[0] << 8) | raw_volt[1]) * 0.00125
             return {"percent": pct, "voltage": volt, "charging": volt > 8.2}
         except Exception:

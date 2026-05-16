@@ -16,7 +16,7 @@ motors:
   # Left motor — CORRECTED to match actual wiring (Context Part 2 v2.0)
   ain1: 17                # GPIO17 — left forward  (Pin 11)
   ain2: 22                # GPIO22 — left backward (Pin 15)
-  pwm_a: 18               # GPIO18 — left PWM, hardware PWM0 (Pin 12)
+  pwm_a: 12               # GPIO12 — left PWM, hardware PWM0 (Pin 32) — moved from 18 to free I2S bus
   # Right motor
   bin1: 23                # GPIO23 — right forward (Pin 16)
   bin2: 6                 # GPIO6  — right backward (Pin 31)
@@ -76,7 +76,7 @@ sensors:
 
   apds9960:
     i2c_address: 0x39
-    int_pin: 12            # GPIO12 — interrupt (optional, Pin 32)
+    int_pin: 9             # GPIO9 — interrupt (moved from 12; GPIO12 now used by motor PWMA)
     available: false       # set true when pin headers soldered and wired
 
   touch:
@@ -86,7 +86,7 @@ sensors:
     available: false       # set true when wired
 
   cliff:
-    pins: [20, 21]         # GPIO20 LEFT, GPIO21 RIGHT (TCRT5000 via LLC ch3+4)
+    pins: [14, 15]         # GPIO14 LEFT, GPIO15 RIGHT (TCRT5000 via LLC — moved from 20,21 to free I2S)
     available: false       # set true when LLC soldered and wired
 
   vibration:
@@ -94,7 +94,7 @@ sensors:
     available: false       # set true when wired
 
   sound:
-    pin: 19                # GPIO19 — KY-038 via 10kΩ+10kΩ divider (Pin 35)
+    pin: 11                # GPIO11 — KY-038 via 10kΩ+10kΩ divider (moved from 19 to free I2S)
     available: false       # set true when wired
 
 battery:
@@ -119,6 +119,12 @@ audio:
   mic:
     device: auto           # USB mic on Logitech C920
     available: true        # Logitech C920 USB mic
+  inmp441:
+    # I2S pins now free: GPIO18(BCLK), GPIO19(LRCLK), GPIO20(DIN), GPIO21(DOUT)
+    # Overlay already in /boot/firmware/config.txt: dtoverlay=inmp441-pi5
+    # To switch from C920 to INMP441: set device to hw:1,0 and set available: true
+    device: hw:1,0
+    available: false       # set true + rewire PWMA from Pin12→Pin32 first
   speaker:
     device: auto           # JBL Flip 5 BT via PipeWire
     available: true

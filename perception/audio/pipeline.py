@@ -195,29 +195,35 @@ class ListeningPipeline:
         # Signal "I heard you, processing" — plays ~200ms then LLM runs
         asyncio.create_task(tts.play_sound("chirp_curious"))
 
-        # Generate response
+        # Generate response — hard timeout so a hung API never freezes the pipeline
         self._state = ListenState.SPEAKING
         t0 = time.monotonic()
         try:
-            response = await conversation.respond(
-                user_text=result.text,
-                person_id=self._current_person,
-                speak=True,
+            response = await asyncio.wait_for(
+                conversation.respond(
+                    user_text=result.text,
+                    person_id=self._current_person,
+                    speak=True,
+                ),
+                timeout=12.0,
             )
             latency_ms = int((time.monotonic() - t0) * 1000)
             log.info("audio_pipeline.responded",
                       latency_ms=latency_ms,
                       text=response["text"][:60])
+        except asyncio.TimeoutError:
+            log.error("audio_pipeline.respond_timeout")
+            await tts.speak("Romba neram achu da. Try again?")
         except Exception as e:
             log.error("audio_pipeline.respond_error", error=str(e))
             await tts.speak("Hmm, something went wrong da. Try again?")
 
-        # conversation.respond fires TTS as a task (fire-and-forget) — wait for it
-        # so we don't accept new wake words while still speaking
+        # Wait for TTS to finish before re-entering passive mode
         wait_start = time.monotonic()
         while tts.is_speaking:
             await asyncio.sleep(0.05)
-            if time.monotonic() - wait_start > 30:  # safety cap
+            if time.monotonic() - wait_start > 15:  # safety cap
+                log.warning("audio_pipeline.tts_wait_timeout")
                 break
 
         self._state = ListenState.PASSIVE

@@ -128,6 +128,13 @@ _EMOTION_EXPR: Dict[str, EyeExpression] = {
 }
 
 
+# Expression priority levels — lower number = higher priority, wins over current
+PRIORITY_SAFETY  = 0   # obstacle, battery critical
+PRIORITY_TOUCH   = 1   # touch, wake word
+PRIORITY_EMOTION = 2   # detected emotion
+PRIORITY_IDLE    = 3   # idle behaviors, proactive speech reactions
+
+
 class EyeEngine:
     """
     30 FPS eye animation loop with expressions, blinking, and pupil tracking.
@@ -151,6 +158,7 @@ class EyeEngine:
         self._prev_expression   = EyeExpression.NEUTRAL
         self._timed_expr_end: Optional[float] = None
         self._timed_expr_prev:  Optional[EyeExpression] = None
+        self._current_priority: int = PRIORITY_IDLE
         self._frame_callbacks: List[Callable] = []
         self._oled_left  = None
         self._oled_right = None
@@ -163,11 +171,20 @@ class EyeEngine:
             emotion = event.data.get("emotion", "")
             expr = _EMOTION_EXPR.get(emotion.lower())
             if expr:
-                self.set_expression(expr, duration=4.0)
+                self.set_expression(expr, duration=4.0, priority=PRIORITY_EMOTION)
 
+        _EVT_PRIORITY = {
+            EventType.BATTERY_CRITICAL:  PRIORITY_SAFETY,
+            EventType.OBSTACLE_CRITICAL: PRIORITY_SAFETY,
+            EventType.TOUCH_DETECTED:    PRIORITY_TOUCH,
+            EventType.PICKUP_DETECTED:   PRIORITY_TOUCH,
+            EventType.FACE_RECOGNIZED:   PRIORITY_EMOTION,
+            EventType.GESTURE_DETECTED:  PRIORITY_EMOTION,
+        }
         for evt_type, expr in _EVENT_EXPR.items():
-            async def _handler(event: Event, _expr=expr) -> None:
-                self.set_expression(_expr, duration=3.0)
+            p = _EVT_PRIORITY.get(evt_type, PRIORITY_IDLE)
+            async def _handler(event: Event, _expr=expr, _p=p) -> None:
+                self.set_expression(_expr, duration=3.0, priority=_p)
             bus.on(evt_type)(_handler)
 
         asyncio.create_task(self._animation_loop())
@@ -177,19 +194,27 @@ class EyeEngine:
         self._running = False
 
     def set_expression(self, expr: EyeExpression,
-                       duration: Optional[float] = None) -> None:
-        if self._state.target_expression == expr:
+                       duration: Optional[float] = None,
+                       priority: int = PRIORITY_IDLE) -> None:
+        now = time.monotonic()
+        # Block lower-priority requests while a higher-priority timed expression is active
+        timed_active = self._timed_expr_end and now < self._timed_expr_end
+        if timed_active and priority > self._current_priority:
             return
-        self._prev_expression       = self._state.expression
+        if self._state.target_expression == expr and timed_active:
+            return
+        self._prev_expression         = self._state.expression
         self._state.target_expression = expr
         self._state.transition_progress = 0.0
-        self._transition_start      = time.monotonic()
+        self._transition_start        = now
+        self._current_priority        = priority
         if duration:
-            self._timed_expr_end  = time.monotonic() + duration
+            self._timed_expr_end  = now + duration
             self._timed_expr_prev = self._prev_expression
         else:
             self._timed_expr_end  = None
             self._timed_expr_prev = None
+            self._current_priority = PRIORITY_IDLE
 
     def set_pupil(self, x: float, y: float) -> None:
         self._state.pupil_x = max(-1.0, min(1.0, x))

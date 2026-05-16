@@ -32,6 +32,30 @@ PW_DEFAULT_SINK = "@DEFAULT_SINK@"
 PIPER_MODEL = Path.home() / ".robot" / "models" / "piper" / "en_US-lessac-medium.onnx"
 _PREBAKE_DIR = Path("/tmp/cosmo_sounds")
 
+# Instant Tanglish voice lines — pre-generated at startup, played with zero LLM latency
+_INSTANT_LINES: dict[str, str] = {
+    # Greetings per person
+    "greet_Madhan_0": "Hey Madhan! Good to see you!",
+    "greet_Madhan_1": "Madhan! I was wondering where you went.",
+    "greet_Madhan_2": "Oh hey Madhan! Finally!",
+    "greet_Madhan_3": "Madhan is here! Now things get interesting.",
+    "greet_Madhan_4": "Hey, you're back! Missed you.",
+    "greet_Indhu_0":  "Hi Indhu! So good to see you!",
+    "greet_Indhu_1":  "Indhu! Welcome back!",
+    "greet_Indhu_2":  "Hey Indhu, I'm happy you're here.",
+    "greet_Indhu_3":  "Oh Indhu! I was getting a bit lonely.",
+    "greet_Indhu_4":  "Hi Indhu! Come on in.",
+    "greet_stranger_0": "Oh, someone new! Hello there.",
+    "greet_stranger_1": "Hi! I don't think we've met.",
+    # Touch reactions
+    "touch_head":  "Ooh, that feels nice!",
+    "touch_belly": "Hey, that tickles!",
+    # Lonely
+    "alone_0": "It's pretty quiet around here.",
+    "alone_1": "Anyone home? Starting to miss the company.",
+    "alone_2": "All by myself again. Hope someone comes back soon.",
+}
+
 
 class TTSEngine:
     """Text-to-speech: Piper (neural) → espeak-ng fallback → pw-play."""
@@ -58,7 +82,7 @@ class TTSEngine:
         return self.__audio_lock
 
     def _prebake_all(self) -> None:
-        """Generate all sounds to disk at startup so play_sound has zero overhead."""
+        """Generate all sounds + instant voice lines to disk at startup."""
         _PREBAKE_DIR.mkdir(exist_ok=True)
         for name in ["beep_ack", "boot_chime", "chirp_curious", "chirp_happy",
                      "whimper_sad", "purr_content", "happy_trill"]:
@@ -72,6 +96,20 @@ class TTSEngine:
                     log.warning("tts.prebake_failed", sound=name, error=str(e))
                     continue
             self._prebaked[name] = str(path)
+
+        # Pre-generate Tanglish voice lines via Piper (skipped if Piper not available)
+        if self._piper_available:
+            for key, text in _INSTANT_LINES.items():
+                path = _PREBAKE_DIR / f"line_{key}.wav"
+                if not path.exists():
+                    try:
+                        self._tts_to_file(text, str(path))
+                    except Exception as e:
+                        log.warning("tts.voice_line_prebake_failed", key=key, error=str(e))
+                        continue
+                if path.exists():
+                    self._prebaked[f"line_{key}"] = str(path)
+        log.info("tts.prebaked", sounds=len(self._prebaked))
 
     def _generate_sound_to_file(self, sound_type: str, out_path: str) -> bool:
         """Generate a sound and save at 44100 Hz stereo WAV. Returns True on success."""
@@ -104,6 +142,31 @@ class TTSEngine:
         except Exception:
             pass
         return r.returncode == 0
+
+    def _tts_to_file(self, text: str, out_path: str) -> bool:
+        """Run Piper TTS on text, upsample, save to out_path. Returns True on success."""
+        import tempfile
+        tmp_raw = out_path + ".raw.wav"
+        try:
+            r = subprocess.run(
+                ["piper", "--model", str(PIPER_MODEL),
+                 "--length_scale", "0.9", "--output_file", tmp_raw],
+                input=text.encode(), capture_output=True, timeout=20,
+            )
+            if r.returncode != 0:
+                return False
+            up = subprocess.run(
+                ["ffmpeg", "-y", "-i", tmp_raw, "-ar", "44100", "-ac", "2", out_path],
+                capture_output=True, timeout=10,
+            )
+            return up.returncode == 0
+        except Exception:
+            return False
+        finally:
+            try:
+                import os as _os; _os.unlink(tmp_raw)
+            except Exception:
+                pass
 
     def _check_piper(self) -> bool:
         try:
@@ -270,6 +333,24 @@ class TTSEngine:
     def set_mood_params(self, mood: float, energy: float) -> None:
         self._speed = int(130 + energy * 40)    # 130–170 WPM
         self._pitch = int(50 + mood * 15)        # 35–65
+
+    async def speak_instant(self, key: str) -> bool:
+        """
+        Play a pre-baked Tanglish voice line instantly (no LLM, no TTS generation).
+        key: one of the _INSTANT_LINES keys, e.g. 'greet_Madhan_0'.
+        Returns True if played, False if line not available (caller can fall back to TTS).
+        """
+        wav = self._prebaked.get(f"line_{key}")
+        if not wav:
+            return False
+        if self._audio_lock.locked():
+            log.debug("tts.instant_dropped", key=key, reason="audio_busy")
+            return False
+        async with self._audio_lock:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self._play_wav, wav)
+        log.debug("tts.instant_played", key=key)
+        return True
 
     async def play_sound(self, sound_type: str) -> None:
         """Play a non-speech sound. Skipped (not queued) if any audio is playing."""

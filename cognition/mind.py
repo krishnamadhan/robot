@@ -31,18 +31,18 @@ DAILY_TOKEN_LIMIT = 100_000
 
 # Prompts sent to Claude — short, focused on speech only
 _SPEAK_PROMPTS = {
-    "face_seen":       lambda name: f"[You just spotted {name}. Say a warm spontaneous greeting in 1 sentence, Tanglish.]",
-    "emotion_happy":   lambda name: f"[{name} looks happy. React naturally in 1 sentence, Tanglish. Be playful.]",
-    "emotion_sad":     lambda name: f"[{name} looks sad. Say something sweet and comforting in 1 sentence, Tanglish.]",
-    "emotion_angry":   lambda name: f"[{name} looks angry. Say something cheeky to lighten the mood, 1 sentence, Tanglish.]",
-    "alone_long":      lambda _:    "[You've been alone for a while. Say something bored/lonely in 1 sentence, Tanglish. Be dramatic.]",
-    "touched":         lambda name: f"[{name or 'someone'} just touched you. React with surprise/delight, 1 sentence, Tanglish.]",
-    "obstacle":        lambda _:    "[You almost bumped into something. React with surprise/annoyance, 1 sentence, Tanglish.]",
-    "dark_room":       lambda _:    "[You just entered a dark room. React scared in 1 sentence, Tanglish.]",
+    "face_seen":       lambda name: f"[You just spotted {name}. Say a warm spontaneous greeting in 1 sentence, English.]",
+    "emotion_happy":   lambda name: f"[{name} looks happy. React naturally in 1 sentence, English. Be playful.]",
+    "emotion_sad":     lambda name: f"[{name} looks sad. Say something sweet and comforting in 1 sentence, English.]",
+    "emotion_angry":   lambda name: f"[{name} looks angry. Say something cheeky to lighten the mood, 1 sentence, English.]",
+    "alone_long":      lambda _:    "[You've been alone for a while. Say something bored or lonely in 1 sentence, English. Be a little dramatic.]",
+    "touched":         lambda name: f"[{name or 'someone'} just touched you. React with surprise or delight, 1 sentence, English.]",
+    "obstacle":        lambda _:    "[You almost bumped into something. React with surprise or annoyance, 1 sentence, English.]",
+    "dark_room":       lambda _:    "[You just entered a dark room. React a little scared, 1 sentence, English.]",
 }
 
 _SYSTEM = (
-    "You are Cosmo, a small robot. Personality: naughty Tamil kid, playful, Tanglish speaker. "
+    "You are Cosmo, a small playful robot companion. Speak casual English only. "
     "Respond with ONLY the spoken words — no quotes, no stage directions, no explanation. "
     "Max 12 words."
 )
@@ -314,7 +314,7 @@ class CosmoMind:
             return
         self._last_spoke = now
 
-        prompt = _SPEAK_PROMPTS.get(trigger, lambda n: f"[Say something short, Tanglish.]")(name)
+        prompt = _SPEAK_PROMPTS.get(trigger, lambda n: f"[Say something short, in English.]")(name)
         mem = await self._memory_context(name)
         if mem:
             prompt = f"{prompt}\n{mem}"

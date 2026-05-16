@@ -46,6 +46,13 @@ class ConversationManager:
         self._their_emotion: Optional[str] = None
         self._session_start: float = 0.0
         self._in_conversation = False
+        self._respond_lock: Optional[asyncio.Lock] = None
+
+    @property
+    def _lock(self) -> asyncio.Lock:
+        if self._respond_lock is None:
+            self._respond_lock = asyncio.Lock()
+        return self._respond_lock
 
     def set_person(self, person_id: str, name: Optional[str], emotion: Optional[str] = None) -> None:
         self._active_person_id = person_id
@@ -127,6 +134,19 @@ class ConversationManager:
         Generate and optionally speak a Cosmo response.
         Returns dict with text, backend, latency_ms.
         """
+        if self._lock.locked():
+            log.warning("conversation.respond_dropped", reason="concurrent_call_in_progress")
+            return {"text": "", "backend": "dropped", "latency_ms": 0}
+
+        async with self._lock:
+            return await self._respond_inner(user_text, person_id, speak)
+
+    async def _respond_inner(
+        self,
+        user_text: str,
+        person_id: Optional[str] = None,
+        speak: bool = True,
+    ) -> Dict[str, Any]:
         pid = person_id or self._active_person_id
         pname = self._active_person_name
 

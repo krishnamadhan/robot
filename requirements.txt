@@ -41,8 +41,10 @@ anthropic>=0.100
 # mediapipe        — no py3.13 wheel; using OpenCV DNN + HOG instead
 # face_recognition — dlib compilation required; using OpenCV LBPH instead
 
+# ── Voice / Audio ──────────────────────────────────────────────────────────
+pyaudio>=0.2.14         # INMP441 I2S capture (hw:2,0, stereo → mono left-ch)
+
 # ── FUTURE (Phase 4: Voice) ────────────────────────────────────────────────
-# pyaudio
 # webrtcvad
 # faster-whisper
 # openwakeword

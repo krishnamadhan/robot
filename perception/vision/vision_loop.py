@@ -134,20 +134,30 @@ class VisionLoop:
                 self._was_alone = True
                 self._last_fired.clear()
                 personality.process_event("person_left")
+                await bus.publish(Event(
+                    type=EventType.PERSON_LOST,
+                    data={"alone_since": now},
+                    source="vision_loop",
+                ))
                 log.info("vision_loop.person_left")
             return
 
+        # Capture alone_duration BEFORE updating _last_person_seen
+        alone_duration = time.monotonic() - self._last_person_seen
         self._last_person_seen = time.monotonic()
         just_arrived = self._was_alone
         self._was_alone = False
 
         if just_arrived:
-            alone_duration = time.monotonic() - self._last_person_seen
+            personality.process_event("person_arrived")
             if alone_duration > self.PERSON_ARRIVAL_ALONE_S:
-                personality.process_event("person_arrived")
+                # Exciting return after long absence
                 personality.state.arousal = min(1.0, personality.state.arousal + 0.2)
-            else:
-                personality.process_event("person_arrived")
+            await bus.publish(Event(
+                type=EventType.PERSON_DETECTED,
+                data={"alone_duration_s": round(alone_duration, 1)},
+                source="vision_loop",
+            ))
 
         for det in detections:
             # Recognition

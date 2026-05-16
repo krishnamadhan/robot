@@ -22,7 +22,7 @@ import numpy as np
 
 from perception.vision.face import FaceEngine, FACE_INPUT_SIZE, FACES_DIR
 
-TARGET_SAMPLES = 10
+TARGET_SAMPLES = 20
 
 
 def _brightness_ok(img: np.ndarray, min_lux: int = 40, max_lux: int = 220) -> bool:
@@ -65,7 +65,7 @@ def _draw_overlay(frame: np.ndarray, faces, collected: int, total: int,
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 1)
 
 
-def enroll(name: str, device: int = 0, headless: bool = False) -> bool:
+def enroll(name: str, device: int = 0, headless: bool = False, samples: int = TARGET_SAMPLES) -> bool:
     engine = FaceEngine()
     engine.load()   # load existing model if any
 
@@ -79,7 +79,7 @@ def enroll(name: str, device: int = 0, headless: bool = False) -> bool:
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
     print(f"\nEnrolling: {name}")
-    print(f"Target: {TARGET_SAMPLES} samples")
+    print(f"Target: {samples} samples")
     if headless:
         print("Mode: headless (no display) — auto-capture only")
         print("Look at the camera. Keep still between captures.\n")
@@ -91,11 +91,11 @@ def enroll(name: str, device: int = 0, headless: bool = False) -> bool:
     print("Auto-capture will trigger when face is detected and stable...")
     print()
 
-    samples: list = []
+    collected: list = []
     last_capture = 0.0
     auto_delay = 0.8   # seconds between auto-captures
 
-    while len(samples) < TARGET_SAMPLES:
+    while len(collected) < samples:
         ret, frame = cap.read()
         if not ret:
             continue
@@ -147,7 +147,7 @@ def enroll(name: str, device: int = 0, headless: bool = False) -> bool:
             status_color = (0, 0, 255)
 
         if not headless:
-            _draw_overlay(display, faces, len(samples), TARGET_SAMPLES, status, status_color)
+            _draw_overlay(display, faces, len(collected), samples, status, status_color)
             cv2.imshow(f"Enroll: {name}", display)
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
@@ -156,15 +156,15 @@ def enroll(name: str, device: int = 0, headless: bool = False) -> bool:
                 do_capture = True
         else:
             # Print status to terminal instead
-            print(f"\r  [{len(samples)}/{TARGET_SAMPLES}] {status}    ", end="", flush=True)
+            print(f"\r  [{len(collected)}/{samples}] {status}    ", end="", flush=True)
 
         if do_capture and len(faces) == 1:
             x, y, w, h = faces[0]
             face_resized = cv2.resize(face_crop_bgr, FACE_INPUT_SIZE)  # BGR for SFace
-            samples.append(face_resized)
+            collected.append(face_resized)
             last_capture = now
-            count = len(samples)
-            print(f"\n  Captured {count}/{TARGET_SAMPLES} ✓", flush=True)
+            count = len(collected)
+            print(f"\n  Captured {count}/{samples} ✓", flush=True)
 
             if not headless:
                 # Flash effect
@@ -178,12 +178,12 @@ def enroll(name: str, device: int = 0, headless: bool = False) -> bool:
     if not headless:
         cv2.destroyAllWindows()
 
-    if not samples:
+    if not collected:
         print("\nNo samples collected — aborting.")
         return False
 
-    print(f"\n\nTraining model with {len(samples)} samples for '{name}'...")
-    ok = engine.enroll_person(name, samples)
+    print(f"\n\nTraining model with {len(collected)} samples for '{name}'...")
+    ok = engine.enroll_person(name, collected)
 
     if ok:
         enrolled = engine.list_enrolled()
@@ -201,6 +201,7 @@ def main():
     parser.add_argument("--list", action="store_true", help="List enrolled persons")
     parser.add_argument("--forget", type=str, help="Remove a person's enrollment")
     parser.add_argument("--device", type=int, default=0, help="Camera device index")
+    parser.add_argument("--samples", type=int, default=TARGET_SAMPLES, help="Number of face samples to capture")
     parser.add_argument("--headless", action="store_true", help="No display — SSH friendly")
     args = parser.parse_args()
 
@@ -228,7 +229,7 @@ def main():
         parser.print_help()
         return
 
-    enroll(args.name, device=args.device, headless=args.headless)
+    enroll(args.name, device=args.device, headless=args.headless, samples=args.samples)
 
 
 if __name__ == "__main__":

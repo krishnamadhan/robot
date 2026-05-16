@@ -36,6 +36,9 @@ from rich.console import Console
 from rich.live import Live
 from rich.panel import Panel
 
+from utils.logger import get_logger
+log = get_logger(__name__)
+
 from behavior.engine import behavior_engine
 from behavior.navigation import navigation
 from cognition.conversation import conversation
@@ -146,9 +149,20 @@ _EMOTION_REACTIONS = {
     "neutral":   {"expr": EyeExpression.NEUTRAL,    "sound": None,            "proactive": 0.05},
 }
 
+def _load_person_config() -> dict:
+    """Load known_persons from personality.yaml — prompts + greeting lines."""
+    try:
+        import yaml
+        cfg_path = Path(__file__).parent.parent / "config" / "personality.yaml"
+        data = yaml.safe_load(cfg_path.read_text())
+        return data.get("personality", {}).get("known_persons", {})
+    except Exception:
+        return {}
+
+_KNOWN_PERSONS = _load_person_config()
 _PERSON_PROMPTS = {
-    "Madhan": "Madhan (your best buddy — be playful, teasing, excited to see him)",
-    "Indhu":  "Indhu (warm and gentle — she's like family, be affectionate)",
+    name: info.get("prompt", f"{name} (someone Cosmo knows)")
+    for name, info in _KNOWN_PERSONS.items()
 }
 
 
@@ -160,7 +174,7 @@ async def _face_and_approach(person_x: float) -> None:
         tasks.append(navigation.turn_left(speed=0.35, duration=abs(person_x) * 0.5))
     elif person_x > DEAD:
         tasks.append(navigation.turn_right(speed=0.35, duration=person_x * 0.5))
-    tasks.append(eye_engine.set_expression(EyeExpression.CURIOUS, duration=2.0))
+    eye_engine.set_expression(EyeExpression.CURIOUS, duration=2.0)
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
     await asyncio.sleep(0.3)
@@ -198,7 +212,7 @@ async def setup_event_handlers() -> None:
         _state["last_person_time"] = time.monotonic()
         _state["events"].append(f"Face: {name} ({conf:.0%})")
 
-        audio_pipeline.update_person(person_id, _state.get("emotion", "").split(" ")[0] or None)
+        audio_pipeline.update_person(person_id, _state.get("last_emotion") or None)
 
         if name not in _state["greeted"] and not tts.is_speaking:
             _state["greeted"].add(name)
@@ -206,22 +220,31 @@ async def setup_event_handlers() -> None:
                 await conversation.start_session(person_id, name)
             conversation.set_person(person_id, name)
 
-            person_desc = _PERSON_PROMPTS.get(name, f"{name} (someone Cosmo knows)")
-            prompt = (
-                f"[Cosmo just recognised {person_desc}. "
-                f"Give a warm spontaneous greeting in 1-2 sentences, Tanglish style. "
-                f"React naturally to seeing them.]"
-            )
-            # Parallel: face them + play greeting sound + generate response
+            # T+0ms: face them + chime in parallel
             await asyncio.gather(
                 _face_and_approach(person_x),
                 sounds.play("chime_greeting"),
                 return_exceptions=True,
             )
-            result = await conversation.respond(prompt, person_id=person_id, speak=True)
-            _state["last_response"] = result["text"]
-            _state["backend"] = result.get("backend", "?")
-            _state["latency_ms"] = result.get("latency_ms", 0)
+
+            # T+~0ms: play instant pre-baked greeting line (no LLM wait)
+            import random as _rand
+            person_lines = _KNOWN_PERSONS.get(name, {}).get("greetings", [])
+            played = False
+            if person_lines:
+                key = f"greet_{name}_{_rand.randint(0, len(person_lines) - 1)}"
+                played = await tts.speak_instant(key)
+
+            if not played:
+                # Fallback: fire LLM greeting in background (non-blocking)
+                person_desc = _PERSON_PROMPTS.get(name, f"{name} (someone Cosmo knows)")
+                prompt = (
+                    f"[Cosmo just recognised {person_desc}. "
+                    f"Give a warm spontaneous greeting in 1-2 sentences, English.]"
+                )
+                asyncio.create_task(_speak_async(prompt, person_id))
+
+            _state["last_response"] = person_lines[0] if person_lines else "..."
             _state["events"].append(f"Greeted {name}")
 
     @bus.on(EventType.FACE_UNKNOWN)
@@ -287,7 +310,7 @@ async def setup_event_handlers() -> None:
                 person_id = f"person_{name.lower()}"
                 prompt = (
                     f"[{name} looks {emotion}. React naturally in 1 sentence, "
-                    f"Tanglish. Don't ask too many questions.]"
+                    f"English. Don't ask too many questions.]"
                 )
                 asyncio.create_task(_speak_async(prompt, person_id))
 
@@ -326,17 +349,22 @@ async def setup_event_handlers() -> None:
             asyncio.create_task(behavior_engine._look_around())
         elif action == "cosmo_mind.disable":
             cosmo_mind.disable()
-            asyncio.create_task(tts.speak("Seri da, manam off. Credits save pannuren."))
+            asyncio.create_task(tts.speak("Okay, going quiet now. Saving credits."))
         elif action == "cosmo_mind.enable":
             cosmo_mind.enable()
-            asyncio.create_task(tts.speak("Mind on da! Thinking again."))
+            asyncio.create_task(tts.speak("Mind is back on! Ready to think."))
 
     @bus.on(EventType.TOUCH_DETECTED)
     async def on_touch(event: Event) -> None:
+        from expression.eyes import PRIORITY_TOUCH
         zone = event.data.get("zone", "?")
         _state["events"].append(f"Touch: {zone}")
-        eye_engine.set_expression(EyeExpression.LOVING, duration=3.0)
-        await sounds.play("purr_petted")
+        eye_engine.set_expression(EyeExpression.LOVING, duration=3.0, priority=PRIORITY_TOUCH)
+        # Instant vocal reaction — no LLM
+        line_key = "touch_head" if zone in ("head", "top") else "touch_belly"
+        played = await tts.speak_instant(line_key)
+        if not played:
+            await sounds.play("purr_petted")
 
     @bus.on(EventType.MOTION_DETECTED)
     async def on_motion(event: Event) -> None:
@@ -366,13 +394,12 @@ async def setup_event_handlers() -> None:
 async def _speak_async(prompt: str, person_id: str) -> None:
     """Fire-and-forget proactive speech."""
     try:
-        name = _state.get("person_name", "")
         result = await conversation.respond(prompt, person_id=person_id, speak=True)
         if result.get("text"):
             _state["last_response"] = result["text"]
             _state["backend"] = result.get("backend", "?")
-    except Exception:
-        pass
+    except Exception as e:
+        log.error("cosmo_demo.speak_async_error", error=str(e))
 
 
 async def alone_watcher() -> None:
@@ -398,12 +425,15 @@ async def alone_watcher() -> None:
             now = time.monotonic()
             if now - _last_lonely_speak > 300 and not tts.is_speaking:
                 _last_lonely_speak = now
-                phrases = [
-                    "Romba bore aagudhu da... yaarum illaya?",
-                    "So quiet here. Miss pannuren.",
-                    "Enna idhu, all alone-a? Ayyo.",
-                ]
-                asyncio.create_task(tts.speak(random.choice(phrases)))
+                key = f"alone_{random.randint(0, 2)}"
+                played = await tts.speak_instant(key)
+                if not played:
+                    phrases = [
+                        "It's really quiet here... anyone around?",
+                        "So quiet here. Miss pannuren.",
+                        "Enna idhu, all alone-a? Ayyo.",
+                    ]
+                    asyncio.create_task(tts.speak(random.choice(phrases)))
 
 
 async def state_watcher() -> None:

@@ -130,7 +130,7 @@ class NavigationEngine:
             log.info("nav.forward", speed=round(speed, 2))
         if ok and duration:
             await self._sleep_with_heartbeat(duration)
-            await self.stop()
+            await self.stop(_cancel_wander=False)
 
     async def backward(self, speed: float = None, duration: float = None) -> None:
         speed = speed or self.RETREAT_SPEED
@@ -140,7 +140,7 @@ class NavigationEngine:
             log.info("nav.backward", speed=round(speed, 2))
         if ok and duration:
             await self._sleep_with_heartbeat(duration)
-            await self.stop()
+            await self.stop(_cancel_wander=False)
 
     async def turn_left(self, speed: float = 0.5, degrees: float = None,
                         duration: float = None) -> None:
@@ -153,7 +153,7 @@ class NavigationEngine:
             log.info("nav.turn_left", speed=speed, degrees=degrees, duration=duration)
         if ok and duration:
             await self._sleep_with_heartbeat(duration)
-            await self.stop()
+            await self.stop(_cancel_wander=False)
 
     async def turn_right(self, speed: float = 0.5, degrees: float = None,
                          duration: float = None) -> None:
@@ -165,15 +165,16 @@ class NavigationEngine:
             log.info("nav.turn_right", speed=speed, degrees=degrees, duration=duration)
         if ok and duration:
             await self._sleep_with_heartbeat(duration)
-            await self.stop()
+            await self.stop(_cancel_wander=False)
 
-    async def stop(self, emergency: bool = False) -> None:
+    async def stop(self, emergency: bool = False, _cancel_wander: bool = True) -> None:
         self._state = NavState.IDLE
         await motor_controller.stop(emergency=emergency)
-        if self._wander_task and not self._wander_task.done():
-            self._wander_task.cancel()
-        if self._follow_task and not self._follow_task.done():
-            self._follow_task.cancel()
+        if _cancel_wander:
+            if self._wander_task and not self._wander_task.done():
+                self._wander_task.cancel()
+            if self._follow_task and not self._follow_task.done():
+                self._follow_task.cancel()
 
     async def retreat(self, duration: float = 2.0) -> None:
         log.info("nav.retreat")
@@ -197,7 +198,7 @@ class NavigationEngine:
         try:
             while time.monotonic() < end_time:
                 if self._is_blocked() or not self._is_path_clear():
-                    await self.stop()
+                    await self.stop(_cancel_wander=False)
                     await asyncio.sleep(1.0)
                     continue
 

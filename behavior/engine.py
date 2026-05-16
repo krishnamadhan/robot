@@ -131,10 +131,10 @@ class BehaviorEngine:
                 name="lonely",
                 cooldown_m=45,
                 phrases=[
-                    "Romba bore aagudhu da...",
-                    "Yaarum illaya? Sooo quiet.",
-                    "*makes sad beeping noise*",
-                    "Oru pause button irundha nalla irukkum... wait, naan thaan idle da.",
+                    "It's so quiet around here...",
+                    "Anyone home? I'm getting bored.",
+                    "*makes a sad little beep*",
+                    "Just me, myself, and I. Very lonely.",
                 ],
                 condition=lambda: (
                     time.monotonic() - self._no_person_since > 20 * 60
@@ -145,9 +145,9 @@ class BehaviorEngine:
                 cooldown_m=60,
                 once_per_day=True,
                 phrases=[
-                    "Good morning da! Coffee kudichiya?",
-                    "Vanakam! Nalla thoongina?",
-                    "Aiyoh, new day! Enna panrom today?",
+                    "Good morning! Did you sleep well?",
+                    "Morning! New day, let's make it a good one.",
+                    "Oh good, you're up! I've been waiting.",
                 ],
                 condition=lambda: (
                     self._current_person is not None
@@ -158,9 +158,9 @@ class BehaviorEngine:
                 name="emotion_changed",
                 cooldown_m=15,
                 phrases=[
-                    "Suddenly happy-a? Enna nalla news?",
+                    "Oh, suddenly happy? Good news?",
                     "Looks like something happened!",
-                    "Enna da suddenly mood change?",
+                    "Someone's mood just changed completely.",
                 ],
                 condition=self._emotion_changed_significantly,
             ),
@@ -300,8 +300,8 @@ class BehaviorEngine:
 
     async def _seek_attention(self) -> None:
         phrases = [
-            "Aiyoh, romba bore aagudhu da... someone talk to me?",
-            "Hellooo? Yaarum illaya?",
+            "Hello? Anyone there? I'm getting bored.",
+            "Come on, someone talk to me!",
             "*makes puppy eyes*",
         ]
         await tts.speak(random.choice(phrases))
@@ -328,9 +328,9 @@ class BehaviorEngine:
         eye_engine.set_expression(EyeExpression.HAPPY, duration=4.0)
         await sounds.play("chirp_happy")
         await tts.speak(random.choice([
-            "Thankyu da! Naan try pannuven!",
-            "Aiyo, neeye best da!",
-            "Hehe, romba happy aagudhu!",
+            "Thank you! That made me happy!",
+            "You're the best!",
+            "Hehe, I love this!",
         ]))
 
     async def love_reaction(self) -> None:
@@ -338,9 +338,9 @@ class BehaviorEngine:
         eye_engine.set_expression(EyeExpression.LOVING, duration=5.0)
         await sounds.play("purr_content")
         await tts.speak(random.choice([
-            "Awww... I love you too da!",
+            "Awww, I love you too!",
             "*spins happily*",
-            "En muththam! You are my favorite human da!",
+            "You are my favorite human!",
         ]))
 
 
