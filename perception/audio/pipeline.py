@@ -22,6 +22,7 @@ from perception.audio.vad import vad, FRAME_BYTES
 from perception.audio.stt import stt
 from perception.audio.wake_word import wake_word_detector, porcupine_detector, oww_detector, publish_wake_word
 from utils.logger import get_logger
+from utils.telemetry import LatencyTracker
 
 log = get_logger(__name__)
 
@@ -147,6 +148,7 @@ class ListeningPipeline:
 
         log.info("audio_pipeline.wake_word_triggered", word=word)
         self._state = ListenState.LISTENING
+        LatencyTracker.start("wake_to_speech")   # full pipeline timer
 
         # Acknowledge — beep + eye animation
         await tts.play_sound("beep_ack")
@@ -166,7 +168,9 @@ class ListeningPipeline:
 
         # STT — disable vad_filter: we already know there's speech (post wake-word capture)
         self._state = ListenState.THINKING
+        LatencyTracker.start("stt")
         result = await stt.transcribe(audio, vad_filter=False)
+        LatencyTracker.end("stt")
 
         if not stt.is_meaningful(result):
             log.debug("audio_pipeline.utterance_not_meaningful",
@@ -198,6 +202,7 @@ class ListeningPipeline:
         # Generate response — hard timeout so a hung API never freezes the pipeline
         self._state = ListenState.SPEAKING
         t0 = time.monotonic()
+        LatencyTracker.start("llm_to_first_audio")
         try:
             response = await asyncio.wait_for(
                 conversation.respond(
@@ -207,6 +212,8 @@ class ListeningPipeline:
                 ),
                 timeout=12.0,
             )
+            LatencyTracker.end("llm_to_first_audio")
+            LatencyTracker.end("wake_to_speech")    # full pipeline done
             latency_ms = int((time.monotonic() - t0) * 1000)
             log.info("audio_pipeline.responded",
                       latency_ms=latency_ms,

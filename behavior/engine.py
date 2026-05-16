@@ -276,7 +276,19 @@ class BehaviorEngine:
                     log.info("behavior.proactive", trigger=trigger.name,
                              phrase=phrase[:40])
                     try:
+                        mood_before = personality.state.mood
                         await tts.speak(phrase)
+                        # Record outcome after a brief window — person present = responded
+                        await asyncio.sleep(5)
+                        try:
+                            from core.personality import personality_learning
+                            personality_learning.record_outcome(
+                                interaction_type="proactive_speech",
+                                person_responded=bool(self._current_person),
+                                mood_delta=personality.state.mood - mood_before,
+                            )
+                        except Exception:
+                            pass
                     except Exception as e:
                         log.warning("behavior.speak_error", error=str(e)[:60])
 

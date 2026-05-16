@@ -175,6 +175,7 @@ class ConversationManager:
     ) -> Dict[str, Any]:
         pid = person_id or self._active_person_id
         pname = self._active_person_name
+        self._mood_before_respond = personality.state.mood
 
         # Build context for LLM
         context = await self._build_context(pid)
@@ -230,6 +231,19 @@ class ConversationManager:
         if pid:
             personality.update_person(pid, name=pname)
         personality.process_event("good_interaction", person_id=pid)
+
+        # Trait drift — conversation = person engaged
+        try:
+            from core.personality import personality_learning
+            mood_before = getattr(self, "_mood_before_respond", personality.state.mood)
+            mood_delta = personality.state.mood - mood_before
+            personality_learning.record_outcome(
+                interaction_type="conversation",
+                person_responded=bool(user_text.strip()),
+                mood_delta=mood_delta,
+            )
+        except Exception:
+            pass
 
         # Publish event
         await bus.publish(Event(

@@ -1,28 +1,27 @@
 """
-Integrated vision pipeline — ties together camera, person detection,
-face recognition, and emotion detection into one async loop.
+Parallel vision pipeline — three independent async loops.
 
-Runs at recognition_fps (default 3 FPS) since LBPH + emotion are
-cheap but face detection is the bottleneck (~100ms per frame).
+Architecture:
+  Loop 1 (15 FPS): haarcascade detection  — fast, never blocks
+  Loop 2 (5 FPS):  SFace recognition      — medium, gated on person present
+  Loop 3 (2 FPS):  emotion detection      — slow, gated on face confirmed
+
+Each loop runs in its own asyncio task and uses run_in_executor for
+CPU-bound work so they never block the event loop or each other.
+
+Shared mutable state is safe under CPython GIL for simple attribute writes.
 
 Emits to event bus:
-  PERSON_DETECTED      — new track appears
-  PERSON_LOST          — track disappears
-  FACE_RECOGNIZED      — known person ID confirmed
+  PERSON_DETECTED      — person enters frame
+  PERSON_LOST          — person leaves frame (5s grace)
+  FACE_RECOGNIZED      — known person confirmed (CONFIRM_FRAMES consecutive)
   FACE_UNKNOWN         — unrecognized face
-  EMOTION_DETECTED     — emotion reading with smoothing
-
-Wires into personality:
-  face.recognized(name) → mood +0.1, attachment +0.15
-  face.unknown          → arousal +0.2
-  emotion.happy         → mood +0.08 (mood contagion)
-  emotion.sad           → triggers comfort behavior intent
-  person_arrived after alone → excitement +0.2
+  EMOTION_DETECTED     — smoothed emotion reading
 """
 
 import asyncio
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import cv2
 import numpy as np
@@ -39,10 +38,9 @@ from utils.telemetry import telemetry
 log = get_logger(__name__)
 
 
-# Emotion → personality event mapping
 _EMOTION_PERSONALITY_MAP = {
-    "happy":     ("laughter_nearby", 1.0),    # mood contagion
-    "sad":       None,                          # handled specially (comfort)
+    "happy":     ("laughter_nearby", 1.0),
+    "sad":       None,
     "surprised": None,
     "angry":     ("loud_noise", 0.5),
     "scared":    ("loud_noise", 0.3),
@@ -54,36 +52,46 @@ _EMOTION_PERSONALITY_MAP = {
 
 class VisionLoop:
     """
-    Async vision pipeline — runs as a background task.
-    Integrates person detection + face recognition + emotion.
+    Parallel 3-loop vision pipeline.
 
-    Tiered detection:
-      Every frame (10 FPS):  haarcascade face detection (fast, ~10ms @ 320x240)
-      Every 5th frame (2/s): SFace recognition (slower, ~50ms)
-      Every 10th frame (1/s): emotion detection (expensive, ~200ms)
+    Detection runs at 15 FPS. Recognition and emotion run at their own
+    independent rates and share state with the detection loop through
+    simple Python attribute writes (safe under GIL).
     """
 
-    RECOGNITION_FPS    = 10.0          # increased from 3 — fast at 320x240
-    PERSON_ARRIVAL_ALONE_S = 60.0
-    CONFIRM_FRAMES     = 3
-    REFIRE_COOLDOWN_S  = 30.0
+    DETECT_FPS          = 15.0
+    RECOGNIZE_FPS       = 5.0
+    EMOTION_FPS         = 2.0
 
-    FACE_RECOG_EVERY   = 5             # run SFace every N frames
-    EMOTION_EVERY      = 10            # run emotion every N frames
+    PERSON_ARRIVAL_ALONE_S = 60.0
+    CONFIRM_FRAMES      = 3
+    REFIRE_COOLDOWN_S   = 30.0
 
     def __init__(self) -> None:
-        self._face_engine = FaceEngine()
+        self._face_engine      = FaceEngine()
         self._emotion_detector = EmotionDetector()
-        self._running = False
-        self._task: Optional[asyncio.Task] = None
-        self._last_person_seen: float = 0.0
-        self._was_alone = True
-        self._consec: Dict[str, int] = {}
-        self._last_fired: Dict[str, float] = {}
-        self._frame_counter: int = 0
+        self._running          = False
+        self._tasks: List[asyncio.Task] = []
+
+        # Written by detection loop, read by recognition + emotion
+        self._current_frame:      Optional[np.ndarray] = None
+        self._current_frame_ts:   float                = 0.0
+        self._current_detections: list                 = []
+        self._person_present:     bool                 = False
+
+        # Written by recognition loop, read by emotion loop
+        self._confirmed_person_id:   Optional[str] = None
+        self._confirmed_person_name: Optional[str] = None
+
+        # Tracking helpers
+        self._last_person_seen: float      = 0.0
+        self._was_alone:        bool       = True
+        self._consec:           Dict[str, int]   = {}
+        self._last_fired:       Dict[str, float] = {}
+
+    # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     async def start(self) -> None:
-        # Load models (synchronous but fast after first run)
         loop = asyncio.get_event_loop()
         self._face_engine.load()
         await loop.run_in_executor(None, self._emotion_detector.load)
@@ -92,128 +100,199 @@ class VisionLoop:
             log.warning("vision_loop.emotion_unavailable")
 
         self._running = True
-        self._task = asyncio.create_task(self._loop(), name="vision_loop")
+        self._tasks = [
+            asyncio.create_task(self._detection_loop(),   name="vision.detect"),
+            asyncio.create_task(self._recognition_loop(), name="vision.recognize"),
+            asyncio.create_task(self._emotion_loop(),     name="vision.emotion"),
+        ]
         log.info("vision_loop.started",
+                  mode="parallel",
+                  detect_fps=self.DETECT_FPS,
+                  recognize_fps=self.RECOGNIZE_FPS,
+                  emotion_fps=self.EMOTION_FPS,
                   enrolled=self._face_engine.list_enrolled(),
                   emotion=self._emotion_detector.is_available)
 
     async def stop(self) -> None:
         self._running = False
-        if self._task:
-            self._task.cancel()
+        for t in self._tasks:
+            t.cancel()
+        for t in self._tasks:
             try:
-                await self._task
+                await t
             except asyncio.CancelledError:
                 pass
 
-    async def _loop(self) -> None:
-        interval = 1.0 / self.RECOGNITION_FPS
+    # ── Loop 1: Detection (15 FPS) ────────────────────────────────────────────
+
+    async def _detection_loop(self) -> None:
+        interval = 1.0 / self.DETECT_FPS
+        loop = asyncio.get_event_loop()
+        last_frame_obj = None
+
         while self._running:
             t0 = time.monotonic()
 
             frame_obj = camera.latest_frame
-            if frame_obj is None or frame_obj.is_stale(500):
+            if frame_obj is None or frame_obj.is_stale(500) or frame_obj is last_frame_obj:
                 await asyncio.sleep(interval)
                 continue
 
+            last_frame_obj = frame_obj
             frame = frame_obj.image
-            try:
-                await self._process_frame(frame)
-            except Exception as e:
-                log.error("vision_loop.frame_error", error=str(e), exc_info=True)
+
+            detections = await loop.run_in_executor(
+                None, self._face_engine.detect_faces, frame
+            )
+
+            # Update shared state
+            self._current_frame      = frame
+            self._current_frame_ts   = frame_obj.timestamp
+            self._current_detections = detections
+            was_present              = self._person_present
+            self._person_present     = len(detections) > 0
+
+            if detections:
+                alone_duration = time.monotonic() - self._last_person_seen
+                self._last_person_seen = time.monotonic()
+                just_arrived = self._was_alone
+                self._was_alone = False
+
+                if just_arrived:
+                    personality.process_event("person_arrived")
+                    if alone_duration > self.PERSON_ARRIVAL_ALONE_S:
+                        personality.state.arousal = min(1.0, personality.state.arousal + 0.2)
+                    await bus.publish(Event(
+                        type=EventType.PERSON_DETECTED,
+                        data={"alone_duration_s": round(alone_duration, 1)},
+                        source="vision_loop",
+                    ))
+                    telemetry.increment("vision.person_detected")
+            else:
+                now = time.monotonic()
+                if not self._was_alone and (now - self._last_person_seen) > 5.0:
+                    self._was_alone = True
+                    self._confirmed_person_id   = None
+                    self._confirmed_person_name = None
+                    self._consec.clear()
+                    self._last_fired.clear()
+                    personality.process_event("person_left")
+                    await bus.publish(Event(
+                        type=EventType.PERSON_LOST,
+                        data={"alone_since": now},
+                        source="vision_loop",
+                    ))
 
             elapsed = time.monotonic() - t0
-            await asyncio.sleep(max(0, interval - elapsed))
+            telemetry.gauge("vision.detect_ms", elapsed * 1000)
+            await asyncio.sleep(max(0.0, interval - elapsed))
 
-    async def _process_frame(self, frame: np.ndarray) -> None:
+    # ── Loop 2: Recognition (5 FPS) ──────────────────────────────────────────
+
+    async def _recognition_loop(self) -> None:
+        interval = 1.0 / self.RECOGNIZE_FPS
         loop = asyncio.get_event_loop()
-        self._frame_counter = (self._frame_counter + 1) % 30
+        last_frame_ts = 0.0
 
-        # Every frame: fast haarcascade detection (cheap at 320x240)
-        detections = await loop.run_in_executor(
-            None, self._face_engine.detect_faces, frame
-        )
+        while self._running:
+            if not self._person_present:
+                await asyncio.sleep(0.2)
+                continue
 
-        if not detections:
-            self._consec.clear()
-            now = time.monotonic()
-            if not self._was_alone and (now - self._last_person_seen) > 5.0:
-                self._was_alone = True
-                self._last_fired.clear()
-                personality.process_event("person_left")
-                await bus.publish(Event(
-                    type=EventType.PERSON_LOST,
-                    data={"alone_since": now},
-                    source="vision_loop",
-                ))
-                log.info("vision_loop.person_left")
-            return
+            frame      = self._current_frame
+            frame_ts   = self._current_frame_ts
+            detections = self._current_detections
 
-        alone_duration = time.monotonic() - self._last_person_seen
-        self._last_person_seen = time.monotonic()
-        just_arrived = self._was_alone
-        self._was_alone = False
+            if frame is None or not detections or frame_ts == last_frame_ts:
+                await asyncio.sleep(interval)
+                continue
 
-        if just_arrived:
-            personality.process_event("person_arrived")
-            if alone_duration > self.PERSON_ARRIVAL_ALONE_S:
-                personality.state.arousal = min(1.0, personality.state.arousal + 0.2)
-            await bus.publish(Event(
-                type=EventType.PERSON_DETECTED,
-                data={"alone_duration_s": round(alone_duration, 1)},
-                source="vision_loop",
-            ))
+            last_frame_ts = frame_ts
+            t0 = time.monotonic()
 
-        # Every 5th frame: SFace recognition (slower)
-        run_recog = (self._frame_counter % self.FACE_RECOG_EVERY == 0)
-        # Every 10th frame: emotion (most expensive)
-        run_emotion = (self._frame_counter % self.EMOTION_EVERY == 0)
+            for det in detections:
+                result = await loop.run_in_executor(
+                    None, self._face_engine.recognize, det
+                )
+                await self._handle_recognition(result, frame, det)
 
-        for det in detections:
-            if run_recog:
-                result = await loop.run_in_executor(None, self._face_engine.recognize, det)
-            else:
-                # Detection only — skip recognition to save CPU
-                result = type('R', (), {
-                    'bbox': det.bbox, 'person_id': None, 'name': None,
-                    'confidence': 0.0, 'face_img': det.face_img
-                })()
-            await self._handle_recognition(result, frame, det, run_emotion=run_emotion)
+            elapsed = time.monotonic() - t0
+            telemetry.gauge("vision.recognize_ms", elapsed * 1000)
+            await asyncio.sleep(max(0.0, interval - elapsed))
+
+    # ── Loop 3: Emotion (2 FPS) ───────────────────────────────────────────────
+
+    async def _emotion_loop(self) -> None:
+        interval = 1.0 / self.EMOTION_FPS
+        loop = asyncio.get_event_loop()
+
+        while self._running:
+            if not self._person_present or not self._emotion_detector.is_available:
+                await asyncio.sleep(0.5)
+                continue
+
+            frame      = self._current_frame
+            detections = self._current_detections
+
+            if frame is None or not detections:
+                await asyncio.sleep(interval)
+                continue
+
+            det  = detections[0]
+            x, y, w, h = det.bbox
+            if w < 48 or h < 48:
+                await asyncio.sleep(interval)
+                continue
+
+            face_crop  = frame[y:y+h, x:x+w]
+            track_id   = f"face_{x//50}_{y//50}"
+            person_id  = self._confirmed_person_id
+
+            t0 = time.monotonic()
+            emotion_result = await self._emotion_detector.process_and_emit(
+                face_crop, track_id=track_id, person_id=person_id
+            )
+            if emotion_result:
+                await self._handle_emotion(emotion_result, person_id)
+
+            elapsed = time.monotonic() - t0
+            telemetry.gauge("vision.emotion_ms", elapsed * 1000)
+            await asyncio.sleep(max(0.0, interval - elapsed))
+
+    # ── Handlers (shared logic) ───────────────────────────────────────────────
 
     async def _handle_recognition(
         self,
         result: RecognitionResult,
         frame: np.ndarray,
         det,
-        run_emotion: bool = True,
     ) -> None:
         x, y, w, h = result.bbox
-        frame_w = frame.shape[1] if frame is not None else 640
+        frame_w = frame.shape[1] if frame is not None else 320
         bbox_center_x = round(((x + w / 2) / frame_w) * 2.0 - 1.0, 3)
-        face_crop = frame[y:y+h, x:x+w]
-        track_id = f"face_{x//50}_{y//50}"   # coarse spatial ID
+        track_id = f"face_{x//50}_{y//50}"
 
         if result.person_id:
-            # Consecutive-frames gate: must see the same person N frames in a row
             self._consec[track_id] = self._consec.get(track_id, 0) + 1
             if self._consec[track_id] < self.CONFIRM_FRAMES:
-                return  # not confirmed yet
+                return
 
             personality.update_person(result.person_id, name=result.name)
 
-            # Debounce: fire FACE_RECOGNIZED at most once per REFIRE_COOLDOWN_S
-            now = time.monotonic()
+            now  = time.monotonic()
             last = self._last_fired.get(result.person_id, 0.0)
             if now - last >= self.REFIRE_COOLDOWN_S:
                 self._last_fired[result.person_id] = now
+                self._confirmed_person_id   = result.person_id
+                self._confirmed_person_name = result.name
                 personality.process_event("good_interaction", person_id=result.person_id)
                 await bus.publish(Event(
                     type=EventType.FACE_RECOGNIZED,
                     data={
-                        "person_id": result.person_id,
-                        "name": result.name,
-                        "confidence": result.confidence,
-                        "bbox_center_x": bbox_center_x,
+                        "person_id":      result.person_id,
+                        "name":           result.name,
+                        "confidence":     result.confidence,
+                        "bbox_center_x":  bbox_center_x,
                     },
                     source="vision_loop",
                 ))
@@ -221,47 +300,35 @@ class VisionLoop:
                 log.info("vision_loop.recognized",
                           name=result.name, conf=result.confidence)
         else:
-            # Unknown face
             await bus.publish(Event(
                 type=EventType.FACE_UNKNOWN,
                 data={},
                 source="vision_loop",
             ))
-            # Unknown person raises caution + curiosity
             personality.state.arousal = min(1.0, personality.state.arousal + 0.15)
-
-        # Emotion detection (only if face crop is large enough AND it's an emotion frame)
-        if run_emotion and w >= 48 and h >= 48 and self._emotion_detector.is_available:
-            person_id = result.person_id
-            emotion_result = await self._emotion_detector.process_and_emit(
-                face_crop, track_id=track_id, person_id=person_id
-            )
-            if emotion_result:
-                await self._handle_emotion(emotion_result, person_id)
 
     async def _handle_emotion(self, emotion_result, person_id: Optional[str]) -> None:
         emotion = emotion_result.emotion
 
-        # Mood contagion — Cosmo picks up on others' emotions
         mapping = _EMOTION_PERSONALITY_MAP.get(emotion)
         if mapping:
             event_key, weight = mapping
-            # Apply partial impact weighted by emotion confidence
             impacts = cfg.personality.event_impacts.get(event_key, {})
             for dim, delta in impacts.items():
                 old = getattr(personality.state, dim, None)
                 if old is not None:
-                    setattr(personality.state, dim, old + delta * weight * emotion_result.confidence)
+                    setattr(personality.state, dim,
+                            old + delta * weight * emotion_result.confidence)
             personality.state.clamp()
-
         elif emotion == "sad" and emotion_result.confidence > 0.6:
-            # Special: someone looks sad → Cosmo wants to comfort
             personality.state.mood = max(-0.2, personality.state.mood - 0.05)
             await bus.publish(Event(
                 type=EventType.MOOD_CHANGED,
                 data={"trigger": "emotion_contagion_sad", "person_id": person_id},
                 source="vision_loop",
             ))
+
+    # ── Public helpers ────────────────────────────────────────────────────────
 
     def get_face_engine(self) -> FaceEngine:
         return self._face_engine

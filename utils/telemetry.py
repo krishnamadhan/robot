@@ -111,3 +111,68 @@ class Telemetry:
 
 # Module-level singleton
 telemetry = Telemetry()
+
+
+class LatencyTracker:
+    """
+    End-to-end pipeline latency tracking.
+
+    Usage:
+        LatencyTracker.start("wake_to_stt")
+        # ... work ...
+        ms = LatencyTracker.end("wake_to_stt")
+    """
+
+    _timers:  Dict[str, float]         = {}
+    _history: Dict[str, deque]         = {}
+    _MAXLEN = 20
+
+    @classmethod
+    def start(cls, name: str) -> None:
+        cls._timers[name] = time.perf_counter()
+
+    @classmethod
+    def end(cls, name: str) -> float:
+        t0 = cls._timers.pop(name, None)
+        if t0 is None:
+            return 0.0
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        if name not in cls._history:
+            cls._history[name] = deque(maxlen=cls._MAXLEN)
+        cls._history[name].append(elapsed_ms)
+        log.info("latency", stage=name, ms=round(elapsed_ms, 1),
+                  avg_ms=round(cls.avg(name), 1))
+        return elapsed_ms
+
+    @classmethod
+    def avg(cls, name: str) -> float:
+        h = cls._history.get(name)
+        return sum(h) / len(h) if h else 0.0
+
+    @classmethod
+    def max_ms(cls, name: str) -> float:
+        h = cls._history.get(name)
+        return max(h) if h else 0.0
+
+    @classmethod
+    def report(cls) -> str:
+        if not cls._history:
+            return "No latency data yet."
+        lines = ["=== LATENCY REPORT ==="]
+        for name, history in sorted(cls._history.items()):
+            if history:
+                avg = sum(history) / len(history)
+                mx  = max(history)
+                lines.append(f"  {name:<28} avg:{avg:6.0f}ms  max:{mx:6.0f}ms  n={len(history)}")
+        return "\n".join(lines)
+
+    @classmethod
+    def snapshot(cls) -> Dict[str, Any]:
+        return {
+            name: {
+                "avg_ms": round(cls.avg(name), 1),
+                "max_ms": round(cls.max_ms(name), 1),
+                "samples": len(h),
+            }
+            for name, h in cls._history.items() if h
+        }

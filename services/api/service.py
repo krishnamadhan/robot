@@ -40,10 +40,26 @@ def wire_state(state: dict, events: list) -> None:
 
 @app.get("/health")
 async def health():
+    from utils.telemetry import LatencyTracker
+    from core.personality import personality
     uptime = int(time.monotonic() - _start_time)
     cpu_temp = _read_cpu_temp()
     free_ram = _read_free_ram_mb()
-    return {"status": "ok", "uptime_s": uptime, "cpu_temp_c": cpu_temp, "free_ram_mb": free_ram}
+    return {
+        "status":           "ok",
+        "uptime_s":         uptime,
+        "cpu_temp_c":       cpu_temp,
+        "free_ram_mb":      free_ram,
+        "mood":             round(personality.state.mood, 2),
+        "energy":           round(personality.state.energy, 2),
+        "latency":          LatencyTracker.snapshot(),
+    }
+
+
+@app.get("/latency")
+async def latency_report():
+    from utils.telemetry import LatencyTracker
+    return {"report": LatencyTracker.report(), "data": LatencyTracker.snapshot()}
 
 
 def _read_cpu_temp() -> float:

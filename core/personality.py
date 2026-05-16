@@ -24,6 +24,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+TRAITS_PATH = Path.home() / ".robot" / "personality_traits.json"
+
 from utils.config import cfg
 from utils.logger import get_logger
 from utils.telemetry import telemetry
@@ -388,5 +390,120 @@ class PersonalityEngine:
             log.warning("personality.load_failed", error=str(e))
 
 
-# Module-level singleton
+class PersonalityLearning:
+    """
+    Slow trait evolution based on interaction outcomes.
+
+    Changes are tiny (0.005 per interaction) — visible over weeks, not hours.
+    Traits persist across restarts in ~/.robot/personality_traits.json.
+
+    Traits:
+      expressiveness — how much Cosmo volunteers speech (0.3–0.95)
+      curiosity      — how often Cosmo asks questions (0.3–0.95)
+      affection      — warmth toward people (0.4–0.99)
+      caution        — how cautious with strangers (0.1–0.7)
+    """
+
+    LEARNING_RATE = 0.005
+
+    _BOUNDS: Dict[str, tuple] = {
+        "expressiveness": (0.3, 0.95),
+        "curiosity":      (0.3, 0.95),
+        "affection":      (0.4, 0.99),
+        "caution":        (0.1, 0.70),
+    }
+
+    def __init__(self) -> None:
+        self.traits: Dict[str, float] = {
+            "expressiveness": 0.65,
+            "curiosity":      0.70,
+            "affection":      0.75,
+            "caution":        0.40,
+        }
+        self._interaction_count = 0
+        self._load()
+
+    def _load(self) -> None:
+        try:
+            if TRAITS_PATH.exists():
+                data = json.loads(TRAITS_PATH.read_text())
+                loaded = data.get("traits", {})
+                for k in self.traits:
+                    if k in loaded:
+                        self.traits[k] = float(loaded[k])
+                self._interaction_count = data.get("interactions", 0)
+                log.info("personality_traits.loaded",
+                          traits={k: round(v, 3) for k, v in self.traits.items()})
+        except Exception as e:
+            log.warning("personality_traits.load_failed", error=str(e))
+
+    def _save(self) -> None:
+        try:
+            TRAITS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            TRAITS_PATH.write_text(json.dumps({
+                "traits":       self.traits,
+                "interactions": self._interaction_count,
+                "updated":      time.time(),
+            }, indent=2))
+        except Exception as e:
+            log.warning("personality_traits.save_failed", error=str(e))
+
+    def record_outcome(
+        self,
+        interaction_type: str,
+        person_responded: bool,
+        mood_delta: float = 0.0,
+    ) -> None:
+        """
+        Drift personality traits based on how an interaction went.
+        Call after every significant interaction.
+        """
+        self._interaction_count += 1
+        outcome = (0.5 if person_responded else -0.2) + (mood_delta * 0.3)
+        outcome = max(-1.0, min(1.0, outcome))
+
+        changes: Dict[str, float] = {}
+
+        if interaction_type == "proactive_speech":
+            if outcome > 0.3:
+                changes["expressiveness"] = +self.LEARNING_RATE
+            elif outcome < -0.1:
+                changes["expressiveness"] = -self.LEARNING_RATE
+
+        elif interaction_type == "conversation":
+            if outcome > 0.3:
+                changes["affection"]      = +self.LEARNING_RATE * 0.5
+                changes["expressiveness"] = +self.LEARNING_RATE * 0.3
+            changes["curiosity"] = +self.LEARNING_RATE * 0.2 * outcome
+
+        elif interaction_type == "touch":
+            changes["affection"] = +self.LEARNING_RATE
+            changes["caution"]   = -self.LEARNING_RATE * 0.3
+
+        elif interaction_type == "stranger":
+            changes["caution"] = +self.LEARNING_RATE * 0.5
+
+        elif interaction_type == "wander":
+            changes["curiosity"] = +self.LEARNING_RATE * 0.3
+
+        for trait, delta in changes.items():
+            old = self.traits.get(trait, 0.5)
+            lo, hi = self._BOUNDS.get(trait, (0.0, 1.0))
+            new_val = max(lo, min(hi, old + delta))
+            self.traits[trait] = new_val
+            if abs(delta) >= 0.001:
+                log.debug("personality_trait.drift",
+                           trait=trait, before=round(old, 3),
+                           after=round(new_val, 3), delta=round(delta, 4))
+
+        # Save every 10 interactions to avoid disk churn
+        if self._interaction_count % 10 == 0:
+            self._save()
+
+    def get(self, trait: str, default: float = 0.5) -> float:
+        return self.traits.get(trait, default)
+
+
+# Module-level singletons
 personality = PersonalityEngine()
+personality_learning = PersonalityLearning()
