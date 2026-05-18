@@ -2,9 +2,9 @@
 Microphone input pipeline.
 
 Device priority:
-  1. INMP441 I2S (when it arrives)
-  2. Logitech C920 webcam mic (stereo → mono downmix)
-  3. Any USB audio device
+  1. Logitech C920 webcam mic (stereo → mono downmix) — reliable USB audio
+  2. Any USB audio device
+  3. INMP441 I2S (silently broken on Pi 5 without proper overlay)
   4. System default
 
 C920 notes:
@@ -29,7 +29,7 @@ CHUNK_SIZE = 512       # ~32ms per chunk
 CHANNELS = 1           # output mono (downmixed from stereo if needed)
 
 # Keywords to match device names in priority order
-_PRIORITY_KEYWORDS = ["inmp441", "i2s", "c920", "logitech", "webcam", "usb"]
+_PRIORITY_KEYWORDS = ["c920", "logitech", "webcam", "usb", "inmp441", "i2s"]
 
 
 class MicrophoneInput:

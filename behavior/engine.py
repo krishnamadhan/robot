@@ -112,7 +112,7 @@ class BehaviorEngine:
             Behavior("curious_sound",   0.25, 15,  self._curious_sound, energy_min=0.4),
             Behavior("purr_idle",       0.20, 40,  self._purr_idle,     energy_max=0.5),
             Behavior("wander",          0.10, 60,  self._wander,        energy_min=0.5),
-            Behavior("seek_attention",  0.20, 120, self._seek_attention, energy_max=0.3),
+            Behavior("seek_attention",  0.20, 300, self._seek_attention, energy_max=0.15),
             Behavior("breathing",       0.35,  5,  self._breathe),
         ]
 
@@ -266,31 +266,34 @@ class BehaviorEngine:
         while self._running:
             await asyncio.sleep(10)
             for trigger in self._triggers:
-                if trigger.is_ready() and trigger.condition():
-                    trigger.mark_fired()
-                    name = self._current_person or "friend"
-                    person_rec = personality.get_person(name)
-                    display_name = (person_rec.name if person_rec and person_rec.name
-                                    else name)
-                    phrase = trigger.pick_phrase(display_name)
-                    log.info("behavior.proactive", trigger=trigger.name,
-                             phrase=phrase[:40])
+                if not trigger.is_ready() or not trigger.condition():
+                    continue
+                if tts.is_speaking:
+                    continue
+                trigger.mark_fired()
+                name = self._current_person or "friend"
+                person_rec = personality.get_person(name)
+                display_name = (person_rec.name if person_rec and person_rec.name
+                                else name)
+                phrase = trigger.pick_phrase(display_name)
+                log.info("behavior.proactive", trigger=trigger.name,
+                         phrase=phrase[:40])
+                try:
+                    mood_before = personality.state.mood
+                    await tts.speak(phrase)
+                    # Record outcome after a brief window — person present = responded
+                    await asyncio.sleep(5)
                     try:
-                        mood_before = personality.state.mood
-                        await tts.speak(phrase)
-                        # Record outcome after a brief window — person present = responded
-                        await asyncio.sleep(5)
-                        try:
-                            from core.personality import personality_learning
-                            personality_learning.record_outcome(
-                                interaction_type="proactive_speech",
-                                person_responded=bool(self._current_person),
-                                mood_delta=personality.state.mood - mood_before,
-                            )
-                        except Exception:
-                            pass
-                    except Exception as e:
-                        log.warning("behavior.speak_error", error=str(e)[:60])
+                        from core.personality import personality_learning
+                        personality_learning.record_outcome(
+                            interaction_type="proactive_speech",
+                            person_responded=bool(self._current_person),
+                            mood_delta=personality.state.mood - mood_before,
+                        )
+                    except Exception:
+                        pass
+                except Exception as e:
+                    log.warning("behavior.speak_error", error=str(e)[:60])
 
     # ── Ambient awareness loop ────────────────────────────────────────────────
 
@@ -319,7 +322,7 @@ class BehaviorEngine:
         if self._current_person:
             await self._curiosity_tick(now)
         # Alone: wonder aloud occasionally
-        elif now - self._no_person_since > 600 and random.random() < 0.3:
+        elif now - self._no_person_since > 1200 and random.random() < 0.2:
             await self._wonder_aloud()
 
     async def _curiosity_tick(self, now: float) -> None:

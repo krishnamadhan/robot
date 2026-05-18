@@ -21,6 +21,11 @@ module.exports = {
         NUMEXPR_NUM_THREADS: '4',
         GOMP_SPINCOUNT: '0',
         GPIOZERO_PIN_FACTORY: 'lgpio',
+        // Behavior tree
+        BT_TICK_MS: '100',
+        // Gesture: 'auto' = try mediapipe first, fall back to opencv_skin
+        GESTURE_BACKEND: 'auto',
+        SOUND_DEVICE: 'default',
       },
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
       error_file: '/home/pi/.robot/logs/cosmo-error.log',

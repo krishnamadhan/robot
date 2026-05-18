@@ -52,6 +52,12 @@ class EventType(str, Enum):
     MOTION_DETECTED = "perception.motion"
     MOTION_STOPPED = "perception.motion.stopped"
     GESTURE_DETECTED = "perception.gesture"
+    GESTURE_WAVE      = "perception.gesture.wave"
+    GESTURE_THUMBS_UP = "perception.gesture.thumbs_up"
+    GESTURE_PEACE     = "perception.gesture.peace"
+    GESTURE_FIST      = "perception.gesture.fist"
+    GESTURE_LOVE      = "perception.gesture.love"
+    GESTURE_POINT     = "perception.gesture.point"
     TOUCH_DETECTED = "perception.touch"
     TOUCH_LONG = "perception.touch.long"
     SOUND_DETECTED = "perception.sound"
@@ -91,6 +97,12 @@ _EVENT_PRIORITIES: Dict[EventType, EventPriority] = {
     EventType.PICKUP_DETECTED: EventPriority.SAFETY,
     EventType.BATTERY_CRITICAL: EventPriority.SAFETY,
     EventType.MOTOR_STALL: EventPriority.SAFETY,
+    EventType.GESTURE_WAVE:      EventPriority.HIGH,
+    EventType.GESTURE_THUMBS_UP: EventPriority.HIGH,
+    EventType.GESTURE_PEACE:     EventPriority.HIGH,
+    EventType.GESTURE_FIST:      EventPriority.HIGH,
+    EventType.GESTURE_LOVE:      EventPriority.HIGH,
+    EventType.GESTURE_POINT:     EventPriority.HIGH,
     EventType.TOUCH_DETECTED: EventPriority.HIGH,
     EventType.TOUCH_LONG: EventPriority.HIGH,
     EventType.WAKE_WORD: EventPriority.HIGH,

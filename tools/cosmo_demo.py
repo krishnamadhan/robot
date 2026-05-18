@@ -1,16 +1,14 @@
 """
-Cosmo — Full Alive Demo.
+Cosmo — Reactive Companion Demo (Phase A).
 Run: python3 tools/cosmo_demo.py
 
 Systems active:
-  Vision  → person detect → face recog → emotion
-  Audio   → OWW wake word → Whisper STT → Ollama LLM → Piper TTS on JBL
-  Sensors → touch/PIR/IMU/light/battery (mocked until hardware arrives)
-  Eyes    → 12 expressions in terminal (OLED when hardware arrives)
-  Sounds  → numpy-generated audio expressions
-  Behavior → idle behaviors + proactive Tanglish speech
+  Vision     → person detect → face recog → emotion
+  Sounds     → numpy-generated reactive audio expressions
+  Sensors    → touch/PIR/IMU/light/battery (mocked until hardware arrives)
+  Eyes       → 12 expressions in terminal (OLED when hardware arrives)
+  Behavior   → idle behaviors, personality-driven reactions
   Navigation → movement with safety (mocked until motors wired)
-  Intent  → offline Tamil+English command parsing
 
 Ctrl+C to exit.
 """
@@ -43,18 +41,19 @@ from behavior.engine import behavior_engine
 from behavior.navigation import navigation
 from cognition.conversation import conversation
 from cognition.intent import intent_parser
-from cognition.llm import llm
 from cognition.mind import cosmo_mind
 from core.event_bus import bus, Event, EventType
 from core.memory.episodic import episodic
 from core.personality import personality
 from core.state_machine import sm, RobotState
 from expression.eyes import EyeExpression, eye_engine
+from core.behavior_tree import behavior_tree, bb as cosmo_bb
+from perception.vision.gesture import gesture_loop
 from expression.sounds import sounds
-from expression.speech import tts
 from hardware.motors import motor_controller
 from hardware.sensor_manager import sensor_manager
 from hardware.servos import servo_controller
+from perception.audio.commands import VoiceCommandListener
 from perception.audio.pipeline import audio_pipeline
 from perception.video.stream_server import stream_server
 from perception.vision.camera import camera
@@ -134,7 +133,7 @@ def _build_panel() -> Panel:
     return Panel(
         "\n".join(lines),
         title="[bold cyan]COSMO[/bold cyan]",
-        subtitle='[dim]Say "Hey Jarvis" to talk | Ctrl+C to quit[/dim]',
+        subtitle='[dim]Ctrl+C to quit[/dim]',
         border_style="cyan",
     )
 
@@ -160,10 +159,6 @@ def _load_person_config() -> dict:
         return {}
 
 _KNOWN_PERSONS = _load_person_config()
-_PERSON_PROMPTS = {
-    name: info.get("prompt", f"{name} (someone Cosmo knows)")
-    for name, info in _KNOWN_PERSONS.items()
-}
 
 
 async def _face_and_approach(person_x: float) -> None:
@@ -188,6 +183,7 @@ async def setup_event_handlers() -> None:
     async def on_person(event: Event) -> None:
         _state["persons_visible"] = 1
         _state["last_person_time"] = time.monotonic()
+        cosmo_bb.person_visible = True
         person_x = event.data.get("bbox_center_x", 0.0)
 
         # Stop any wandering immediately
@@ -210,41 +206,25 @@ async def setup_event_handlers() -> None:
         _state["person_name"] = name
         _state["face_conf"] = conf
         _state["last_person_time"] = time.monotonic()
+        cosmo_bb.person_visible = True
+        cosmo_bb.person_name = name
+        cosmo_bb.person_id = person_id
         _state["events"].append(f"Face: {name} ({conf:.0%})")
 
         audio_pipeline.update_person(person_id, _state.get("last_emotion") or None)
 
-        if name not in _state["greeted"] and not tts.is_speaking:
+        if name not in _state["greeted"]:
             _state["greeted"].add(name)
             if not conversation.in_conversation:
                 await conversation.start_session(person_id, name)
             conversation.set_person(person_id, name)
 
-            # T+0ms: face them + chime in parallel
+            # Face them + play greeting chime
             await asyncio.gather(
                 _face_and_approach(person_x),
                 sounds.play("chime_greeting"),
                 return_exceptions=True,
             )
-
-            # T+~0ms: play instant pre-baked greeting line (no LLM wait)
-            import random as _rand
-            person_lines = _KNOWN_PERSONS.get(name, {}).get("greetings", [])
-            played = False
-            if person_lines:
-                key = f"greet_{name}_{_rand.randint(0, len(person_lines) - 1)}"
-                played = await tts.speak_instant(key)
-
-            if not played:
-                # Fallback: fire LLM greeting in background (non-blocking)
-                person_desc = _PERSON_PROMPTS.get(name, f"{name} (someone Cosmo knows)")
-                prompt = (
-                    f"[Cosmo just recognised {person_desc}. "
-                    f"Give a warm spontaneous greeting in 1-2 sentences, English.]"
-                )
-                asyncio.create_task(_speak_async(prompt, person_id))
-
-            _state["last_response"] = person_lines[0] if person_lines else "..."
             _state["events"].append(f"Greeted {name}")
 
     @bus.on(EventType.FACE_UNKNOWN)
@@ -265,6 +245,10 @@ async def setup_event_handlers() -> None:
         _state["persons_visible"] = 0
         _state["greeted"].discard(prev)
         _state["events"].append("Person left")
+        cosmo_bb.person_visible = False
+        cosmo_bb.person_name = ""
+        cosmo_bb.person_id = ""
+        cosmo_bb.alone_since = time.monotonic()
         audio_pipeline.update_person(None)
         if conversation.in_conversation:
             await conversation.end_session()
@@ -278,6 +262,7 @@ async def setup_event_handlers() -> None:
         conf = event.data.get("confidence", 0)
         _state["emotion"] = f"{emotion} ({conf:.0%})"
         conversation.set_emotion(emotion)
+        cosmo_bb.emotion = emotion
 
         # Only react if emotion actually changed
         if emotion == _state["last_emotion"]:
@@ -301,18 +286,6 @@ async def setup_event_handlers() -> None:
 
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-
-        # Proactive speech based on emotion
-        import random
-        if random.random() < reaction["proactive"] and not tts.is_speaking:
-            name = _state["person_name"]
-            if name not in ("no one", "stranger", "?"):
-                person_id = f"person_{name.lower()}"
-                prompt = (
-                    f"[{name} looks {emotion}. React naturally in 1 sentence, "
-                    f"English. Don't ask too many questions.]"
-                )
-                asyncio.create_task(_speak_async(prompt, person_id))
 
     @bus.on(EventType.WAKE_WORD)
     async def on_wake(event: Event) -> None:
@@ -349,10 +322,44 @@ async def setup_event_handlers() -> None:
             asyncio.create_task(behavior_engine._look_around())
         elif action == "cosmo_mind.disable":
             cosmo_mind.disable()
-            asyncio.create_task(tts.speak("Okay, going quiet now. Saving credits."))
         elif action == "cosmo_mind.enable":
             cosmo_mind.enable()
-            asyncio.create_task(tts.speak("Mind is back on! Ready to think."))
+
+    @bus.on(EventType.GESTURE_WAVE)
+    async def on_gesture_wave(event: Event) -> None:
+        cosmo_bb.last_gesture = "Open_Palm"
+        cosmo_bb.last_gesture_time = time.monotonic()
+        _state["events"].append(f"Gesture: wave ({event.data.get('backend','?')})")
+
+    @bus.on(EventType.GESTURE_THUMBS_UP)
+    async def on_gesture_thumbs(event: Event) -> None:
+        cosmo_bb.last_gesture = "Thumb_Up"
+        cosmo_bb.last_gesture_time = time.monotonic()
+        _state["events"].append("Gesture: thumbs_up")
+
+    @bus.on(EventType.GESTURE_PEACE)
+    async def on_gesture_peace(event: Event) -> None:
+        cosmo_bb.last_gesture = "Victory"
+        cosmo_bb.last_gesture_time = time.monotonic()
+        _state["events"].append("Gesture: peace")
+
+    @bus.on(EventType.GESTURE_FIST)
+    async def on_gesture_fist(event: Event) -> None:
+        cosmo_bb.last_gesture = "Closed_Fist"
+        cosmo_bb.last_gesture_time = time.monotonic()
+        _state["events"].append("Gesture: fist")
+
+    @bus.on(EventType.GESTURE_LOVE)
+    async def on_gesture_love(event: Event) -> None:
+        cosmo_bb.last_gesture = "ILoveYou"
+        cosmo_bb.last_gesture_time = time.monotonic()
+        _state["events"].append("Gesture: love")
+
+    @bus.on(EventType.GESTURE_POINT)
+    async def on_gesture_point(event: Event) -> None:
+        cosmo_bb.last_gesture = "Pointing_Up"
+        cosmo_bb.last_gesture_time = time.monotonic()
+        _state["events"].append("Gesture: point")
 
     @bus.on(EventType.TOUCH_DETECTED)
     async def on_touch(event: Event) -> None:
@@ -360,11 +367,7 @@ async def setup_event_handlers() -> None:
         zone = event.data.get("zone", "?")
         _state["events"].append(f"Touch: {zone}")
         eye_engine.set_expression(EyeExpression.LOVING, duration=3.0, priority=PRIORITY_TOUCH)
-        # Instant vocal reaction — no LLM
-        line_key = "touch_head" if zone in ("head", "top") else "touch_belly"
-        played = await tts.speak_instant(line_key)
-        if not played:
-            await sounds.play("purr_petted")
+        await sounds.play("purr_petted")
 
     @bus.on(EventType.MOTION_DETECTED)
     async def on_motion(event: Event) -> None:
@@ -391,20 +394,8 @@ async def setup_event_handlers() -> None:
             _state["latency_ms"] = latency
 
 
-async def _speak_async(prompt: str, person_id: str) -> None:
-    """Fire-and-forget proactive speech."""
-    try:
-        result = await conversation.respond(prompt, person_id=person_id, speak=True)
-        if result.get("text"):
-            _state["last_response"] = result["text"]
-            _state["backend"] = result.get("backend", "?")
-    except Exception as e:
-        log.error("cosmo_demo.speak_async_error", error=str(e))
-
-
 async def alone_watcher() -> None:
-    """Start wandering when no person for 2+ min. Speak when lonely 10+ min."""
-    import random
+    """Start wandering when no person for 2+ min. Play sad sound when lonely 10+ min."""
     WANDER_AFTER_S = 120
     LONELY_AFTER_S = 600
     _last_lonely_speak = 0.0
@@ -423,17 +414,10 @@ async def alone_watcher() -> None:
 
         if alone_s > LONELY_AFTER_S:
             now = time.monotonic()
-            if now - _last_lonely_speak > 300 and not tts.is_speaking:
+            if now - _last_lonely_speak > 300:
                 _last_lonely_speak = now
-                key = f"alone_{random.randint(0, 2)}"
-                played = await tts.speak_instant(key)
-                if not played:
-                    phrases = [
-                        "It's really quiet here... anyone around?",
-                        "So quiet here. Miss pannuren.",
-                        "Enna idhu, all alone-a? Ayyo.",
-                    ]
-                    asyncio.create_task(tts.speak(random.choice(phrases)))
+                eye_engine.set_expression(EyeExpression.SAD, duration=5.0)
+                asyncio.create_task(sounds.play("whimper_lonely"))
 
 
 async def state_watcher() -> None:
@@ -455,15 +439,6 @@ async def state_watcher() -> None:
         await asyncio.sleep(0.3)
 
 
-async def _warmup_ollama() -> None:
-    """Load Ollama model into RAM without blocking startup."""
-    warmup = await llm.generate("Hi", conversation_history=[])
-    if str(warmup.get("backend", "")).startswith("ollama"):
-        console.print(f"[green]✓ Ollama ready ({warmup['latency_ms']}ms)[/green]")
-    else:
-        console.print("[yellow]⚠ Ollama warmup gave fallback response[/yellow]")
-
-
 async def main() -> None:
     console.print("\n[bold cyan]COSMO — Starting up[/bold cyan]")
 
@@ -472,18 +447,7 @@ async def main() -> None:
     await personality.start()
     await sm.start(RobotState.IDLE_CALM)
 
-    # LLM: Claude Haiku (primary) — fast, great personality
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if api_key:
-        console.print("[green]✓ LLM: Claude Haiku (primary) | Ollama (offline fallback)[/green]")
-    else:
-        console.print("[yellow]⚠ ANTHROPIC_API_KEY not set — checking Ollama...[/yellow]")
-        ollama_ready = await llm.is_ollama_ready()
-        if ollama_ready:
-            asyncio.create_task(_warmup_ollama())
-            console.print("[dim]✓ Ollama reachable — warming up in background[/dim]")
-        else:
-            console.print("[red]✗ No LLM available — Cosmo can't talk[/red]")
+    console.print("[yellow]⚠ LLM disabled (Phase A — reactive mode)[/yellow]")
 
     # Camera + vision
     if not await camera.start():
@@ -537,19 +501,19 @@ async def main() -> None:
     console.print("[green]✓ Behavior engine[/green]")
 
     await cosmo_mind.start()
-    mind_status = "Claude AI" if cosmo_mind._enabled else "no API key"
-    mind_color = "green" if cosmo_mind._enabled else "yellow"
-    console.print(f"[{mind_color}]{'✓' if cosmo_mind._enabled else '⚠'} Cosmo Mind ({mind_status})[/{mind_color}]")
+    console.print("[green]✓ Cosmo Mind (rule engine)[/green]")
 
-    # Audio pipeline (mic → wake word → STT → LLM → JBL)
-    audio_ok = await audio_pipeline.start()
-    if audio_ok:
-        from perception.audio.mic import mic
-        console.print(f"[green]✓ Mic: {mic.device_name}[/green]")
-        console.print(f"[green]✓ STT: Whisper base.en (beam=5, Indian English)[/green]")
-        console.print(f"[green]✓ Speaker: JBL Flip 5 (BT)[/green]")
-    else:
-        console.print("[yellow]⚠ Audio pipeline unavailable (no mic?)[/yellow]")
+    behavior_tree.setup()
+    await behavior_tree.start()
+    console.print("[green]✓ Behavior Tree (100ms tick)[/green]")
+
+    gesture_loop.setup()
+    await gesture_loop.start()
+    console.print(f"[green]✓ Gesture loop ({gesture_loop.backend} @ {4}fps)[/green]")
+
+    _voice_commands = VoiceCommandListener()
+    await _voice_commands.start()
+    console.print("[dim]⚠ Voice commands stub (wire INMP441 to activate)[/dim]")
 
     await setup_event_handlers()
     asyncio.create_task(alone_watcher())
@@ -566,7 +530,6 @@ async def main() -> None:
     console.print(f"\n[bold green]Cosmo is alive! {personality.describe()}[/bold green]")
     if enrolled:
         console.print(f'[dim]Walk in — Cosmo knows {", ".join(enrolled)}[/dim]')
-    console.print('[dim]Say "Hey Cosmo" to start a voice conversation[/dim]')
     console.print(f'[dim]📹 Live stream: {stream_server.best_url()}[/dim]\n')
 
     asyncio.create_task(state_watcher())
@@ -587,6 +550,8 @@ async def main() -> None:
             pass
         if conversation.in_conversation:
             await conversation.end_session()
+        await gesture_loop.stop()
+        await behavior_tree.stop()
         await cosmo_mind.stop()
         await audio_pipeline.stop()
         await motor_controller.stop(emergency=True)

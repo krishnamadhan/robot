@@ -1,8 +1,39 @@
 # Cosmo — Build Progress Tracker
 
-> Last updated: 2026-05-14
-> Test suite: **78/78 passing** (47 new)
-> Demo: `python3 tools/cosmo_demo.py` — PM2 as `cosmo` — ALL systems running
+> Last updated: 2026-05-18
+> Demo: `python3 tools/cosmo_demo.py` — PM2 as `cosmo`
+
+---
+
+## REACTIVE OVERHAUL — PHASES A–E ✅ COMPLETE (2026-05-18)
+
+### What Was Removed
+
+| System | Reason |
+|--------|--------|
+| STT (Whisper/C920 mic) | Voice assistant model — wrong product direction |
+| TTS (Piper) | Replaced by numpy-generated sound expressions |
+| Wake word (OpenWakeWord / Porcupine) | No longer needed without STT |
+| Real-time LLM (Ollama / Claude Haiku) | Too slow, too expensive for reactive presence |
+| 30-state HSM | Replaced by py_trees Behavior Tree |
+
+### What Was Added
+
+| System | Detail |
+|--------|--------|
+| Sound engine | 22 numpy-generated sounds, priority interruption, sounddevice + paplay fallback |
+| Behavior Tree | py_trees, 52 nodes, 100ms tick, blackboard pattern |
+| Gesture recognizer | OpenCV skin+hull fallback (MediaPipe-ready when aarch64 wheel ships) |
+| Voice commands stub | Architecture ready, wires when INMP441 arrives |
+
+### Current State
+
+- **Camera-only**: fully reactive, zero API cost, zero latency to response
+- **Reactive pipeline**: event → BT (100ms) → sound + eye expression
+- **RAM**: ~200MB baseline, <50MB growth per 30 ticks
+- **Thermal**: 58–62°C under full vision load (16°C headroom)
+- **Gesture latency**: avg 4.5ms (OpenCV backend)
+- **Next hardware**: INMP441 mic → OLED eyes → sensors → motors
 
 ---
 

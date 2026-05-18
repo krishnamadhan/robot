@@ -128,3 +128,22 @@ audio:
   speaker:
     device: auto           # JBL Flip 5 BT via PipeWire
     available: true
+
+  # Removed (Phase A — voice assistant stripped):
+  #   whisper, piper, wake_word, ollama sections deleted.
+  # Re-add only if re-enabling voice features in a future phase.
+
+behavior_tree:
+  tick_interval_ms: 100
+  greet_cooldown_s: 300
+  boredom_med_threshold_s: 60
+  boredom_high_threshold_s: 180
+  energy_sleep_threshold: 0.20
+  gesture_cooldown_s: 3.0
+  gesture_min_confidence: 0.75
+  gesture_wave_hold_frames: 2
+
+sounds:
+  backend: sounddevice
+  fallback: paplay
+  device: default

@@ -6,8 +6,10 @@ Design inspiration: EMO by LivingAI, Vector, Loona — fully local, self-hostabl
 Goal is PRESENCE, not intelligence. The robot feels alive through timing, reactions,
 memory continuity, emotional state, and attention — not constant talking.
 
-LLMs are NOT the brain. They are called only when semantic interpretation,
-conversation, or planning is needed. Everything else runs without any API call.
+**Cosmo is now a reactive companion. No LLM in real-time path.**
+All reactions are: sensor/vision event → behavior tree → sound + eyes.
+Do not add any Claude API or Ollama calls to event handlers.
+Do not add TTS. Sound responses only.
 
 ## Session Start Checklist — DO THIS FIRST, EVERY SESSION
 

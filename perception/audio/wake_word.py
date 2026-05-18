@@ -50,26 +50,9 @@ class OpenWakeWordDetector:
         self._label = ""
 
     def load(self) -> bool:
-        try:
-            import openwakeword
-
-            paths = openwakeword.get_pretrained_model_paths()
-            jarvis_path = next((p for p in paths if "hey_jarvis" in p), None)
-            if not jarvis_path:
-                log.warning("oww.no_jarvis_model")
-                return False
-
-            self._model = openwakeword.Model(
-                wakeword_model_paths=[jarvis_path],
-                vad_threshold=0,   # disable internal VAD gate — we gate via energy check
-            )
-            self._label = list(self._model.models.keys())[0]
-            self._available = True
-            log.info("oww.loaded", model=self._label, wake_word=OWW_WAKE_LABEL)
-            return True
-        except Exception as e:
-            log.warning("oww.load_failed", error=str(e)[:120])
-            return False
+        # OpenWakeWord removed in Phase A
+        log.info("oww.disabled", note="Wake word removed in Phase A")
+        return False
 
     def process_chunk(self, chunk: bytes) -> bool:
         """
@@ -116,36 +99,8 @@ class PorcupineDetector:
         self._partial: bytes = b""
 
     def load(self) -> bool:
-        access_key = os.environ.get("PICOVOICE_KEY", "").strip()
-        if not access_key:
-            return False
-        try:
-            import pvporcupine
-
-            if CUSTOM_PPM_PATH.exists():
-                self._porcupine = pvporcupine.create(
-                    access_key=access_key,
-                    keyword_paths=[str(CUSTOM_PPM_PATH)],
-                    sensitivities=[0.6],
-                )
-                self._keyword_label = "hey-cosmo (custom)"
-            else:
-                self._porcupine = pvporcupine.create(
-                    access_key=access_key,
-                    keywords=[FALLBACK_KEYWORD],
-                    sensitivities=[0.5],
-                )
-                self._keyword_label = FALLBACK_KEYWORD
-
-            self._frame_length = self._porcupine.frame_length
-            self._available = True
-            log.info("porcupine.loaded",
-                     keyword=self._keyword_label,
-                     frame_length=self._frame_length)
-            return True
-        except Exception as e:
-            log.warning("porcupine.load_failed", error=str(e)[:120])
-            return False
+        # Porcupine removed in Phase A
+        return False
 
     def process_chunk(self, chunk: bytes) -> bool:
         if not self._available or not self._porcupine:

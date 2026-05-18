@@ -169,44 +169,11 @@ class LLMInterface:
         messages = list(conversation_history or [])
         messages.append({"role": "user", "content": user_message})
 
-        t0 = time.monotonic()
-
-        # Primary: Claude Haiku (fast, great personality)
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if api_key:
-            try:
-                result = await self._call_claude(system_prompt, messages)
-                result["latency_ms"] = int((time.monotonic() - t0) * 1000)
-                telemetry.increment("llm.claude.calls")
-                return result
-            except Exception as e:
-                log.warning("llm.claude_error", error=str(e)[:300])
-
-        # Fallback: Ollama (offline)
-        if self._ollama_available is None:
-            self._ollama_available = await self._check_ollama()
-
-        if self._ollama_available:
-            try:
-                result = await asyncio.wait_for(
-                    self._call_ollama(system_prompt, messages),
-                    timeout=self.OLLAMA_TIMEOUT_S,
-                )
-                if result:
-                    result["latency_ms"] = int((time.monotonic() - t0) * 1000)
-                    telemetry.increment("llm.ollama.calls")
-                    return result
-            except asyncio.TimeoutError:
-                log.warning("llm.ollama_timeout")
-                self._ollama_available = None
-            except Exception as e:
-                log.warning("llm.ollama_error", error=str(e)[:80])
-                self._ollama_available = None
-
+        # LLM calls disabled in Phase A — Cosmo is reactive, not verbal.
         return {
-            "text": "Ayyo, my brain's not working right now da. Try again!",
-            "backend": "fallback",
-            "latency_ms": int((time.monotonic() - t0) * 1000),
+            "text": "",
+            "backend": "disabled",
+            "latency_ms": 0,
             "tokens": 0,
         }
 
@@ -312,43 +279,9 @@ class LLMInterface:
         messages = list(conversation_history or [])
         messages.append({"role": "user", "content": user_message})
 
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if not api_key:
-            result = await self.generate(user_message, conversation_history, context)
-            yield result["text"]
-            return
-
-        if self._anthropic_client is None:
-            import anthropic
-            self._anthropic_client = anthropic.AsyncAnthropic(api_key=api_key)
-
-        buffer = ""
-        try:
-            async with self._anthropic_client.messages.stream(
-                model=self._claude_model,
-                max_tokens=self.MAX_TOKENS,
-                system=system_prompt,
-                messages=messages,
-            ) as stream:
-                async for chunk in stream.text_stream:
-                    buffer += chunk
-                    parts = self._SENTENCE_SPLIT.split(buffer)
-                    for sentence in parts[:-1]:
-                        s = sentence.strip()
-                        if s:
-                            yield s
-                    buffer = parts[-1]
-
-            if buffer.strip():
-                yield buffer.strip()
-
-        except Exception as e:
-            log.warning("llm.stream_error", error=str(e)[:200])
-            if buffer.strip():
-                yield buffer.strip()
-            else:
-                result = await self.generate(user_message, conversation_history, context)
-                yield result["text"]
+        # Streaming disabled in Phase A
+        return
+        yield  # make this an async generator
 
     async def is_ollama_ready(self) -> bool:
         ready = await self._check_ollama()

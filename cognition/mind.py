@@ -17,7 +17,6 @@ from typing import List, Optional
 
 from core.event_bus import bus, Event, EventType
 from expression.eyes import EyeExpression, eye_engine
-from expression.speech import tts
 from hardware.motors import motor_controller
 from hardware.sensor_manager import sensor_manager
 from utils.logger import get_logger
@@ -104,7 +103,7 @@ class CosmoMind:
         self._last_spoke    = 0.0            # monotonic time of last Claude call
         self._last_dark_spoke = 0.0
         self._last_obstacle_spoke = 0.0
-        self._last_action   = 0.0
+        self._last_action   = time.monotonic()
         self._budget        = _DailyBudget(DAILY_TOKEN_LIMIT)
 
         # Rule-engine state
@@ -128,26 +127,8 @@ class CosmoMind:
     async def start(self) -> None:
         self._running = True
 
-        # Event-driven Claude triggers (person, emotion, touch)
-        @bus.on(EventType.FACE_RECOGNIZED)
-        async def _on_face(e: Event) -> None:
-            name = e.data.get("name", "?")
-            await self._maybe_speak("face_seen", name)
-
-        @bus.on(EventType.EMOTION_DETECTED)
-        async def _on_emotion(e: Event) -> None:
-            emotion = e.data.get("emotion", "neutral").lower()
-            if emotion in ("happy", "sad", "angry"):
-                from cognition.conversation import conversation
-                name = getattr(conversation, "_active_person_name", None) or "someone"
-                await self._maybe_speak(f"emotion_{emotion}", name)
-
-        @bus.on(EventType.TOUCH_DETECTED)
-        async def _on_touch(e: Event) -> None:
-            from cognition.conversation import conversation
-            name = getattr(conversation, "_active_person_name", None)
-            await self._maybe_speak("touched", name)
-
+        # Event-driven Claude triggers removed in Phase A.
+        # Rule loop (movement/expressions) remains active.
         self._task = asyncio.create_task(self._rule_loop())
 
     async def stop(self) -> None:
@@ -196,7 +177,7 @@ class CosmoMind:
             if not self._was_dark:
                 self._was_dark = True
                 eye_engine.set_expression(EyeExpression.SCARED, duration=5.0)
-                await self._maybe_speak("dark_room", None)
+                log.info("cosmo_mind.rule", action="dark_room")
             return
         self._was_dark = False
 
@@ -206,11 +187,11 @@ class CosmoMind:
                 self._obstacle_warn = True
                 eye_engine.set_expression(EyeExpression.SURPRISED, duration=2.0)
                 await motor_controller.stop()
-                await self._maybe_speak("obstacle", None)
+                log.info("cosmo_mind.rule", action="obstacle_stop", dist=dist)
             return
         self._obstacle_warn = False
 
-        # ── Been alone too long → wander + speak ──
+        # ── Been alone too long → wander ──
         if idle_s > 120 and not moving:
             try:
                 from behavior.navigation import navigation
@@ -221,9 +202,6 @@ class CosmoMind:
                     log.info("cosmo_mind.rule", action="wander", idle_s=idle_s)
             except Exception:
                 pass
-
-        if idle_s > 300:
-            await self._maybe_speak("alone_long", None)
 
         # ── Bright + clear → occasionally explore ──
         elif dist > 80 and idle_s > 60 and not moving and random.random() < 0.15:
@@ -356,9 +334,6 @@ Response rules:
 
         prompt_fn = _SPEAK_PROMPTS.get(trigger, lambda n: "[Say something short, in English.]")
         prompt = prompt_fn(name)
-        # Append emotion context to the prompt for richer situation-awareness
-        if emotion and trigger not in ("emotion_happy", "emotion_sad", "emotion_angry"):
-            prompt = f"{prompt} (They seem {emotion} right now.)"
 
         # Get person context for rich system prompt
         try:
@@ -368,6 +343,10 @@ Response rules:
         except Exception:
             person_id = None
             emotion   = None
+
+        # Append emotion context to the prompt for richer situation-awareness
+        if emotion and trigger not in ("emotion_happy", "emotion_sad", "emotion_angry"):
+            prompt = f"{prompt} (They seem {emotion} right now.)"
 
         if person_id:
             system_prompt = await self._build_rich_system_prompt(person_id, name, emotion)

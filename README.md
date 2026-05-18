@@ -186,57 +186,71 @@ The INMP441 outputs audio on the **left channel only** (right is silent). `mic.p
 ## Architecture
 
 ```
+Camera (30 FPS)
+  ├── YOLOv8n         person detection      (15 FPS)
+  ├── SFace           face recognition      ( 4 FPS, enrolled: Madhan, Indhu)
+  ├── DeepFace        emotion detection     ( 2 FPS, 7 classes)
+  └── OpenCV Gesture  hand gesture          ( 4 FPS, MediaPipe-ready)
+       ↓ events → event_bus (async pub/sub, priority queues)
+Behavior Tree (100ms tick, 52 nodes, py_trees)
+  reads:  personality state, blackboard (person/emotion/gesture/energy)
+  writes: sounds.play(), eye_engine.set_expression(), navigation.*
+  tree:   SAFETY → SLEEP_ACTIVE → WAKE_FROM_SLEEP → SOCIAL → AUTONOMOUS
+           SOCIAL: GESTURE → GREET(5min) → EMOTION_REACT(30s) → PERSON_PRESENT
+           AUTONOMOUS: ENTER_SLEEP → BORED_HIGH(3min) → BORED_MED(1min) → IDLE
+Personality Engine (continuous decay)
+  mood / energy / arousal / boredom → feeds BT blackboard
+
+Next to wire: INMP441 mic → Vosk keywords → BT COMMAND branch
+Next to wire: OLED eyes (SSD1306 × 2), sensors, motors
+
 perception/
   vision/
-    camera.py          — OpenCV camera capture
-    person.py          — YOLOv8n person detection
-    face.py            — DeepFace recognition (enrolled: Madhan, Indhu)
-    emotion.py         — DeepFace emotion detection (7 classes)
-    vision_loop.py     — orchestrates camera → detect → recognize → emit events
+    camera.py          — async frame buffer, Logitech C920 USB
+    person.py          — YOLOv8n person detection, HOG fallback
+    face.py            — SFace face recognition
+    emotion.py         — DeepFace emotion detection
+    gesture.py         — OpenCV skin+hull (MediaPipe Tasks API ready)
+    vision_loop.py     — orchestrates all vision loops
   audio/
-    mic.py             — microphone capture (C920 USB or INMP441 I2S)
-    wake_word.py       — OpenWakeWord (hey_jarvis)
-    vad.py             — voice activity detection
-    stt.py             — faster-whisper STT
-    pipeline.py        — full audio pipeline: wake → listen → transcribe → respond
+    pipeline.py        — STUB (STT removed Phase A)
+    wake_word.py       — STUB (wake word removed Phase A)
+    stt.py             — STUB (STT removed Phase A)
+    commands.py        — STUB (wire INMP441 + Vosk to activate)
 
 cognition/
-  mind.py              — two-tier brain (see Brain Logic section)
-  conversation.py      — manages active voice conversations (concurrency-safe lock)
-  llm.py               — Ollama-first, Claude Haiku fallback
-  intent.py            — offline command pattern matching
+  mind.py              — rule engine (wander/obstacle/dark), Claude speech disabled
+  llm.py               — STUB (LLM calls disabled Phase A)
+  conversation.py      — session tracking (no active listening)
 
 core/
-  event_bus.py         — async pub/sub, all inter-module communication
+  event_bus.py         — async pub/sub, priority queues, dead letter queue
+  behavior_tree.py     — py_trees BT, 52 nodes, 100ms tick, CosmoBlackboard
   personality.py       — mood/energy/arousal/attachment, decays over time
-  state_machine.py     — behavioral states: idle.calm → active → sleeping → exploring
+  state_machine.py     — state tracking (legacy, demoted)
   memory/
-    working.py         — short-term conversation history (RAM)
     episodic.py        — long-term memory (SQLite)
-    spatial.py         — room mapping (stubbed)
 
 behavior/
-  engine.py            — proactive speech behaviors (lonely, morning greeting, emotion change)
-  navigation.py        — wander, follow, approach_person, retreat, spin_360
+  engine.py            — idle behaviors, navigation triggers
+  navigation.py        — wander, approach, retreat, spin
 
 expression/
-  eyes.py              — terminal rendering + SSD1306 OLED driver (luma.oled)
-  speech.py            — Piper TTS → espeak-ng fallback → ffmpeg upsample → pw-play
-                         Pre-baked greeting lines at startup for zero-LLM-latency playback
-  sounds.py            — synthesized robot sounds (chirps, purrs, chimes)
+  eyes.py              — 12 expressions, terminal renderer (SSD1306 when wired)
+  sounds.py            — 22 numpy-generated sounds, priority interruption
+  speech.py            — STUB (TTS removed Phase A)
 
 hardware/
-  motors.py            — TB6612FNG driver + software PWM fallback
-  sensor_manager.py    — aggregates all sensors, returns mock values if unavailable
-  sensors/             — individual sensor drivers (BH1750, MPU6050, HC-SR04, etc.)
-  servos.py            — PCA9685 servo driver (stubbed, awaiting hardware)
+  motors.py            — TB6612FNG driver (mock until wired)
+  sensor_manager.py    — all sensors, mock values until wired
+  servos.py            — PCA9685 driver (mock until wired)
 
 tools/
-  cosmo_demo.py        — main demo/personality layer (event handlers, face greet, etc.)
-  sensor_monitor.py    — real-time developer dashboard
-  enroll_face.py       — face enrollment tool
-  audio_test.py        — interactive mic + speaker test (record/playback, level meter)
-  mic_compare.py       — side-by-side INMP441 vs C920 level/SNR comparison
+  cosmo_demo.py        — main entry point, event handlers, BT wiring
+  bt_test.py           — Phase C: 5 BT tests
+  gesture_test.py      — Phase D: 5 gesture tests
+  enroll_face.py       — face enrollment
+  sensor_monitor.py    — live sensor dashboard
 ```
 
 ---
