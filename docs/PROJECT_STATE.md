@@ -2,7 +2,7 @@
 
 > Updated at end of every session. Read at start of every session.  
 > Source of truth for sprint state.
-> Last updated: 2026-05-20
+> Last updated: 2026-05-20 (second session)
 
 ---
 
@@ -13,21 +13,31 @@
 
 ---
 
-## Session: 2026-05-20 — System Test + Disk Cleanup
+## Session: 2026-05-20 (2nd) — Codebase Audit + Brain Fixes
+
+### What happened this session
+- Full autonomous code review against all MD files
+- **KI-010 fixed**: Victory gesture false positives eliminated (per-gesture thresholds, VICTORY_HOLD_FRAMES=4, person-gating)
+- **mind.py rewritten**: Fixed `tts` NameError, added `_subscribe_events()` — Cosmo now has event-driven proactive speech (face_seen, emotion, touch, light, obstacle)
+- **cosmo_demo.py**: Fixed race condition in face event handler (`_approaching` flag), wired `sm.transition_to()` calls
+- **behavior_tree.py**: Added `audio_speaking` blackboard flag — gesture/idle sounds now gate when TTS is speaking
+- **motors.py + hardware.yaml**: Motor LEFT_TRIM/RIGHT_TRIM moved from hardcode to config
+- **API service**: Added `/sound/mute` and `/sound/unmute` debug endpoints
+
+## Session: 2026-05-20 (1st) — System Test + Disk Cleanup
 
 ### What happened this session
 - Full system test run: gesture detection, face recognition, person detection, audio
-- Added `/sound/mute` and `/sound/unmute` endpoints to debug API (`services/api/service.py`)
 - Muted sounds for 2h to test cleanly without constant bloop spam
 - **Disk alert: 92% full** → nuked 3.4GB of useless GPU packages (nvidia CUDA + triton) — Cosmo uses onnxruntime CPU, not CUDA
 - Cleared old rotated cosmo error logs (~70MB)
 - Disk now: 90%, 5.8GB free
 
-### Test results (2026-05-20)
+### Test results (2026-05-20 1st session)
 | Test | Result | Notes |
 |---|---|---|
 | Gesture: Open_Palm (wave) | ✅ Working | conf 0.82, latency 13–130ms |
-| Gesture: Victory (peace) | ⚠️ False positives | Fires every 3s even with no hand — KI-010 |
+| Gesture: Victory (peace) | ✅ Fixed (KI-010) | Per-gesture threshold 0.92 + 4-frame hold |
 | Person detection | ✅ Working | Tracked person for 125s, correctly lost when stepped away |
 | Face recognition | ⏳ Not triggered this session | No face rec log — person needs to be in frame at ≤80cm |
 | Emotion detection | ⏳ Not tested | Needs person in frame first |
@@ -108,9 +118,12 @@
 
 ## Notes for Next Session
 
-- Start with OLED wiring — biggest visual impact, everything is ready
-- Fix Victory false-positive spam (KI-010) before anything else — it's the source of the bloop noise
+- ✅ KI-010 Victory spam is FIXED — no more bloop noise
+- ✅ Proactive speech now wired — Cosmo will react to faces/emotions/touch/dark/obstacle
+- **pm2 restart cosmo_demo** to pick up brain + gesture fixes before testing
+- Start with OLED wiring — biggest visual impact, hardware is on desk
 - Enable sensors one at a time — watch pm2 logs between each
 - Do NOT touch motor driver until XT60 pigtail confirmed arrived
 - Run i2cdetect first thing to confirm current I2C bus state
 - **Disk is at 90%** — if it grows further, check `.robot/logs/` and `/home/pi/downloads/`
+- Test proactive speech: stand at ≤80cm from camera, verify `cosmo_mind.spoke` in logs

@@ -26,6 +26,7 @@ import time
 from typing import Optional, Tuple
 
 from core.event_bus import Event, EventPriority, EventType, bus
+from hardware.registry import hw_registry
 from utils.config import cfg
 from utils.logger import get_logger
 
@@ -146,8 +147,6 @@ class MotorController:
     Mock mode: logs actions. Real mode: drives GPIO.
     """
 
-    LEFT_TRIM  : float = 0.600
-    RIGHT_TRIM : float = 1.000
     RAMP_MS:    int   = 150
     WATCHDOG_MS: int  = 500
 
@@ -161,6 +160,9 @@ class MotorController:
         self._watchdog_task: Optional[asyncio.Task] = None
         self._safety_stop = False
         self._web_drive: bool = False
+        mc = cfg.hardware.motors
+        self.LEFT_TRIM  = float(getattr(mc, "left_trim",  0.600))
+        self.RIGHT_TRIM = float(getattr(mc, "right_trim", 1.000))
 
     async def initialize(self) -> bool:
         mc = cfg.hardware.motors
@@ -206,6 +208,11 @@ class MotorController:
 
         self._watchdog_task = asyncio.create_task(self._watchdog_loop())
         log.info("motors.initialized", mock=self._mock)
+        if self._mock:
+            hw_registry.report_mock("motors", reason="GPIO unavailable or sim=always",
+                                    mock_behavior="logs intended movement")
+        else:
+            hw_registry.report_real("motors")
         return True
 
     async def self_test(self) -> bool:

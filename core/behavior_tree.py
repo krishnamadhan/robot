@@ -54,6 +54,9 @@ class CosmoBlackboard:
     last_gesture:           str   = ""
     last_gesture_time:      float = 0.0
 
+    # Audio state (written by state_watcher in cosmo_demo.py)
+    audio_speaking:         bool  = False  # True while TTS is outputting — gate ambient sounds
+
     # Anti-spam state (written by action nodes)
     last_greeted:           Dict[str, float] = field(default_factory=dict)
     last_emotion_reacted:   str   = ""
@@ -170,6 +173,8 @@ class _GestureAction(_AsyncAction):
     _eye_expr:     str = "CURIOUS"
 
     def update(self) -> Status:
+        if bb.audio_speaking:
+            return Status.FAILURE
         from expression.eyes import EyeExpression, eye_engine
         from expression.sounds import sounds
 
@@ -273,9 +278,11 @@ class DoEngagePresence(_AsyncAction):
     _last_engage: float = 0.0
 
     def update(self) -> Status:
+        if bb.audio_speaking:
+            return Status.SUCCESS  # don't chirp over TTS
         now = time.monotonic()
         if now - DoEngagePresence._last_engage < ENGAGE_INTERVAL_S:
-            return Status.SUCCESS  # still engaging, no new action
+            return Status.SUCCESS
         DoEngagePresence._last_engage = now
 
         from expression.eyes import EyeExpression, eye_engine
@@ -349,6 +356,8 @@ class DoWanderExplore(_AsyncAction):
 
 class DoIdleSound(_AsyncAction):
     def update(self) -> Status:
+        if bb.audio_speaking:
+            return Status.SUCCESS
         now = time.monotonic()
         if now - bb.last_bored_sound_time < IDLE_SOUND_COOLDOWN:
             return Status.SUCCESS

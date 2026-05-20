@@ -102,16 +102,7 @@
 - **See:** docs/NEXT_SESSION.md for full step-by-step
 
 ### KI-010: Victory gesture fires as false positive every ~3 seconds
-- **Status:** Open — HIGH priority (causes constant bloop spam)
-- **Service:** perception/vision/gesture.py, core/behavior_tree.py
-- **Symptom:** `gesture.fired gesture=Victory conf=0.78` fires every 3s even when no hand is visible. This triggers `excited_trill` sound repeatedly — the "annoying bloops" reported by Madhan.
-- **Root cause:** opencv_skin backend is detecting skin-coloured blobs in the frame background and classifying them as Victory gesture at conf 0.78 threshold. Threshold too low — Victory requires higher confidence than wave.
-- **Workaround:** Mute sounds via `POST /sound/mute` during testing
-- **Fix path:**
-  1. Raise Victory confidence threshold from 0.78 → 0.88 in gesture.py
-  2. Add consecutive-frame debounce: gesture must appear in 2/3 consecutive frames before firing
-  3. OR: switch from opencv_skin to MediaPipe Hands for gesture backend (much more accurate)
-- **Priority:** Fix before next test session
+- **Status:** ✅ FIXED (2026-05-20) — moved to Fixed Issues below
 
 ### KI-011: Face recognition not triggering — person must be within ~80cm
 - **Status:** Open — low priority (by design, but should be documented)
@@ -126,7 +117,25 @@
 
 ## Fixed Issues
 
-*(move from Open to here when resolved, with fix date)*
+### KI-010: Victory gesture false positives (FIXED 2026-05-20)
+- **Root cause:** opencv_skin backend returns conf 0.78–0.80 for Victory on background blobs. Default threshold was too low.
+- **Fix applied (gesture.py):**
+  1. Added per-gesture `_GESTURE_THRESHOLDS` dict — Victory threshold set to 0.92 (above what opencv_skin ever returns for background blobs)
+  2. `VICTORY_HOLD_FRAMES = 4` — Victory now requires 4 consecutive matching frames
+  3. `_streaks: Dict[str, int]` replaces the old single `_wave_streak` counter — all gestures tracked independently
+  4. Person-gating in `_loop()`: if `cosmo_bb.person_visible == False`, skip all detection entirely (eliminates background false positives AND saves CPU)
+- **Fix applied (mind.py):**
+  - Added `from expression.speech import tts` import (was NameError crashing proactive speech)
+  - Added `_subscribe_events()` method with bus.on() handlers wired for all 5 trigger types
+  - Added per-trigger `_trigger_last` dict for independent cooldowns
+- **Fix applied (cosmo_demo.py):**
+  - Race condition in face event handler: replaced `_state["person_name"] == "no one"` guard with module-level `_approaching` flag + try/finally
+  - Wired `sm.transition_to()` calls on person_detected, face_recognized, person_lost, wake_word
+- **Fix applied (behavior_tree.py):**
+  - Added `audio_speaking: bool` to `CosmoBlackboard` — gated `_GestureAction`, `DoEngagePresence`, `DoIdleSound` to skip sounds while TTS is active
+- **Fix applied (motors.py + hardware.yaml):**
+  - `LEFT_TRIM` / `RIGHT_TRIM` moved from hardcoded class attributes to `config/hardware.yaml` under `motors.left_trim` / `motors.right_trim`
+  - `MotorController.__init__()` loads trim from config with safe fallback
 
 ---
 

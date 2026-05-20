@@ -32,7 +32,21 @@ GESTURE_INTERVAL    = 1.0 / GESTURE_FPS
 MIN_CONFIDENCE      = 0.75
 GESTURE_COOLDOWN_S  = 3.0
 WAVE_HOLD_FRAMES    = 2          # Open_Palm must appear this many consecutive frames
+VICTORY_HOLD_FRAMES = 4          # Peace sign needs more consecutive frames — reduces false positives
 SKIN_AREA_MIN       = 4000       # px² — ignore small blobs
+
+# Per-gesture confidence thresholds.
+# Victory is set to 0.92 — opencv_skin returns max 0.80 for it, so Victory
+# will never fire from the fallback backend (false-positive fix for KI-010).
+# It WILL fire correctly from MediaPipe when that wheel becomes available.
+_GESTURE_THRESHOLDS: Dict[str, float] = {
+    "Open_Palm":   0.75,
+    "Thumb_Up":    0.78,
+    "Victory":     0.92,   # effectively disables Victory on opencv_skin fallback
+    "Closed_Fist": 0.80,
+    "ILoveYou":    0.78,
+    "Pointing_Up": 0.78,
+}
 MODEL_PATH          = Path(__file__).parent.parent.parent / "models" / "gesture_recognizer.task"
 MODEL_URL           = (
     "https://storage.googleapis.com/mediapipe-models/"
@@ -207,8 +221,8 @@ class GestureLoop:
 
         # Per-gesture cooldown trackers
         self._last_fired: Dict[str, float] = {}
-        # Wave hold counter (requires WAVE_HOLD_FRAMES consecutive detections)
-        self._wave_streak = 0
+        # Consecutive-frame hold counters (indexed by gesture name)
+        self._streaks: Dict[str, int] = {}
 
         self._stats = {"frames": 0, "detections": 0, "fired": 0}
 
@@ -240,9 +254,16 @@ class GestureLoop:
 
     async def _loop(self) -> None:
         from perception.vision.camera import camera
+        from core.behavior_tree import bb as cosmo_bb
         while self._running:
             t0 = time.monotonic()
             try:
+                # Gate: skip expensive detection when no person is visible.
+                # This eliminates background skin-blob false positives and saves CPU.
+                if not cosmo_bb.person_visible:
+                    self._streaks.clear()
+                    await asyncio.sleep(GESTURE_INTERVAL)
+                    continue
                 frame = camera.latest_frame
                 if frame and not frame.is_stale(max_age_ms=500):
                     await self._process(frame.image, frame.timestamp)
@@ -262,21 +283,36 @@ class GestureLoop:
         detect_ts = time.monotonic()
         latency_ms = (detect_ts - frame_ts) * 1000
 
-        if name is None or conf < MIN_CONFIDENCE:
-            self._wave_streak = 0
+        # Apply per-gesture confidence threshold (higher for unreliable gestures)
+        gesture_threshold = _GESTURE_THRESHOLDS.get(name, MIN_CONFIDENCE) if name else MIN_CONFIDENCE
+        if name is None or conf < gesture_threshold:
+            # Reset streak for any gesture we didn't see this frame
+            if name:
+                self._streaks[name] = 0
+            else:
+                self._streaks.clear()
             return
 
         self._stats["detections"] += 1
         log.debug("gesture.raw", gesture=name, conf=round(conf, 3),
                   latency_ms=round(latency_ms, 1))
 
-        # Wave requires consecutive hold
+        # Consecutive-frame hold requirement (per gesture)
         if name == "Open_Palm":
-            self._wave_streak += 1
-            if self._wave_streak < WAVE_HOLD_FRAMES:
-                return
+            required = WAVE_HOLD_FRAMES
+        elif name == "Victory":
+            required = VICTORY_HOLD_FRAMES
         else:
-            self._wave_streak = 0
+            required = 1
+
+        self._streaks[name] = self._streaks.get(name, 0) + 1
+        # Reset streaks for other gestures so they don't accumulate silently
+        for other in list(self._streaks):
+            if other != name:
+                self._streaks[other] = 0
+
+        if self._streaks[name] < required:
+            return
 
         event_type = _GESTURE_MAP.get(name)
         if event_type is None:
@@ -287,6 +323,7 @@ class GestureLoop:
         if now - self._last_fired.get(name, 0.0) < GESTURE_COOLDOWN_S:
             return
         self._last_fired[name] = now
+        self._streaks[name] = 0   # reset after firing so it needs to build up again
         self._stats["fired"] += 1
 
         log.info("gesture.fired", gesture=name, conf=round(conf, 3),

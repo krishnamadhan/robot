@@ -13,19 +13,32 @@ i2c:
 
 motors:
   driver: TB6612FNG
-  # Left motor — CORRECTED to match actual wiring (Context Part 2 v2.0)
-  ain1: 17                # GPIO17 — left forward  (Pin 11)
-  ain2: 22                # GPIO22 — left backward (Pin 15)
-  pwm_a: 12               # GPIO12 — left PWM, hardware PWM0 (Pin 32) — moved from 18 to free I2S bus
-  # Right motor
-  bin1: 23                # GPIO23 — right forward (Pin 16)
-  bin2: 6                 # GPIO6  — right backward (Pin 31)
-  pwm_b: 13               # GPIO13 — right PWM, hardware PWM1 (Pin 33)
-  stby: 27                # GPIO27 — standby, active HIGH = enabled (Pin 13)
+  boards: 2               # two TB6612FNG boards, one per side
+  stby: 27                # GPIO27 — shared STBY, active HIGH = enabled (Pin 13)
   max_speed: 100          # % 0-100
   default_speed: 60       # % 0-100
-  ramp_ms: 200            # acceleration ramp in ms
+  ramp_ms: 150            # acceleration ramp in ms (was 200, tuned 2026-05-20)
   stall_detect_ms: 500    # ms without encoder change = stall
+  left_trim: 0.600        # scale factor to compensate left-motor drift (1.0 = no trim)
+  right_trim: 1.000       # scale factor for right motor
+  # Board 1 — LEFT side (Pin 32 = HW PWM0, Pin 33 = HW PWM1)
+  left_front:
+    ain1: 17              # GPIO17 (Pin 11)
+    ain2: 22              # GPIO22 (Pin 15)
+    pwm:  12              # GPIO12 (Pin 32) — HW PWM0
+  left_rear:
+    bin1: 23              # GPIO23 (Pin 16)
+    bin2: 6               # GPIO6  (Pin 31)
+    pwm:  13              # GPIO13 (Pin 33) — HW PWM1
+  # Board 2 — RIGHT side (freed I2S pins: GPIO18-21; GPIO25/26 taken from unconnected sensors)
+  right_front:
+    ain1: 20              # GPIO20 (Pin 38) — freed I2S DIN
+    ain2: 21              # GPIO21 (Pin 40) — freed I2S DOUT
+    pwm:  18              # GPIO18 (Pin 12) — HW PWM0 alt, freed I2S BCLK
+  right_rear:
+    bin1: 25              # GPIO25 (Pin 22) — reassigned from touch-belly (not yet wired)
+    bin2: 26              # GPIO26 (Pin 37) — reassigned from vibration  (not yet wired)
+    pwm:  19              # GPIO19 (Pin 35) — HW PWM1 alt, freed I2S LRCLK
 
 servos:
   driver: PCA9685
@@ -80,9 +93,8 @@ sensors:
     available: false       # set true when pin headers soldered and wired
 
   touch:
-    # CORRECTED: removed GPIO6 (=motor BIN2) and GPIO12 (=APDS9960 INT)
-    # New safe assignment: GPIO5, 25 (original), 4, 7 (all free)
-    pins: [5, 25, 4, 7]   # head=GPIO5, belly=GPIO25, left=GPIO4, right=GPIO7
+    # GPIO25 (belly) taken by right_rear BIN1 — reassign belly when wiring sensors
+    pins: [5, 4, 7]       # head=GPIO5, left=GPIO4, right=GPIO7 (belly TBD)
     available: false       # set true when wired
 
   cliff:
@@ -90,8 +102,8 @@ sensors:
     available: false       # set true when LLC soldered and wired
 
   vibration:
-    pin: 26                # GPIO26 — SW-420 via 10kΩ+10kΩ divider (Pin 37)
-    available: false       # set true when wired
+    pin: null              # GPIO26 taken by right_rear BIN2 — reassign when wiring sensors
+    available: false
 
   sound:
     pin: 11                # GPIO11 — KY-038 via 10kΩ+10kΩ divider (moved from 19 to free I2S)

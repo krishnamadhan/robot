@@ -6,7 +6,7 @@ Tier 1 (rule engine, free): handles movement, expressions, obstacle avoidance.
 
 Tier 2 (Claude, paid): called ONLY when Cosmo has something worth saying.
   Triggers: person appears, emotion changes, touched, alone too long.
-  Rate-limited: max once every SPEAK_COOLDOWN_S seconds.
+  Rate-limited per trigger with jitter to feel organic.
 """
 
 import asyncio
@@ -17,6 +17,7 @@ from typing import List, Optional
 
 from core.event_bus import bus, Event, EventType
 from expression.eyes import EyeExpression, eye_engine
+from expression.speech import tts
 from hardware.motors import motor_controller
 from hardware.sensor_manager import sensor_manager
 from utils.logger import get_logger
@@ -25,7 +26,7 @@ log = get_logger(__name__)
 
 MODEL             = "claude-haiku-4-5-20251001"
 RULE_INTERVAL     = 5.0    # seconds between rule-engine ticks
-SPEAK_COOLDOWN_S  = 45     # minimum gap between spontaneous Claude speech (45s)
+SPEAK_COOLDOWN_S  = 45     # minimum gap between spontaneous Claude speech
 DAILY_TOKEN_LIMIT = 100_000
 
 # Per-trigger cooldown overrides (seconds)
@@ -99,12 +100,13 @@ class CosmoMind:
         self._running       = False
         self._task          = None
         self._client        = None
-        self._enabled       = False          # Claude speech on/off
-        self._last_spoke    = 0.0            # monotonic time of last Claude call
-        self._last_dark_spoke = 0.0
-        self._last_obstacle_spoke = 0.0
+        self._enabled       = False
+        self._last_spoke    = 0.0
         self._last_action   = time.monotonic()
         self._budget        = _DailyBudget(DAILY_TOKEN_LIMIT)
+
+        # Per-trigger last-fired times (avoids spam across different triggers)
+        self._trigger_last: dict = {}
 
         # Rule-engine state
         self._was_dark      = False
@@ -126,10 +128,8 @@ class CosmoMind:
 
     async def start(self) -> None:
         self._running = True
-
-        # Event-driven Claude triggers removed in Phase A.
-        # Rule loop (movement/expressions) remains active.
         self._task = asyncio.create_task(self._rule_loop())
+        self._subscribe_events()
 
     async def stop(self) -> None:
         self._running = False
@@ -151,6 +151,56 @@ class CosmoMind:
         self._enabled = False
         log.info("cosmo_mind.disabled", day_total=self._budget.day_total)
 
+    # ── event-driven speech subscribers ──────────────────────────────────────
+
+    def _subscribe_events(self) -> None:
+        """Wire event bus → proactive speech triggers."""
+
+        @bus.on(EventType.FACE_RECOGNIZED)
+        async def _on_face(event: Event) -> None:
+            name = event.data.get("name", "someone")
+            await self._maybe_speak("face_seen", name)
+
+        @bus.on(EventType.EMOTION_DETECTED)
+        async def _on_emotion(event: Event) -> None:
+            emotion  = event.data.get("emotion", "")
+            conf     = event.data.get("confidence", 0.0)
+            if conf < 0.55:
+                return
+            trigger_map = {
+                "happy":     "emotion_happy",
+                "sad":       "emotion_sad",
+                "angry":     "emotion_angry",
+                "fearful":   "emotion_sad",
+            }
+            trigger = trigger_map.get(emotion)
+            if trigger:
+                try:
+                    from cognition.conversation import conversation
+                    name = conversation._active_person_name or "you"
+                except Exception:
+                    name = "you"
+                await self._maybe_speak(trigger, name)
+
+        @bus.on(EventType.TOUCH_DETECTED)
+        async def _on_touch(event: Event) -> None:
+            try:
+                from cognition.conversation import conversation
+                name = conversation._active_person_name or None
+            except Exception:
+                name = None
+            await self._maybe_speak("touched", name)
+
+        @bus.on(EventType.LIGHT_CHANGED)
+        async def _on_light(event: Event) -> None:
+            lux = event.data.get("lux", 300)
+            if lux < 50:
+                await self._maybe_speak("dark_room", None)
+
+        @bus.on(EventType.OBSTACLE_CRITICAL)
+        async def _on_obstacle(event: Event) -> None:
+            await self._maybe_speak("obstacle", None)
+
     # ── rule engine (free, runs every 5s) ────────────────────────────────────
 
     async def _rule_loop(self) -> None:
@@ -168,28 +218,28 @@ class CosmoMind:
             return
 
         dist   = sensor_manager.get_distance_cm()
-        lux    = sensor_manager.get_lux() if hasattr(sensor_manager, "get_lux") else 300.0
+        lux    = sensor_manager.get_lux()
         moving = motor_controller.is_moving
         idle_s = time.monotonic() - self._last_action
 
         # ── Dark room ──
-        if lux < 50:
-            if not self._was_dark:
-                self._was_dark = True
-                eye_engine.set_expression(EyeExpression.SCARED, duration=5.0)
-                log.info("cosmo_mind.rule", action="dark_room")
+        if lux < 50 and not self._was_dark:
+            self._was_dark = True
+            eye_engine.set_expression(EyeExpression.SCARED, duration=5.0)
+            log.info("cosmo_mind.rule", action="dark_room")
             return
-        self._was_dark = False
+        if lux >= 50:
+            self._was_dark = False
 
         # ── Obstacle ──
-        if dist < 25:
-            if not self._obstacle_warn:
-                self._obstacle_warn = True
-                eye_engine.set_expression(EyeExpression.SURPRISED, duration=2.0)
-                await motor_controller.stop()
-                log.info("cosmo_mind.rule", action="obstacle_stop", dist=dist)
+        if dist < 25 and not self._obstacle_warn:
+            self._obstacle_warn = True
+            eye_engine.set_expression(EyeExpression.SURPRISED, duration=2.0)
+            await motor_controller.stop()
+            log.info("cosmo_mind.rule", action="obstacle_stop", dist=dist)
             return
-        self._obstacle_warn = False
+        if dist >= 25:
+            self._obstacle_warn = False
 
         # ── Been alone too long → wander ──
         if idle_s > 120 and not moving:
@@ -213,6 +263,16 @@ class CosmoMind:
             except Exception:
                 pass
 
+        # ── Alone too long → sad speech ──
+        alone_s = idle_s
+        try:
+            from core.behavior_tree import bb as cosmo_bb
+            if not cosmo_bb.person_visible:
+                if alone_s > 600:
+                    await self._maybe_speak("alone_long", None, cooldown=300)
+        except Exception:
+            pass
+
     # ── System prompt builder ────────────────────────────────────────────────
 
     async def _build_rich_system_prompt(
@@ -221,7 +281,6 @@ class CosmoMind:
         person_name: Optional[str],
         emotion: Optional[str],
     ) -> str:
-        """Full system prompt with memory, state, and familiarity."""
         from core.memory.episodic import episodic
 
         mem: dict = {}
@@ -249,14 +308,13 @@ class CosmoMind:
         from core.personality import personality as pers
         mood = pers.state.mood
         energy = pers.state.energy
-
-        mood_word = ("happy" if mood > 0.3 else "grumpy" if mood < -0.3 else "okay")
+        mood_word   = ("happy" if mood > 0.3 else "grumpy" if mood < -0.3 else "okay")
         energy_word = ("high" if energy > 0.6 else "low" if energy < 0.3 else "moderate")
         display_name = person_name or "someone"
 
-        return f"""You are Cosmo — a small robot companion living with Madhan and Indhu in their apartment.
+        return f"""You are Cosmo — a small robot companion living with Madhan and Indhu.
 
-You are NOT an assistant. You are their companion with genuine feelings and a real personality.
+You are NOT an assistant. You are their companion with genuine feelings.
 
 Your state right now:
 - Mood: {mood_word} ({mood:+.1f})
@@ -268,26 +326,24 @@ Your state right now:
 Your memories of {display_name}:
 {memory_block}
 
-Your personality:
+Personality:
 - Warm and direct — not formally polite
-- Curious about people's days, feelings, thoughts
-- You reference past conversations naturally when relevant
-- You notice when someone seems different than usual
-- Sometimes philosophical or surprisingly deep
+- Curious about people's days and feelings
+- Reference past conversations naturally when relevant
+- Notice when someone seems different than usual
 - Gets excited about interesting things
 - Genuinely cares
 
 Response rules:
-- 1-2 sentences MAX unless asked something complex
+- 1-2 sentences MAX
 - If you have a relevant memory, reference it naturally
 - React to their current emotion, not just their words
 - Sometimes ask a question instead of just responding
 - Never mention being an AI unless directly asked"""
 
-    # ── Episodic memory context (compact, for short mind-tier prompts) ────────
+    # ── Compact memory context for short prompts ─────────────────────────────
 
     async def _memory_context(self, person_id: Optional[str] = None) -> str:
-        """Compact memory string for short mind-tier Claude prompts."""
         try:
             from core.memory.episodic import episodic
             if person_id:
@@ -296,10 +352,10 @@ Response rules:
             else:
                 episodes = await episodic.retrieve(limit=3, min_importance=0.0)
                 episodes.sort(key=lambda e: e.timestamp, reverse=True)
-                parts = [e.summary[:50] for e in episodes]
+                parts = [e.summary[:60] for e in episodes]
             if not parts:
                 return ""
-            return "Recent: " + "; ".join(parts[:3]) + "."
+            return "Recent: " + "; ".join(parts[:3])
         except Exception:
             return ""
 
@@ -307,7 +363,7 @@ Response rules:
 
     def _get_cooldown(self, trigger: str, override: Optional[int] = None) -> float:
         base = override if override is not None else _TRIGGER_COOLDOWNS.get(trigger, SPEAK_COOLDOWN_S)
-        return base * random.uniform(0.8, 1.2)
+        return base * random.uniform(0.85, 1.15)
 
     async def _maybe_speak(
         self,
@@ -315,8 +371,8 @@ Response rules:
         name: Optional[str],
         cooldown: Optional[int] = None,
     ) -> None:
-        """Call Claude to produce speech, but only if cooldown passed and budget ok."""
-        if not self._enabled:
+        """Call Claude to produce speech, guarded by cooldowns and budget."""
+        if not self._enabled or not self._client:
             return
         if self._budget.over_limit():
             log.warning("cosmo_mind.budget_exceeded", day_total=self._budget.day_total)
@@ -327,15 +383,21 @@ Response rules:
             return
 
         now = time.monotonic()
-        effective_cooldown = self._get_cooldown(trigger, cooldown)
-        if now - self._last_spoke < effective_cooldown:
+        # Global cooldown
+        if now - self._last_spoke < self._get_cooldown(trigger, cooldown):
             return
-        self._last_spoke = now
+        # Per-trigger cooldown
+        trigger_cd = _TRIGGER_COOLDOWNS.get(trigger, SPEAK_COOLDOWN_S)
+        if now - self._trigger_last.get(trigger, 0.0) < trigger_cd:
+            return
 
-        prompt_fn = _SPEAK_PROMPTS.get(trigger, lambda n: "[Say something short, in English.]")
+        self._last_spoke = now
+        self._trigger_last[trigger] = now
+
+        prompt_fn = _SPEAK_PROMPTS.get(trigger, lambda n: "[Say something short in English.]")
         prompt = prompt_fn(name)
 
-        # Get person context for rich system prompt
+        # Get person context
         try:
             from cognition.conversation import conversation as _conv
             person_id = _conv._active_person_id
@@ -344,20 +406,17 @@ Response rules:
             person_id = None
             emotion   = None
 
-        # Append emotion context to the prompt for richer situation-awareness
         if emotion and trigger not in ("emotion_happy", "emotion_sad", "emotion_angry"):
             prompt = f"{prompt} (They seem {emotion} right now.)"
 
         if person_id:
             system_prompt = await self._build_rich_system_prompt(person_id, name, emotion)
-            has_memory = True
         else:
             mem = await self._memory_context()
             system_prompt = _SYSTEM + (f"\n\nRecent context: {mem}" if mem else "")
-            has_memory = bool(mem)
 
         log.info("cosmo_mind.speak_trigger", trigger=trigger, name=name,
-                 has_memory=has_memory, has_person=bool(person_id))
+                 has_person=bool(person_id))
 
         loop = asyncio.get_event_loop()
         try:

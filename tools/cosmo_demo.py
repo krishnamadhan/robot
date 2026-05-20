@@ -160,21 +160,30 @@ def _load_person_config() -> dict:
 
 _KNOWN_PERSONS = _load_person_config()
 
+_approaching = False   # guard against concurrent face-and-approach tasks
+
 
 async def _face_and_approach(person_x: float) -> None:
     """Turn to face person then nudge forward — feels alive."""
-    DEAD = 0.2
-    tasks = []
-    if person_x < -DEAD:
-        tasks.append(navigation.turn_left(speed=0.35, duration=abs(person_x) * 0.5))
-    elif person_x > DEAD:
-        tasks.append(navigation.turn_right(speed=0.35, duration=person_x * 0.5))
-    eye_engine.set_expression(EyeExpression.CURIOUS, duration=2.0)
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
-    await asyncio.sleep(0.3)
-    if _state["distance_cm"] > 80:
-        await navigation.forward(speed=0.25, duration=0.6)
+    global _approaching
+    if _approaching:
+        return
+    _approaching = True
+    try:
+        DEAD = 0.2
+        tasks = []
+        if person_x < -DEAD:
+            tasks.append(navigation.turn_left(speed=0.35, duration=abs(person_x) * 0.5))
+        elif person_x > DEAD:
+            tasks.append(navigation.turn_right(speed=0.35, duration=person_x * 0.5))
+        eye_engine.set_expression(EyeExpression.CURIOUS, duration=2.0)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.sleep(0.3)
+        if _state["distance_cm"] > 80:
+            await navigation.forward(speed=0.25, duration=0.6)
+    finally:
+        _approaching = False
 
 
 async def setup_event_handlers() -> None:
@@ -191,10 +200,10 @@ async def setup_event_handlers() -> None:
             await navigation.stop()
             await sounds.play("chirp_curious")
 
-        # Turn to face + approach (don't block if already handling a face)
-        if _state["person_name"] == "no one":
-            asyncio.create_task(_face_and_approach(person_x))
+        # Turn to face + approach (_approaching flag prevents concurrent tasks)
+        asyncio.create_task(_face_and_approach(person_x))
 
+        await sm.transition_to(RobotState.ALERT_PERSON, trigger="person_detected")
         _state["events"].append(f"Person @ x={person_x:.2f}")
 
     @bus.on(EventType.FACE_RECOGNIZED)
@@ -212,6 +221,7 @@ async def setup_event_handlers() -> None:
         _state["events"].append(f"Face: {name} ({conf:.0%})")
 
         audio_pipeline.update_person(person_id, _state.get("last_emotion") or None)
+        await sm.transition_to(RobotState.INTERACTIVE, trigger="face_recognized")
 
         if name not in _state["greeted"]:
             _state["greeted"].add(name)
@@ -252,6 +262,7 @@ async def setup_event_handlers() -> None:
         audio_pipeline.update_person(None)
         if conversation.in_conversation:
             await conversation.end_session()
+        await sm.transition_to(RobotState.IDLE_CURIOUS, trigger="person_lost")
         # Look around for them
         eye_engine.set_expression(EyeExpression.CURIOUS, duration=3.0)
         eye_engine.set_pupil(-0.8, 0)
@@ -292,6 +303,7 @@ async def setup_event_handlers() -> None:
         _state["events"].append(f"Wake: '{event.data.get('word', '?')}'")
         eye_engine.set_expression(EyeExpression.CURIOUS, duration=3.0)
         await sounds.play("beep_ack")
+        await sm.transition_to(RobotState.LISTENING, trigger="wake_word")
 
     @bus.on(EventType.USER_INTENT)
     async def on_intent(event: Event) -> None:
@@ -447,6 +459,7 @@ async def state_watcher() -> None:
         _state["servo_pan"]   = servo_controller.current_pan
         _state["servo_tilt"]  = servo_controller.current_tilt
         _state["sensor_mock"] = sensor_manager.is_mock
+        cosmo_bb.audio_speaking = (audio_pipeline.state.value == "speaking")
         try:
             bat = sensor_manager.get_battery()
             _state["battery_pct"] = bat.get("percent", 85.0)
