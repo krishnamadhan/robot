@@ -420,6 +420,23 @@ async def alone_watcher() -> None:
                 asyncio.create_task(sounds.play("whimper_lonely"))
 
 
+async def memory_maintenance_loop() -> None:
+    """Run episodic forgetting curve once per day at 03:00."""
+    import datetime as _dt
+    _last_run_day = -1
+    while True:
+        await asyncio.sleep(300)  # check every 5 min
+        now = _dt.datetime.now()
+        today = now.date().toordinal()
+        if now.hour == 3 and _last_run_day != today:
+            _last_run_day = today
+            try:
+                count = await episodic.apply_forgetting_curve()
+                log.info("episodic.forgetting_curve_applied", decayed=count)
+            except Exception as e:
+                log.warning("episodic.forgetting_curve_error", error=str(e)[:80])
+
+
 async def state_watcher() -> None:
     while True:
         _state["mood"]        = personality.state.mood
@@ -547,6 +564,7 @@ async def main() -> None:
     console.print(f'[dim]📹 Live stream: {stream_server.best_url()}[/dim]\n')
 
     asyncio.create_task(state_watcher())
+    asyncio.create_task(memory_maintenance_loop())
 
     _shutdown = asyncio.Event()
     loop = asyncio.get_event_loop()

@@ -9,8 +9,9 @@ module.exports = {
       watch: false,
       autorestart: true,
       restart_delay: 5000,
+      exp_backoff_restart_delay: 100,
       max_restarts: 20,
-      max_memory_restart: '3000M',
+      max_memory_restart: '1200M',
       kill_timeout: 5000,
       env: {
         PYTHONPATH: '/home/pi/robot',
@@ -28,8 +29,10 @@ module.exports = {
         SOUND_DEVICE: 'default',
       },
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
-      error_file: '/home/pi/.robot/logs/cosmo-error.log',
+      // stderr goes to /dev/null — ALSA/Jack/BlueALSA noise fills GB overnight otherwise
+      error_file: '/dev/null',
       out_file: '/home/pi/.robot/logs/cosmo-out.log',
+      merge_logs: false,
     },
   ]
 };

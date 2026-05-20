@@ -115,6 +115,31 @@ Verify after wiring:
   Should show BOTH 0x3C and 0x3D
 ```
 
+## ⚠️ GPIO14/15 UART Conflict — Read Before Wiring Cliff Sensors
+
+`/boot/firmware/cmdline.txt` contains `console=serial0,115200` which assigns the Pi's UART serial console to GPIO14 (TX) and GPIO15 (RX).
+
+**This conflicts with cliff sensors planned for GPIO14/15.**
+
+Before wiring cliff sensors, choose one:
+
+**Option A — Free GPIO14/15 (recommended if you don't use serial console for debugging):**
+```bash
+# Edit /boot/firmware/cmdline.txt
+# Remove: console=serial0,115200
+# Keep: console=tty1
+sudo reboot
+# Verify: GPIO14/15 are now free digital I/O
+```
+
+**Option B — Move cliff sensors to different pins:**
+- Update `config/hardware.yaml` cliff pins to e.g. `[9, 10]` (SPI pins, free if SPI not used)
+- Update LLC wiring accordingly
+
+Do not edit cmdline.txt without reading the full line first — one wrong edit and the Pi won't boot.
+
+---
+
 ## /boot/firmware/config.txt required entry
 
 ```
