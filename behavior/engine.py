@@ -104,6 +104,7 @@ class BehaviorEngine:
         self._last_curiosity: float = 0.0
         self._last_memory_ref: float = 0.0
         self._last_ambient_act: float = 0.0
+        self._last_proactive_spoke: float = 0.0
 
         # ── Idle behaviors ────────────────────────────────────────────────────
         self._behaviors: List[Behavior] = [
@@ -163,10 +164,11 @@ class BehaviorEngine:
                     "Good morning! Did you sleep well?",
                     "Morning! New day, let's make it a good one.",
                     "Oh good, you're up! I've been waiting.",
+                    "Ayyo {name}! Morning! I just woke up too.",
                 ],
                 condition=lambda: (
                     self._current_person is not None
-                    and 6 <= (time.time() % 86400 / 3600) <= 10
+                    and 7 <= (time.time() % 86400 / 3600) <= 10
                 ),
             ),
             ProactiveTrigger(
@@ -229,9 +231,35 @@ class BehaviorEngine:
 
     # ── Idle behavior loop ────────────────────────────────────────────────────
 
+    @staticmethod
+    def _is_sleep_hours() -> bool:
+        """True between midnight and 7am — Cosmo stays silent."""
+        import datetime
+        hour = datetime.datetime.now().hour
+        return 0 <= hour < 7
+
+    @staticmethod
+    def _is_wind_down() -> bool:
+        """True between 11pm and midnight — Cosmo winds down."""
+        import datetime
+        hour = datetime.datetime.now().hour
+        return hour == 23
+
     async def _idle_loop(self) -> None:
+        _was_sleeping = self._is_sleep_hours()
         while self._running:
             await asyncio.sleep(self.IDLE_CHECK_INTERVAL + random.uniform(-1, 1))
+
+            currently_sleeping = self._is_sleep_hours()
+            if currently_sleeping:
+                _was_sleeping = True
+                continue  # silent during sleep hours
+
+            # Just woke up — play chirp once
+            if _was_sleeping and not currently_sleeping:
+                _was_sleeping = False
+                asyncio.create_task(sounds.play("chirp_happy"))
+                eye_engine.set_expression(EyeExpression.EXCITED, duration=3.0)
 
             if self._current_person:  # don't wander when interacting
                 continue
@@ -263,8 +291,30 @@ class BehaviorEngine:
     # ── Proactive trigger loop ────────────────────────────────────────────────
 
     async def _trigger_loop(self) -> None:
+        _slept_tonight = False   # fired "going to sleep" once per night
         while self._running:
             await asyncio.sleep(10)
+
+            if self._is_sleep_hours():
+                _slept_tonight = False   # reset for next night
+                continue
+
+            # Wind-down behavior — say good night once per night
+            if self._is_wind_down() and not _slept_tonight:
+                if not tts.is_speaking:
+                    _slept_tonight = True
+                    asyncio.create_task(tts.speak(random.choice([
+                        "Getting sleepy... night everyone.",
+                        "It's late. I'm going to rest. Good night!",
+                        "Yawning... time for this robot to sleep.",
+                    ])))
+                    eye_engine.set_expression(EyeExpression.SLEEPY, duration=10.0)
+                continue
+
+            # Global cooldown — prevent multiple triggers firing back-to-back
+            if time.monotonic() - self._last_proactive_spoke < 60:
+                continue
+
             for trigger in self._triggers:
                 if not trigger.is_ready() or not trigger.condition():
                     continue
@@ -278,6 +328,7 @@ class BehaviorEngine:
                 phrase = trigger.pick_phrase(display_name)
                 log.info("behavior.proactive", trigger=trigger.name,
                          phrase=phrase[:40])
+                self._last_proactive_spoke = time.monotonic()
                 try:
                     mood_before = personality.state.mood
                     await tts.speak(phrase)
@@ -294,6 +345,7 @@ class BehaviorEngine:
                         pass
                 except Exception as e:
                     log.warning("behavior.speak_error", error=str(e)[:60])
+                break  # one trigger per cycle
 
     # ── Ambient awareness loop ────────────────────────────────────────────────
 
@@ -301,10 +353,11 @@ class BehaviorEngine:
         """Every 30s, assess the situation and potentially act without prompting."""
         await asyncio.sleep(30)
         while self._running:
-            try:
-                await self._ambient_tick()
-            except Exception as e:
-                log.warning("behavior.ambient_error", error=str(e)[:100])
+            if not self._is_sleep_hours():
+                try:
+                    await self._ambient_tick()
+                except Exception as e:
+                    log.warning("behavior.ambient_error", error=str(e)[:100])
             await asyncio.sleep(self._AMBIENT_TICK_S)
 
     async def _ambient_tick(self) -> None:
@@ -322,7 +375,7 @@ class BehaviorEngine:
         if self._current_person:
             await self._curiosity_tick(now)
         # Alone: wonder aloud occasionally
-        elif now - self._no_person_since > 1200 and random.random() < 0.2:
+        elif now - self._no_person_since > 1200 and random.random() < 0.025:
             await self._wonder_aloud()
 
     async def _curiosity_tick(self, now: float) -> None:

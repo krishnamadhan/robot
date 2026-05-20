@@ -31,7 +31,7 @@ ENERGY_THRESHOLD    = 500
 COOLDOWN_S          = 1.5
 CUSTOM_PPM_PATH     = Path.home() / ".robot/models/porcupine/hey-cosmo.ppn"
 FALLBACK_KEYWORD    = "computer"
-OWW_THRESHOLD       = 0.3   # confidence threshold for OWW detection
+OWW_THRESHOLD       = 0.65  # confidence threshold for OWW detection
 OWW_WAKE_LABEL      = "hey jarvis"
 
 
@@ -50,24 +50,31 @@ class OpenWakeWordDetector:
         self._label = ""
 
     def load(self) -> bool:
-        # OpenWakeWord removed in Phase A
-        log.info("oww.disabled", note="Wake word removed in Phase A")
-        return False
+        try:
+            from openwakeword.model import Model as OWWModel
+            # 0.4.0 API: Model() with no args loads bundled models
+            # (alexa, hey_mycroft, hey_jarvis, timer, weather)
+            self._model = OWWModel()
+            self._available = True
+            self._label = "hey_jarvis"
+            log.info("oww.loaded", keyword=self._label,
+                     models=list(self._model.models.keys()))
+            return True
+        except Exception as e:
+            log.warning("oww.load_failed", error=str(e)[:80])
+            return False
 
     def process_chunk(self, chunk: bytes) -> bool:
-        """
-        Feed a raw mic chunk (bytes, int16 mono 16kHz).
-        Returns True if wake word detected.
-        """
+        """Feed a raw mic chunk (int16 mono 16kHz). Returns True if wake word detected."""
         if not self._available or not self._model:
             return False
         try:
             audio = np.frombuffer(chunk, dtype=np.int16)
             scores = self._model.predict(audio)
-            score = max(scores.values(), default=0.0)
+            score = float(scores.get(self._label, 0.0))
             if score > 0.15:
-                log.info("oww.score", score=round(score, 3),
-                         triggered=score >= OWW_THRESHOLD)
+                log.debug("oww.score", score=round(score, 3),
+                          triggered=score >= OWW_THRESHOLD)
             return score >= OWW_THRESHOLD
         except Exception as e:
             log.warning("oww.predict_error", error=str(e)[:80])
@@ -99,8 +106,33 @@ class PorcupineDetector:
         self._partial: bytes = b""
 
     def load(self) -> bool:
-        # Porcupine removed in Phase A
-        return False
+        key = os.environ.get("PICOVOICE_KEY", "").strip()
+        if not key:
+            log.info("porcupine.skipped", reason="PICOVOICE_KEY not set")
+            return False
+        try:
+            import pvporcupine
+            # Use custom model if present, else fall back to built-in keyword
+            if CUSTOM_PPM_PATH.exists():
+                self._porcupine = pvporcupine.create(
+                    access_key=key,
+                    keyword_paths=[str(CUSTOM_PPM_PATH)],
+                )
+                self._keyword_label = "hey cosmo"
+            else:
+                self._porcupine = pvporcupine.create(
+                    access_key=key,
+                    keywords=[FALLBACK_KEYWORD],
+                )
+                self._keyword_label = FALLBACK_KEYWORD
+            self._frame_length = self._porcupine.frame_length
+            self._available = True
+            log.info("porcupine.loaded", keyword=self._keyword_label,
+                     frame_length=self._frame_length)
+            return True
+        except Exception as e:
+            log.warning("porcupine.load_failed", error=str(e)[:80])
+            return False
 
     def process_chunk(self, chunk: bytes) -> bool:
         if not self._available or not self._porcupine:

@@ -15,6 +15,7 @@ Ctrl+C to exit.
 
 import asyncio
 import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -53,7 +54,6 @@ from expression.sounds import sounds
 from hardware.motors import motor_controller
 from hardware.sensor_manager import sensor_manager
 from hardware.servos import servo_controller
-from perception.audio.commands import VoiceCommandListener
 from perception.audio.pipeline import audio_pipeline
 from perception.video.stream_server import stream_server
 from perception.vision.camera import camera
@@ -447,7 +447,12 @@ async def main() -> None:
     await personality.start()
     await sm.start(RobotState.IDLE_CALM)
 
-    console.print("[yellow]⚠ LLM disabled (Phase A — reactive mode)[/yellow]")
+    import os as _os
+    _llm_key = _os.environ.get("ANTHROPIC_API_KEY", "")
+    if _llm_key:
+        console.print("[green]✓ LLM — Claude Haiku (primary)[/green]")
+    else:
+        console.print("[yellow]⚠ LLM — ANTHROPIC_API_KEY not set, set it in robot/.env[/yellow]")
 
     # Camera + vision
     if not await camera.start():
@@ -511,12 +516,21 @@ async def main() -> None:
     await gesture_loop.start()
     console.print(f"[green]✓ Gesture loop ({gesture_loop.backend} @ {4}fps)[/green]")
 
-    _voice_commands = VoiceCommandListener()
-    await _voice_commands.start()
-    console.print("[dim]⚠ Voice commands stub (wire INMP441 to activate)[/dim]")
+    if await audio_pipeline.start():
+        console.print(f"[green]✓ Audio pipeline — wake={audio_pipeline._wake_backend}[/green]")
+    else:
+        console.print("[yellow]⚠ Audio pipeline — no mic (C920 not found?)[/yellow]")
 
     await setup_event_handlers()
     asyncio.create_task(alone_watcher())
+
+    # WhatsApp notifier — hardware events + decision logs → BanterAgent group
+    try:
+        from services.notifier import start as notifier_start
+        await notifier_start()
+        console.print("[green]✓ WhatsApp notifier (hardware events + decisions)[/green]")
+    except Exception as e:
+        console.print(f"[yellow]⚠ WhatsApp notifier failed: {e}[/yellow]")
 
     # Debug HTTP API — GET /state, /memory/recent, /health, POST /trigger/describe
     try:
@@ -534,9 +548,13 @@ async def main() -> None:
 
     asyncio.create_task(state_watcher())
 
+    _shutdown = asyncio.Event()
+    loop = asyncio.get_event_loop()
+    loop.add_signal_handler(signal.SIGTERM, _shutdown.set)
+
     try:
         with Live(console=console, refresh_per_second=3, transient=True) as live:
-            while True:
+            while not _shutdown.is_set():
                 live.update(_build_panel())
                 await asyncio.sleep(0.33)
     except (KeyboardInterrupt, asyncio.CancelledError):

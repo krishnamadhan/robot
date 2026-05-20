@@ -173,6 +173,15 @@ class ConversationManager:
         person_id: Optional[str] = None,
         speak: bool = True,
     ) -> Dict[str, Any]:
+        # Budget guard — audio pipeline bypasses mind.py directly; check here
+        try:
+            from cognition.mind import cosmo_mind
+            if cosmo_mind._budget.over_limit():
+                log.warning("conversation.budget_exceeded")
+                return {"text": "", "backend": "budget_exceeded", "latency_ms": 0}
+        except Exception:
+            pass
+
         pid = person_id or self._active_person_id
         pname = self._active_person_name
         self._mood_before_respond = personality.state.mood

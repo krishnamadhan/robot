@@ -68,6 +68,8 @@ class EpisodicMemory:
     def _create_schema(self) -> None:
         c = self._conn.cursor()
         c.executescript("""
+        PRAGMA journal_mode=WAL;
+
         CREATE TABLE IF NOT EXISTS episodes (
             id TEXT PRIMARY KEY,
             timestamp REAL NOT NULL,
