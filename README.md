@@ -26,6 +26,59 @@ Voice commands: say `"mind off"` to disable Claude / `"mind on"` to re-enable.
 
 ## Hardware — Full Inventory
 
+### Complete Component List
+
+| # | Component | Model/Part | Qty | Source | Status |
+|---|---|---|---|---|---|
+| 1 | Single Board Computer | Raspberry Pi 5 8GB | 1 | — | ✅ Running |
+| 2 | UPS / Battery HAT | DFRobot FIT0992 (4× 18650, pogo pins) | 1 | — | ✅ Active |
+| 3 | Camera + Mic | Logitech C920 HD Pro Webcam | 1 | — | ✅ Active |
+| 4 | Speaker | JBL Flip 5 Bluetooth | 1 | — | ✅ Paired |
+| 5 | CPU Cooler | Official Raspberry Pi 5 Active Cooler | 1 | — | ✅ Fitted |
+| 6 | Motor Driver | TB6612FNG (dual H-bridge) | 1 | — | ⚠️ Mock mode |
+| 7 | Distance Sensor | HC-SR04 Ultrasonic | 1 | — | ⚠️ Mock mode |
+| 8 | Light Sensor | BH1750 (I2C, 0x23) | 1 | — | ⚠️ Wired, not enabled |
+| 9 | IMU | MPU-6050 (I2C, 0x68) | 1 | — | ⚠️ Wired, not enabled |
+| 10 | PIR Motion | HC-SR501 | 1 | — | ⚠️ Wired, not enabled |
+| 11 | Touch Sensors | TTP223 capacitive | 4 | — | ⚠️ Wired, not enabled |
+| 12 | OLED Eyes | SSD1306 128×64 (I2C) | 2 | — | ⚠️ Not wired yet |
+| 13 | Gesture/Proximity | APDS-9960 (I2C, 0x39) | 1 | Robocraze | ❌ Faulty, replacement ordered |
+| 14 | Sound Sensor | KY-038 | 1 | — | ⚠️ Not enabled |
+| 15 | Vibration Sensor | SW-420 | 1 | — | ⚠️ Not enabled |
+| 16 | Cliff Sensors | TCRT5000 | 2 | — | ⚠️ In parcel |
+| 17 | Logic Level Converter | 4-channel bidirectional | 1 | — | ✅ Wired |
+| 18 | Servo Driver | PCA9685 16-channel (I2C, 0x40) | 1 | — | ⏳ Not wired (Phase 3) |
+| 19 | Pan-Tilt Servos | MG90S metal gear | 3 | Robocraze | ⏳ On order |
+| 20 | Pan-Tilt Bracket | Camera servo mount | 1 | Robocraze | ⏳ On order |
+| 21 | Motor LiPo | Pro-Range 7.4V 2200mAh 2S LiPo | 1 | — | ⚠️ Has battery, XT60 pigtail on order |
+| 22 | DC Power Adapter | FEDUS 12V 3A (5.5×2.1mm barrel) | 1 | — | ✅ UPS charging |
+| 23 | Robot Chassis | 4WD TT gear motor chassis | 1 | — | ✅ Assembled |
+
+### Passive Components (Protection Circuits)
+
+> These MUST be installed before connecting LiPo to motors. Skipping caused the last TB6612FNG burnout.
+
+| Component | Value | Qty | Location | Purpose |
+|---|---|---|---|---|
+| Electrolytic capacitor | 470µF 16V | 2 | TB6612FNG VM pin → GND | Bulk decoupling — absorbs motor back-EMF spikes |
+| Ceramic capacitor | 100nF (0.1µF) | 4 | TB6612FNG VM + VCC pins → GND | High-frequency noise bypass |
+| Ceramic capacitor | 100nF (0.1µF) | 4 | Per motor terminal pair → GND | Motor terminal back-EMF snubber |
+| Resettable polyfuse | 3A | 1 | In series with VM (battery→TB6612FNG) | Short-circuit protection — resets after cooling |
+| Resistor | 10kΩ | 4 | Voltage dividers (KY-038, SW-420) | Drops 5V sensor output → 2.5V for Pi GPIO |
+| Pull-up resistor | 4.7kΩ | 2 | I2C SDA + SCL (if bus errors) | I2C line pull-ups (most breakouts have these built in) |
+
+**Voltage divider wiring (for 5V sensors → 3.3V GPIO):**
+```
+Sensor DO (5V) ──── 10kΩ ──┬──── GPIO pin (2.5V safe)
+                            │
+                           10kΩ
+                            │
+                           GND
+```
+Used for: KY-038 Sound (GPIO11), SW-420 Vibration (GPIO26).
+
+**Capacitor placement rule:** As close to the TB6612FNG VM pin as physically possible (<1cm). Longer traces reduce effectiveness.
+
 ### Raspberry Pi 5 (8GB)
 - Raspberry Pi OS 64-bit (bookworm)
 - **BCM GPIO numbering throughout** (not physical pin numbers)
@@ -341,28 +394,29 @@ Currently using `hey_jarvis`. Custom `hey_cosmo` model can be trained free at `c
 
 ---
 
-## Known Working Features (as of 2026-05-16)
+## Known Working Features (as of 2026-05-20)
 
-- [x] Face recognition: Madhan + Indhu (~85% / ~75% confidence)
-- [x] Emotion detection: 7 emotions from camera
+- [x] Face recognition: Madhan + Indhu (~85–97% / ~75% confidence)
+- [x] Person detection: YOLOv8n, 32 FPS — tracks, names, loses correctly
+- [x] Emotion detection: 7 emotions from camera (DeepFace)
+- [x] Gesture detection: wave, peace, thumbs up, fist, love, point (opencv_skin backend)
 - [x] Wake word: "Hey Jarvis" triggers conversation
-- [x] Voice conversation: speak → Whisper STT → Ollama → Piper TTS → JBL
-- [x] Spontaneous speech when person detected (Claude, rate-limited)
+- [x] Voice conversation: speak → Whisper STT → Claude Haiku → Piper TTS → JBL
+- [x] Spontaneous speech when person detected (Claude, rate-limited, 100K/day hard limit)
 - [x] Pre-baked greeting lines — zero-latency, no API call
-- [x] Autonomous wandering when idle
-- [x] Obstacle stop (mocked)
-- [x] Touch reactions (capacitive pads wired and software enabled)
-- [x] Eye expressions (terminal rendering, OLED driver ready)
-- [x] Motor drive with software PWM
-- [x] Battery monitoring via UPS HAT
-- [x] Light sensing via BH1750
+- [x] Autonomous wandering when idle (mocked navigation)
+- [x] Eye expressions: 12 types, terminal rendering (OLED driver ready, wire needed)
+- [x] 22 numpy-generated sounds with priority interruption queue
+- [x] Behavior Tree: 52 nodes, 100ms tick, py_trees
+- [x] Personality engine: mood/energy/arousal/attachment decay (continuous)
+- [x] Episodic memory: SQLite — stores every conversation
+- [x] Battery monitoring: UPS HAT at I2C 0x36, 94%+ today
 - [x] Live camera stream: `http://100.101.250.126:8080`
-- [x] Intent parser: 15+ voice commands without LLM
-- [x] Bluetooth speaker (JBL Flip 5 via PipeWire, 44100Hz stereo)
-- [x] Daily token budget with hard cutoff
-- [x] Concurrency-safe conversation lock (no duplicate responses)
+- [x] Debug API: `http://localhost:8000/docs` — /state, /health, /memory/recent
+- [x] Sound mute/unmute API: `POST /sound/mute?seconds=N`, `POST /sound/unmute`
+- [x] Bluetooth speaker: JBL Flip 5 via PipeWire (44100Hz stereo)
+- [x] Daily token budget with hard cutoff (100K tokens/day)
 - [x] GPIO remapped: I2S bus (GPIO18–21) free for INMP441
-- [x] INMP441 I2S overlay installed — ready to activate via config
 
 ## Not Yet Working / Pending
 

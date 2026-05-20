@@ -62,6 +62,18 @@ async def latency_report():
     return {"report": LatencyTracker.report(), "data": LatencyTracker.snapshot()}
 
 
+@app.get("/hardware")
+async def hardware_status():
+    from hardware.registry import hw_registry
+    components = hw_registry.as_dict()
+    return {
+        "real":       hw_registry.real,
+        "mocked":     hw_registry.mocked,
+        "errors":     hw_registry.errors,
+        "components": components,
+    }
+
+
 def _read_cpu_temp() -> float:
     try:
         import subprocess
@@ -212,6 +224,30 @@ async def trigger_describe():
             "tokens_out": tokens_out,
             "latency_ms": latency_ms,
         }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ── /sound/mute · /sound/unmute ──────────────────────────────────────────────
+
+@app.post("/sound/mute")
+async def sound_mute(seconds: int = 3600):
+    """Mute Cosmo's sounds for N seconds (default 1 hour)."""
+    try:
+        from expression.sounds import sounds
+        sounds.mute(seconds)
+        return {"muted": True, "seconds": seconds}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/sound/unmute")
+async def sound_unmute():
+    """Unmute Cosmo immediately."""
+    try:
+        from expression.sounds import sounds
+        sounds.mute(0)
+        return {"muted": False}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
