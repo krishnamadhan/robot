@@ -169,7 +169,7 @@ class BehaviorEngine:
                 ],
                 condition=lambda: (
                     self._current_person is not None
-                    and 7 <= (time.time() % 86400 / 3600) <= 10
+                    and 7 <= __import__("datetime").datetime.now().hour <= 10
                 ),
             ),
             ProactiveTrigger(

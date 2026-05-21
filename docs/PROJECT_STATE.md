@@ -2,7 +2,7 @@
 
 > Updated at end of every session. Read at start of every session.  
 > Source of truth for sprint state.
-> Last updated: 2026-05-20 (second session)
+> Last updated: 2026-05-21 (4th session — Phase 2 complete)
 
 ---
 
@@ -99,27 +99,56 @@
 
 ---
 
+## Session: 2026-05-21 (4th) — Phase 2: Code Audit + Safety Fixes
+
+### What happened this session
+**Phase 2 complete** — all P0-P4 issues from the full code audit fixed and committed (e5cc5bf).
+
+**P0 — Hardware safety:**
+- `motors.py` refactored for 4WD nested config — reads `mc.left_front.ain1/ain2/pwm` etc. instead of flat `mc.ain1`. 4 independent `_MotorChannel` objects, driven in sync pairs. Would have crashed on first real motor enable.
+- `sensor_manager.py` — SoundSensor reads pin from config (GPIO11, was hardcoded 19); VibrationSensor handles null pin (GPIO26 taken by motor); TouchSensorArray reads from config (belly removed — GPIO25 is right_rear BIN1)
+
+**P1 — Silent failures:**
+- `ecosystem.config.js` — stderr now goes to real log file, max_restarts 20→5, backoff 100→1000ms
+- New KI-024 added: GPIO8/I2C bus 4 conflict (needs config.txt fix + reboot — user to do)
+
+**P2 — Timeouts fixed (KI-014, KI-015):**
+- `mind.py` — `asyncio.wait_for(timeout=15s)` around Claude executor call
+- `speech.py` — `piper.communicate(timeout=10s)` + paplay cleanup on exception
+
+**P3 — Data integrity:**
+- `spatial.py` — atomic write via `tmp.replace()`, division-by-zero and empty-dict guards
+
+**P4 — Medium fixes:**
+- `working.py` — auto-purge loop every 60s
+- `llm.py` — OLLAMA_TIMEOUT_S 90→60, streaming path logs token usage
+- `state_machine.py` — deny-by-default for unregistered transitions (KI-018)
+- `intent.py` — word-boundary regex matching (no more "nil" matching "pencil")
+- `behavior/engine.py` — morning greeting uses `datetime.now().hour` not UTC time.time()
+- `cosmo_mind.start()` now wired
+
+---
+
 ## In Progress
 
-- [ ] Wiring OLED eyes (hardware on desk, just needs wiring + code switch)
-- [ ] Planning sensor enable sequence (BH1750 first → safest)
+- [ ] Rebooted Pi (KI-024 — GPIO8/I2C conflict, config.txt change required)
+- [ ] Ollama Q4_K_M pull (next session task)
 
 ## Next Up (priority order)
 
-1. Wire OLEDs (0x3C + 0x3D) → verify with i2cdetect → switch eyes.py to oled mode
-2. Enable BH1750 in hardware.yaml → wire light→mood integration → test
-3. Enable PIR GPIO8 → ALERT state → test
-4. Enable TTP223 touch × 4 → mood boost + purr → test
-5. Enable MPU-6050 → pickup detection → motor off + surprised eyes → test
+1. Pull Ollama Q4_K_M + live test with someone in frame
+2. Wire OLEDs (0x3C + 0x3D) → verify with i2cdetect → switch eyes.py to oled mode + fix KI-019 I2C mutex first
+3. Prompt caching ADR-018 (ephemeral cache prefix in mind.py — ~40% API cost cut)
+4. KI-016 — aiosqlite migration for episodic memory
+5. Enable sensors one at a time: BH1750 → touch × 3 → MPU-6050 → PIR (only after KI-024 config.txt fix)
 6. Re-enroll Indhu face (20 samples, good light)
-7. Build health endpoint port 8081
-8. Wait for XT60 pigtail — then: caps → LiPo → motor real mode
 
 ## Blocked On
 
 - XT60 female pigtail (Robocraze) — no motor testing with LiPo until this arrives
 - APDS-9960 replacement (Robocraze) — keep available: false until confirmed
 - PCA9685 + MG90S + pan-tilt bracket (Robocraze) — Phase 3 starts when these arrive
+- KI-024 config.txt edit (done during reboot on 2026-05-21)
 
 ## Performance Snapshot (2026-05-20)
 
@@ -129,14 +158,6 @@
 | CPU temp | — | 55.4°C | Active cooler running |
 | Free RAM | 6044MB | — | Plenty of headroom |
 | Gesture latency | — | 13–130ms | opencv_skin backend |
-
-## Notes for Next Session
-
-- ✅ KI-010 Victory spam is FIXED — no more bloop noise
-- ✅ Proactive speech now wired — Cosmo will react to faces/emotions/touch/dark/obstacle
-- **pm2 restart cosmo_demo** to pick up brain + gesture fixes before testing
-- Start with OLED wiring — biggest visual impact, hardware is on desk
-- Enable sensors one at a time — watch pm2 logs between each
 - Do NOT touch motor driver until XT60 pigtail confirmed arrived
 - Run i2cdetect first thing to confirm current I2C bus state
 - **Disk is at 90%** — if it grows further, check `.robot/logs/` and `/home/pi/downloads/`

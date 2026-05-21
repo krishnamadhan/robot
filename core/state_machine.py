@@ -241,9 +241,11 @@ class StateMachine:
         if target == RobotState.SAFE_MODE:
             return True
 
-        # If no transitions defined, allow anything (permissive default)
+        # No transitions registered → deny (not a wildcard)
         if not allowed_targets:
-            return True
+            log.error("state_machine.unregistered_transition",
+                      from_state=self._current, to_state=target)
+            return False
 
         return target in allowed_targets
 

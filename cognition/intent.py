@@ -161,6 +161,11 @@ def _normalise(text: str) -> str:
     return text
 
 
+def _word_match(pattern: str, text: str) -> bool:
+    """Match pattern as whole words — prevents 'nil' matching 'pencil' etc."""
+    return bool(re.search(r'\b' + re.escape(pattern) + r'\b', text))
+
+
 class IntentParser:
 
     def parse(self, text: str) -> Optional[Intent]:
@@ -170,7 +175,7 @@ class IntentParser:
 
         for name, data in _INTENTS.items():
             for pattern in data["patterns"]:
-                if pattern in norm:
+                if _word_match(pattern, norm):
                     # Prefer longer pattern matches (more specific)
                     if len(pattern) > best_pattern_len:
                         best_pattern_len = len(pattern)
