@@ -1,8 +1,9 @@
 # AI model configuration — paths, backends, parameters
 
 person_detection:
-  model: yolov8n            # YOLOv8 nano — best speed/accuracy on Pi 5
-  weights: yolov8n.pt       # auto-downloaded by ultralytics on first run
+  model: yolo11n            # YOLO11 nano — 22% faster than v8n, drop-in replacement (ADR-012)
+  weights: models/yolo11n.pt  # downloaded 2026-05-21, stored in robot/models/
+  # rollback: change model+weights back to yolov8n / models/yolov8n.pt if regression detected
   device: cpu
   conf_threshold: 0.5
   iou_threshold: 0.45

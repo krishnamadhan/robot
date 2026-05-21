@@ -91,7 +91,9 @@
 - **Rationale:** YOLO11n is 22% faster and 37% less complex than YOLOv8n at equivalent accuracy. Drop-in replacement — no architecture changes, same ultralytics API, same event bus output. If it regresses, revert model path in `config/models.yaml`.
 - **Tradeoff:** Requires re-validating FPS and detection confidence at 320×240 on Pi 5. Low risk — isolated to `config/models.yaml` and `perception/vision/person.py`.
 - **Implementation order:** Do this FIRST before any other stack upgrades — cleanest isolated change.
-- **Status:** 🔧 In progress
+- **Discovered during upgrade:** The previous torch 2.11.0 was a CUDA build. On Pi 5 (no GPU), it failed silently with `libcublasLt not found` and fell back to OpenCV HOG detector. YOLOv8n was **never actually running**. Fixed by installing `torch==2.11.0+cpu` + `torchvision==0.26.0+cpu` from PyTorch CPU wheel index.
+- **Result:** 10.1 FPS measured at 320×240. Pipeline target is 8 FPS — headroom confirmed.
+- **Status:** ✅ Complete (2026-05-21)
 
 ## ADR-013: Keep SFace ONNX for face recognition
 - **Date:** 2026-05-21

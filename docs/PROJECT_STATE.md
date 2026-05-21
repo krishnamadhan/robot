@@ -51,7 +51,7 @@
 
 | Component | Current | Target | Status | ADR |
 |---|---|---|---|---|
-| Person detection | YOLOv8n | YOLO11n | 🔧 In progress | ADR-012 |
+| Person detection | YOLOv8n (was broken — HOG fallback) | YOLO11n @ 10.1 FPS | ✅ Complete | ADR-012 |
 | Face recognition | SFace ONNX | — (keep) | ✅ Locked | ADR-013 |
 | Emotion detection | DeepFace 7-class | FER 5-class candidate | 📅 Deferred — test after OLED + face tests | ADR-014 |
 | Wake word | OWW hey_jarvis | OWW hey_cosmo (custom) | 📅 Phase 4 | ADR-015 |

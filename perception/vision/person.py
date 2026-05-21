@@ -75,7 +75,7 @@ class _YOLODetector:
     def initialize(self) -> bool:
         try:
             from ultralytics import YOLO
-            self._model = YOLO(self._model_cfg.get("weights", "yolov8n.pt"))
+            self._model = YOLO(self._model_cfg.get("weights", "yolo11n.pt"))
             self._available = True
             log.info("person_detector.yolo_loaded")
             return True
@@ -330,7 +330,7 @@ class PersonDetector:
 
     def stats(self) -> Dict[str, Any]:
         return {
-            "backend": "yolov8n" if self._use_yolo else "hog",
+            "backend": cfg.models.person_detection.get("model", "yolo") if self._use_yolo else "hog",
             "active_tracks": len(self._tracks),
             "persons_visible": self.person_count,
             "detection_interval_frames": self._detection_interval,

@@ -78,7 +78,7 @@ pm2 logs cosmo_demo --lines 100 --nostream | grep "token\|api_call\|budget"
 
 | Component | Model | FPS / Latency | RAM | Input Res | Notes |
 |---|---|---|---|---|---|
-| Person detection | YOLOv8n (ultralytics) | ~32 FPS | ~50MB loaded | 320×240 | opencv_skin backend, gesture gate off |
+| Person detection | YOLOv8n (ultralytics) | **never actually ran** | — | 320×240 | torch CUDA build was failing silently (libcublasLt missing) — was falling back to HOG |
 | Gesture detection | opencv_skin fallback | ~4 FPS | <5MB | full frame | ~80% accuracy in good lighting |
 | Face recognition | SFace ONNX | 4 FPS | ~85MB | crop | Madhan 85–97%, Indhu 75% |
 | Emotion detection | DeepFace FER | 2 FPS | ~35MB | crop | 7 classes |
@@ -86,6 +86,23 @@ pm2 logs cosmo_demo --lines 100 --nostream | grep "token\|api_call\|budget"
 | TTS | Piper en_US-lessac-medium | ~1.8s gen | ~61MB | text | Streaming sentence-by-sentence |
 | Local LLM | Ollama llama3.2:1b | 5–8s warm, 51s cold | ~1.3GB | text | Offline fallback only |
 | Full cosmo process | All above | — | ~480MB | — | PM2, idle, no person |
+
+---
+
+## Post-Upgrade Measurements
+
+### YOLO11n — 2026-05-21 (ADR-012)
+
+| Metric | Value | Notes |
+|---|---|---|
+| avg inference | 98.6ms | 30-frame benchmark, 320×240, Pi 5 CPU |
+| FPS capability | **10.1 FPS** | Measured — exceeds 8 FPS pipeline target |
+| min/max | 90.7ms / 120.2ms | |
+| torch build | 2.11.0+cpu | Replaced broken CUDA build — first working YOLO on this Pi |
+| model size | 5.4MB | models/yolo11n.pt |
+| PM2 status | ✓ `person_detector (yolo11n)` in logs | Confirmed loading on restart |
+
+**Key finding:** YOLOv8n was never actually running — CUDA torch was failing with `libcublasLt` not found and silently falling back to HOG detector. YOLO11n + CPU torch is the first real YOLO instance on Cosmo.
 
 ---
 
