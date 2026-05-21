@@ -41,6 +41,20 @@ All critical brain bugs are now fixed. Cosmo should be proactively speaking:
 
 ---
 
+## Session start task
+Ollama Q4_K_M quantization swap — one command, verify it loads, done in 10 min.
+```bash
+ollama pull llama3.2:1b-instruct-q4_K_M
+# Then update config/models.yaml: llm.backends.ollama.model → llama3.2:1b-instruct-q4_K_M
+# Verify: ollama run llama3.2:1b-instruct-q4_K_M "hello" — confirm it responds
+```
+
+Then observe Cosmo with someone in frame — first real YOLO session.
+Watch: gesture gate firing correctly, proactive speech trigger rate,
+face recognition handoff latency. Log anything that feels off in KNOWN_ISSUES.md.
+
+---
+
 ## Top Priority: Wire OLED Eyes + Test Proactive Speech
 
 ### Step 1 — Test proactive speech (5 minutes)
