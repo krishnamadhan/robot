@@ -47,6 +47,20 @@
 
 ---
 
+## Stack Upgrade Queue (from 2026-05-21 tech review — see DECISIONS.md ADR-012 to ADR-018)
+
+| Component | Current | Target | Status | ADR |
+|---|---|---|---|---|
+| Person detection | YOLOv8n | YOLO11n | 🔧 In progress | ADR-012 |
+| Face recognition | SFace ONNX | — (keep) | ✅ Locked | ADR-013 |
+| Emotion detection | DeepFace 7-class | FER 5-class candidate | 📅 Deferred — test after OLED + face tests | ADR-014 |
+| Wake word | OWW hey_jarvis | OWW hey_cosmo (custom) | 📅 Phase 4 | ADR-015 |
+| TTS | Piper lessac-medium 61MB | Kitten Micro 25MB | 📅 Quality test first | ADR-016 |
+| Local LLM | Ollama llama3.2:1b 1.3GB | Q4_K_M ~700MB | 📅 After YOLO11n | ADR-017 |
+| Claude context | No caching | Prompt caching (ephemeral) | 📅 After YOLO11n | ADR-018 |
+
+---
+
 ## Component Status Table
 
 | Component | Code Status | Hardware Status | Notes |

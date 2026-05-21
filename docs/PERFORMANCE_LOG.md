@@ -72,6 +72,23 @@ pm2 logs cosmo_demo --lines 100 --nostream | grep "token\|api_call\|budget"
 
 ---
 
+## Pre-Upgrade Baselines (before stack upgrades ADR-012 to ADR-018)
+
+> Captured 2026-05-21. Compare against these after each upgrade to measure gain/regression.
+
+| Component | Model | FPS / Latency | RAM | Input Res | Notes |
+|---|---|---|---|---|---|
+| Person detection | YOLOv8n (ultralytics) | ~32 FPS | ~50MB loaded | 320×240 | opencv_skin backend, gesture gate off |
+| Gesture detection | opencv_skin fallback | ~4 FPS | <5MB | full frame | ~80% accuracy in good lighting |
+| Face recognition | SFace ONNX | 4 FPS | ~85MB | crop | Madhan 85–97%, Indhu 75% |
+| Emotion detection | DeepFace FER | 2 FPS | ~35MB | crop | 7 classes |
+| STT | faster-whisper base.en beam=5 | ~1.5s | ~74MB | audio | Indian English tuned |
+| TTS | Piper en_US-lessac-medium | ~1.8s gen | ~61MB | text | Streaming sentence-by-sentence |
+| Local LLM | Ollama llama3.2:1b | 5–8s warm, 51s cold | ~1.3GB | text | Offline fallback only |
+| Full cosmo process | All above | — | ~480MB | — | PM2, idle, no person |
+
+---
+
 ## Performance Regressions
 
 > Log here if a change caused CPU/RAM/latency to get worse
