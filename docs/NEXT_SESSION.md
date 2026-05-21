@@ -2,14 +2,14 @@
 
 > This file contains the focused task for the next Claude Code session.
 > Replace entirely at end of each session with the new top priority.
-> Last updated: 2026-05-20 (2nd session)
+> Last updated: 2026-05-21 (3rd session)
 
 ---
 
-## Current Hardware State (as of 2026-05-20)
+## Current Hardware State (as of 2026-05-21)
 
 **Connected and working:**
-- Camera: Logitech C920 (USB, /dev/video0) — gesture + person detection confirmed running
+- Camera: Logitech C920 (USB, /dev/video0) — YOLO11n @ 10.1 FPS confirmed
 - Speaker: JBL Flip 5 Bluetooth (28:FA:19:C1:73:F8) — paired and working via PipeWire
 - Mic: C920 USB mic — `HD Pro Webcam C920: USB Audio (hw:3,0)` confirmed in logs
 - UPS HAT: battery at ~94%, I2C 0x36 active
@@ -23,55 +23,54 @@
 
 ---
 
-## Code State (after 2026-05-20 2nd session)
+## Code State (after 2026-05-21 3rd session)
 
-All critical brain bugs are now fixed. Cosmo should be proactively speaking:
-
-| Bug | Fix | File |
-|-----|-----|------|
-| Victory gesture spam | threshold 0.92, 4-frame hold, person-gating | gesture.py |
-| tts NameError in mind.py | Added `from expression.speech import tts` | mind.py |
-| Proactive speech never fired | Added `_subscribe_events()` with bus.on() | mind.py |
-| Race condition in face handler | `_approaching` flag + try/finally | cosmo_demo.py |
-| BT sounds play over TTS | `audio_speaking` blackboard flag | behavior_tree.py |
-| Motor trim hardcoded | Moved to hardware.yaml | motors.py |
-| State machine unused | Wired sm.transition_to() calls | cosmo_demo.py |
-
-**First thing to do:** `pm2 restart cosmo_demo` to pick up all changes.
+| Fix | File | Status |
+|-----|------|--------|
+| YOLO11n + CPU torch (KI-012) | person.py, models.yaml | ✅ Done |
+| Motor pin glitch (KI-013) | hardware/motors.py | ✅ Done — in2.off() before in1.on() |
+| ADR-012 to ADR-018 locked | docs/DECISIONS.md | ✅ Done |
+| KI-013 through KI-018 documented | docs/KNOWN_ISSUES.md | ✅ Done |
 
 ---
 
 ## Session start task
-Ollama Q4_K_M quantization swap — one command, verify it loads, done in 10 min.
+Ollama Q4_K_M quantization swap — one command, 10 min.
 ```bash
 ollama pull llama3.2:1b-instruct-q4_K_M
 # Then update config/models.yaml: llm.backends.ollama.model → llama3.2:1b-instruct-q4_K_M
 # Verify: ollama run llama3.2:1b-instruct-q4_K_M "hello" — confirm it responds
 ```
 
-Then observe Cosmo with someone in frame — first real YOLO session.
-Watch: gesture gate firing correctly, proactive speech trigger rate,
-face recognition handoff latency. Log anything that feels off in KNOWN_ISSUES.md.
+Then fix KI-014 and KI-015 in the same session (both timeout patterns,
+30 min combined):
+- cognition/mind.py ~line 423: asyncio.wait_for(..., timeout=15.0)
+- expression/speech.py ~line 80: timeout=10.0 + kill + finally reset
+
+KI-016 and KI-017 are next session after that.
+
+Observe Cosmo with someone in frame after fixes — first real YOLO session.
+Watch: gesture gate, proactive speech trigger rate, face recognition handoffs.
 
 ---
 
-## Top Priority: Wire OLED Eyes + Test Proactive Speech
+## KI-016 Fix Note (when you get to it)
 
-### Step 1 — Test proactive speech (5 minutes)
-After `pm2 restart cosmo_demo`, stand at ≤80cm from camera and check logs:
-```bash
-pm2 logs cosmo_demo -f | grep -E "cosmo_mind|spoke|trigger"
-```
-Expected: `cosmo_mind.speak_trigger` log then `cosmo_mind.spoke` with 1-sentence text.
+Use `aiosqlite` — not `asyncio.Lock()` bolted onto sync calls. Python 3.13,
+async-first throughout, no executor overhead. Migrate `core/memory/episodic.py`
+to aiosqlite properly rather than patching around the sync sqlite3 connection.
 
-### Step 2 — Wire OLED eyes (biggest visual impact, hardware on desk)
+---
+
+## Top Priority After Above: Wire OLED Eyes
+
 1. Connect both SSD1306s to I2C (SDA=GPIO2/Pin3, SCL=GPIO3/Pin5, VCC=3.3V, GND)
 2. Bridge A0 pad on right eye board (solder blob → VCC) to change address to 0x3D
 3. Run `sudo i2cdetect -y 1` → verify both 0x3C and 0x3D appear
 4. In `expression/eyes.py` change render target from `"terminal"` to `"oled"`
 5. `pm2 restart cosmo` → verify eyes render on hardware
 
-### Step 3 — Enable sensors one at a time (after eyes working)
+Then enable sensors one at a time:
 1. BH1750 (I2C 0x23): change `available: false → true` in hardware.yaml, restart, verify `sensor.bh1750` log
 2. PIR (GPIO8): change `available: false → true`, restart, wave hand, verify `MOTION_DETECTED` event
 3. Touch × 4: change `available: false → true`, restart, touch each pad, verify `TOUCH_DETECTED` event

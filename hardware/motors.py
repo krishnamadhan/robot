@@ -122,10 +122,10 @@ class _MotorChannel:
         if speed > 0:
             if self._in1.value and self._in2.value:
                 raise MotorSafetyError(f"{self._name}: IN1+IN2 both HIGH")
-            self._in1.on(); self._in2.off()
+            self._in2.off(); self._in1.on()  # clear before set — prevents both-HIGH glitch
             self._pwm.set_duty(duty)
         elif speed < 0:
-            self._in1.off(); self._in2.on()
+            self._in1.off(); self._in2.on()  # IN1 already low from prev state or init
             self._pwm.set_duty(duty)
         else:
             self._in1.off(); self._in2.off()

@@ -113,6 +113,87 @@
 - **Fix path:** At further distances, trigger person greeting as "unknown person" rather than ignoring. Do not increase resolution (CPU cost).
 - **Priority:** Low — document and accept
 
+### KI-013: Motor direction pin ordering — brief both-HIGH glitch on direction change (CRITICAL)
+- **Status:** Open — fix before enabling real motors
+- **Service:** hardware/motors.py line ~125
+- **Symptom:** When transitioning from backward (IN1=0, IN2=1) to forward, code does `self._in1.on(); self._in2.off()`. This sets IN1=HIGH before IN2 goes LOW — creating a momentary AIN1=1, AIN2=1 state, which the TB6612FNG datasheet explicitly prohibits. Safety check runs BEFORE the pin change, so it doesn't catch this.
+- **Root cause:** Off-before-on ordering violated. Code sets the ON pin first, then clears the OFF pin.
+- **Fix:**
+  ```python
+  # Wrong (current):
+  self._in1.on(); self._in2.off()   # forward
+  # Correct (fix):
+  self._in2.off(); self._in1.on()   # clear first, then set
+  ```
+  Apply same pattern to every direction change in motors.py (backward, brake transitions).
+- **Risk:** At minimum, causes current spike and H-bridge shoot-through. At worst, destroys TB6612FNG. **Must fix before connecting LiPo / real motor testing.**
+- **Priority:** P0 — block on real motor enable
+
+### KI-014: Claude API call in mind.py has no timeout — can hang thread pool forever
+- **Status:** Open — medium urgency
+- **Service:** cognition/mind.py line ~423
+- **Symptom:** `run_in_executor(None, lambda: self._client.messages.create(...))` submits the synchronous Anthropic client call to asyncio's default thread pool executor with no `asyncio.wait_for()` wrapper. If the Claude API hangs (network drop, upstream issue), the executor thread blocks indefinitely. Default executor has 8 threads on Pi 5 — 8 concurrent hangs = entire asyncio loop blocked.
+- **Root cause:** Missing timeout on synchronous API call wrapped in executor.
+- **Fix:**
+  ```python
+  response = await asyncio.wait_for(
+      loop.run_in_executor(None, lambda: self._client.messages.create(...)),
+      timeout=15.0
+  )
+  ```
+- **Priority:** Medium — only fires if Claude API goes down, but recovery is full process restart
+
+### KI-015: Piper TTS subprocess has no timeout — _speaking flag can lock forever
+- **Status:** Open — medium urgency
+- **Service:** expression/speech.py line ~80
+- **Symptom:** `piper.communicate(text.encode("utf-8"))` blocks until Piper process exits. No timeout. If Piper hangs (OOM, corrupt model file, I/O stall), the `_speaking` flag stays `True` permanently. All future TTS calls are silently dropped. Cosmo goes mute with no recovery path except full restart.
+- **Root cause:** Missing timeout on subprocess.communicate().
+- **Fix:**
+  ```python
+  try:
+      stdout, stderr = piper.communicate(text.encode("utf-8"), timeout=10.0)
+  except subprocess.TimeoutExpired:
+      piper.kill()
+      log.error("speech.piper_timeout", text_len=len(text))
+  finally:
+      self._speaking = False
+  ```
+- **Priority:** Medium — mutes Cosmo silently, hard to diagnose
+
+### KI-016: SQLite episodic memory — concurrent writes from thread pool cause "database is locked"
+- **Status:** Open — low urgency (only triggers under high load)
+- **Service:** core/memory/episodic.py line ~63
+- **Symptom:** `sqlite3.connect(..., check_same_thread=False)` is used with multiple `run_in_executor()` calls hitting the default ThreadPoolExecutor. Under concurrent emotion + face + conversation writes, SQLite's default 5s busy timeout may expire, raising `OperationalError: database is locked` and silently dropping the memory write.
+- **Root cause:** Shared sqlite3 connection across threads without a write serialisation layer.
+- **Fix:** Migrate to `aiosqlite` — do not bolt asyncio.Lock() onto the existing sync calls. Project is Python 3.13, async-first throughout; aiosqlite removes the executor overhead entirely and gives a proper async write path. sqlite3.connect timeout bump is a band-aid, not a fix.
+- **Priority:** Low — only triggers under simultaneous recognition + conversation writes. Upgrade to aiosqlite when touching episodic.py next.
+
+### KI-017: Claude API budget check in conversation.py not inside async lock — concurrent calls can double-spend
+- **Status:** Open — low urgency (requires concurrent voice invocations)
+- **Service:** cognition/conversation.py
+- **Symptom:** Budget check (read daily_tokens → compare → allow) and budget update (write daily_tokens + spend) are not inside the same asyncio.Lock. Two concurrent `respond()` calls (e.g., two people speaking at once, or wake word + proactive speech race) can both pass the budget check before either records its spend. This can overdraw the 100K daily token budget.
+- **Root cause:** Read-check-write is not atomic.
+- **Fix:**
+  ```python
+  async with self._budget_lock:
+      if self._daily_tokens + estimated_tokens > DAILY_BUDGET:
+          raise BudgetExceeded()
+      self._daily_tokens += estimated_tokens
+  ```
+- **Priority:** Low — requires unusual concurrency. Budget overruns are cost exposure, not a crash.
+
+### KI-018: State machine silently accepts transitions to unregistered states
+- **Status:** Open — low urgency
+- **Service:** core/state_machine.py line ~244
+- **Symptom:** When `transition_to()` is called with a state not in the registered transitions map, the state machine falls through to a permissive catch-all that allows the transition anyway and logs nothing. Silent state corruption — HSM ends up in a state with no registered exit transitions, breaking the whole behaviour loop.
+- **Root cause:** Permissive fallback in transition guard. Should be an error.
+- **Fix:** Replace fallback with explicit error log + reject the transition:
+  ```python
+  log.error("state_machine.unregistered_transition", from_state=current, to_state=target)
+  return False  # reject instead of silently allow
+  ```
+- **Priority:** Low — only fires on code bugs (typo'd state name). But silent failures are very hard to debug.
+
 ---
 
 ## Fixed Issues
