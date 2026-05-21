@@ -13,6 +13,7 @@ import asyncio
 import time
 from typing import Dict, Optional
 
+from hardware.registry import hw_registry
 from utils.config import cfg
 from utils.logger import get_logger
 
@@ -50,6 +51,8 @@ class ServoController:
     async def initialize(self) -> bool:
         if not _SERVOKIT_OK:
             log.info("servos.mock", reason="adafruit-servokit not installed")
+            hw_registry.report_mock("servos", reason="adafruit-servokit not installed",
+                                    mock_behavior="logs angles only")
             return False
         try:
             i2c_addr = cfg.hardware.servos.i2c_address
@@ -57,9 +60,12 @@ class ServoController:
             self._mock = False
             await self.center()
             log.info("servos.real", i2c_addr=hex(i2c_addr))
+            hw_registry.report_real("servos")
             return True
         except Exception as e:
             log.info("servos.mock", reason=str(e)[:60])
+            hw_registry.report_mock("servos", reason=str(e)[:80],
+                                    mock_behavior="logs angles only")
             self._kit = None
             return False
 

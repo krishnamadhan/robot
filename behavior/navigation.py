@@ -103,6 +103,7 @@ class NavigationEngine:
 
     async def _safe_exec(self, coro) -> bool:
         if self._is_blocked():
+            coro.close()  # prevent "coroutine was never awaited" warning
             log.debug("nav.blocked", cliff=self._cliff_blocked,
                       pickup=self._pickup_blocked, bat=self._bat_blocked)
             return False

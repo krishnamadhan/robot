@@ -38,9 +38,15 @@ class SpeechToText:
         self._available = False
 
     def load(self) -> bool:
-        # STT removed in Phase A — faster_whisper not imported
-        log.info("stt.disabled", note="STT removed in Phase A")
-        return False
+        try:
+            from faster_whisper import WhisperModel
+            self._model = WhisperModel(MODEL_SIZE, device="cpu", compute_type="int8")
+            self._available = True
+            log.info("stt.loaded", model=MODEL_SIZE)
+            return True
+        except Exception as e:
+            log.warning("stt.load_failed", error=str(e)[:80])
+            return False
 
     async def transcribe(self, audio_bytes: bytes, vad_filter: bool = False) -> Optional[STTResult]:
         if not self._available or not audio_bytes:

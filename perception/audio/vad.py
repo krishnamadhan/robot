@@ -25,7 +25,7 @@ FRAME_BYTES = int(SAMPLE_RATE * FRAME_MS / 1000) * 2  # 960 bytes
 class VoiceActivityDetector:
     """Segments mic audio into complete speech utterances."""
 
-    def __init__(self, aggressiveness: int = 2) -> None:
+    def __init__(self, aggressiveness: int = 1) -> None:
         self.vad = webrtcvad.Vad(aggressiveness)
         self._partial: bytes = b""     # leftover bytes between chunks
 

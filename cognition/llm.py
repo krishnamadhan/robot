@@ -169,13 +169,34 @@ class LLMInterface:
         messages = list(conversation_history or [])
         messages.append({"role": "user", "content": user_message})
 
-        # LLM calls disabled in Phase A — Cosmo is reactive, not verbal.
-        return {
-            "text": "",
-            "backend": "disabled",
-            "latency_ms": 0,
-            "tokens": 0,
-        }
+        t0 = time.monotonic()
+
+        # Primary: Claude Haiku — fast, great personality, 1-2s on Pi5
+        # Fallback: Ollama (offline), if available and Claude fails
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if api_key:
+            try:
+                result = await self._call_claude(system_prompt, messages)
+                result["latency_ms"] = int((time.monotonic() - t0) * 1000)
+                log.info("llm.response", backend=result["backend"],
+                         latency_ms=result["latency_ms"],
+                         tokens=result.get("tokens", 0))
+                return result
+            except Exception as e:
+                log.warning("llm.claude_failed", error=str(e)[:80])
+
+        # Offline fallback: Ollama
+        if self._ollama_available is not False:
+            try:
+                result = await self._call_ollama(system_prompt, messages)
+                if result:
+                    result["latency_ms"] = int((time.monotonic() - t0) * 1000)
+                    return result
+            except Exception as e:
+                log.warning("llm.ollama_failed", error=str(e)[:80])
+                self._ollama_available = False
+
+        return {"text": "", "backend": "unavailable", "latency_ms": 0, "tokens": 0}
 
     async def _call_ollama(
         self, system: str, messages: List[Dict[str, str]]
@@ -279,9 +300,44 @@ class LLMInterface:
         messages = list(conversation_history or [])
         messages.append({"role": "user", "content": user_message})
 
-        # Streaming disabled in Phase A
-        return
-        yield  # make this an async generator
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            return
+
+        import anthropic
+        if self._anthropic_client is None:
+            self._anthropic_client = anthropic.AsyncAnthropic(api_key=api_key)
+
+        buffer = ""
+        try:
+            async with self._anthropic_client.messages.stream(
+                model=self._claude_model,
+                max_tokens=self.MAX_TOKENS,
+                system=system_prompt,
+                messages=messages,
+            ) as stream:
+                async for text_chunk in stream.text_stream:
+                    buffer += text_chunk
+                    # Yield complete sentences so TTS can start early
+                    while True:
+                        m = self._SENTENCE_SPLIT.search(buffer)
+                        if not m:
+                            break
+                        sentence = buffer[:m.start() + 1].strip()
+                        buffer = buffer[m.end():]
+                        if sentence:
+                            yield sentence
+            if buffer.strip():
+                yield buffer.strip()
+        except Exception as e:
+            log.warning("llm.stream_failed", error=str(e)[:80])
+            # Fall back to non-streaming
+            try:
+                result = await self._call_claude(system_prompt, messages)
+                if result and result.get("text"):
+                    yield result["text"]
+            except Exception:
+                pass
 
     async def is_ollama_ready(self) -> bool:
         ready = await self._check_ollama()

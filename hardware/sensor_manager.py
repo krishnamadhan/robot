@@ -27,6 +27,8 @@ from typing import Any, Dict, List, Optional
 
 from core.event_bus import Event, EventPriority, EventType, bus
 from core.personality import personality
+from hardware.registry import hw_registry, HWStatus
+from utils.config import cfg
 from utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -272,22 +274,26 @@ class MPU6050Sensor:
 # ── Cliff Sensor Array ────────────────────────────────────────────────────────
 
 class CliffSensorArray:
-    """2× TCRT5000 IR cliff sensors — GPIO20, GPIO21."""
-
-    PINS = [20, 21]
+    """2× TCRT5000 IR cliff sensors — pins and availability from hardware.yaml."""
 
     def __init__(self) -> None:
         self._mock = True
         self._devices = []
+        self._pins: list = []
 
     def initialize(self) -> bool:
+        cliff_cfg = cfg.hardware.sensors.get("cliff", {})
+        if not cliff_cfg.get("available", False):
+            log.info("cliff.mock", reason="disabled in hardware.yaml")
+            return False
+        self._pins = cliff_cfg.get("pins", [14, 15])
         if not _GPIO_OK:
-            log.info("cliff.mock")
+            log.info("cliff.mock", reason="gpiozero not installed")
             return False
         try:
-            self._devices = [DigitalInputDevice(p) for p in self.PINS]
+            self._devices = [DigitalInputDevice(p) for p in self._pins]
             self._mock = False
-            log.info("cliff.real", pins=self.PINS)
+            log.info("cliff.real", pins=self._pins)
             return True
         except Exception as e:
             log.info("cliff.mock", reason=str(e)[:60])
@@ -519,22 +525,29 @@ class SensorManager:
         self._pickup_count: int = 0
 
     def initialize_all(self) -> None:
-        self.bh1750.initialize()
-        self.pir.initialize()
-        self.touch.initialize()
-        self.apds9960.initialize()
-        self.mpu6050.initialize()
-        self.cliff.initialize()
-        self.ultrasonic.initialize()
-        self.sound.initialize()
-        self.vibration.initialize()
-        self.ups.initialize()
-        _all = [self.bh1750, self.pir, self.touch, self.apds9960,
-                self.mpu6050, self.cliff, self.ultrasonic,
-                self.sound, self.vibration, self.ups]
-        mocks = [s.__class__.__name__ for s in _all if s._mock]
-        real  = [s.__class__.__name__ for s in _all if not s._mock]
+        sensors = [
+            (self.bh1750,     "sensor.bh1750",     "time-of-day lux curve"),
+            (self.pir,        "sensor.pir",        "random trigger every 2-5 min"),
+            (self.touch,      "sensor.touch",      "never triggers"),
+            (self.apds9960,   "sensor.apds9960",   "random gesture every 10 min"),
+            (self.mpu6050,    "sensor.mpu6050",    "slight drift, random pickup spike"),
+            (self.cliff,      "sensor.cliff",      "always safe"),
+            (self.ultrasonic, "sensor.ultrasonic", "100 cm open space"),
+            (self.sound,      "sensor.sound",      "never triggers"),
+            (self.vibration,  "sensor.vibration",  "random trigger every 15 min"),
+            (self.ups,        "sensor.ups",        "drains 0.1%/min from 85%"),
+        ]
+        for sensor, name, mock_behavior in sensors:
+            sensor.initialize()
+            if sensor._mock:
+                hw_registry.report_mock(name, reason="hardware not detected",
+                                        mock_behavior=mock_behavior)
+            else:
+                hw_registry.report_real(name)
+        real  = [n for s, n, _ in sensors if not s._mock]
+        mocks = [n for s, n, _ in sensors if s._mock]
         log.info("sensor_manager.initialized", real=real, mock=mocks)
+        hw_registry.log_summary()
 
     async def start(self) -> None:
         self.initialize_all()

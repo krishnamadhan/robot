@@ -19,6 +19,7 @@ from typing import Any, Deque, Dict, Optional, Tuple
 import cv2
 import numpy as np
 
+from hardware.registry import hw_registry
 from utils.config import cfg
 from utils.logger import get_logger
 from utils.telemetry import telemetry
@@ -83,12 +84,15 @@ class CameraPipeline:
         success = await asyncio.get_event_loop().run_in_executor(None, self._open_camera)
         if not success:
             log.error("camera.failed_to_open", device=self._cfg.device)
+            hw_registry.report_error("camera", reason=f"failed to open /dev/video{self._cfg.device}")
             return False
 
         self._running = True
         self._capture_task = asyncio.create_task(self._capture_loop(), name="camera")
         log.info("camera.started", device=self._cfg.device,
                   resolution=f"{self._cfg.width}x{self._cfg.height}")
+        hw_registry.report_real("camera",
+                                reason=f"/dev/video{self._cfg.device} {self._cfg.width}x{self._cfg.height}@{self._cfg.fps}fps")
         return True
 
     async def stop(self) -> None:
