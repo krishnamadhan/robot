@@ -14,6 +14,7 @@ from typing import Callable, Dict, List, Optional
 
 from behavior.navigation import navigation
 from cognition.conversation import conversation
+from core.attention import attention
 from core.event_bus import Event, EventPriority, EventType, bus
 from core.personality import personality
 from core.state_machine import sm as state_machine
@@ -261,7 +262,8 @@ class BehaviorEngine:
                 asyncio.create_task(sounds.play("chirp_happy"))
                 eye_engine.set_expression(EyeExpression.EXCITED, duration=3.0)
 
-            if self._current_person:  # don't wander when interacting
+            # Don't run idle behaviors while focused on a person or interaction
+            if self._current_person or attention.focused:
                 continue
 
             ready = [b for b in self._behaviors if b.is_ready()]
@@ -320,11 +322,20 @@ class BehaviorEngine:
                     continue
                 if tts.is_speaking:
                     continue
+                # Don't fire proactive speech if attention is locked on something
+                # else (e.g. wake word still held) — wait for natural gap
+                if attention.focused and attention.state.interruptibility < 0.3:
+                    continue
                 trigger.mark_fired()
-                name = self._current_person or "friend"
-                person_rec = personality.get_person(name)
+                # Prefer attention target name — it's fresher than _current_person
+                display_name = (
+                    attention.target_name
+                    or self._current_person_name
+                    or "friend"
+                )
+                person_rec = personality.get_person(display_name)
                 display_name = (person_rec.name if person_rec and person_rec.name
-                                else name)
+                                else display_name)
                 phrase = trigger.pick_phrase(display_name)
                 log.info("behavior.proactive", trigger=trigger.name,
                          phrase=phrase[:40])

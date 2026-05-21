@@ -43,6 +43,7 @@ from behavior.navigation import navigation
 from cognition.conversation import conversation
 from cognition.intent import intent_parser
 from cognition.mind import cosmo_mind
+from core.attention import attention
 from core.event_bus import bus, Event, EventType
 from core.memory.episodic import episodic
 from core.personality import personality
@@ -531,6 +532,10 @@ async def main() -> None:
     await sounds.start()
     console.print("[green]✓ Sound engine[/green]")
 
+    # Attention system — must start before behavior engine and mind
+    await attention.start()
+    console.print("[green]✓ Attention system[/green]")
+
     # Behavior engine (idle behaviors + proactive speech)
     await behavior_engine.start()
     console.print("[green]✓ Behavior engine[/green]")
@@ -601,6 +606,7 @@ async def main() -> None:
             await conversation.end_session()
         await gesture_loop.stop()
         await behavior_tree.stop()
+        await attention.stop()
         await cosmo_mind.stop()
         await audio_pipeline.stop()
         await motor_controller.stop(emergency=True)

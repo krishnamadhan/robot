@@ -85,6 +85,10 @@ class EventType(str, Enum):
     SENSOR_TIMEOUT = "hardware.sensor.timeout"
     CAMERA_FRAME = "hardware.camera.frame"
 
+    # ── Attention ─────────────────────────────────────────────────────────────
+    ATTENTION_SHIFTED = "attention.shifted"   # new target acquired
+    ATTENTION_LOST    = "attention.lost"      # attention faded, no target
+
     # ── Internal ──────────────────────────────────────────────────────────────
     TICK = "internal.tick"              # periodic heartbeat
     SHUTDOWN = "internal.shutdown"

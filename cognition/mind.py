@@ -15,6 +15,7 @@ import random
 import time
 from typing import List, Optional
 
+from core.attention import attention
 from core.event_bus import bus, Event, EventType
 from expression.eyes import EyeExpression, eye_engine
 from expression.speech import tts
@@ -312,6 +313,16 @@ class CosmoMind:
         energy_word = ("high" if energy > 0.6 else "low" if energy < 0.3 else "moderate")
         display_name = person_name or "someone"
 
+        attn = attention.state
+        if attn.focused:
+            attn_desc = (
+                f"focused on {attn.target_name or attn.modality} "
+                f"(confidence {attn.confidence:.0%}, "
+                f"held for {attn.age_s:.0f}s)"
+            )
+        else:
+            attn_desc = "attention is idle, nothing in particular holds your focus"
+
         return f"""You are Cosmo — a small robot companion living with Madhan and Indhu.
 
 You are NOT an assistant. You are their companion with genuine feelings.
@@ -319,6 +330,7 @@ You are NOT an assistant. You are their companion with genuine feelings.
 Your state right now:
 - Mood: {mood_word} ({mood:+.1f})
 - Energy: {energy_word}
+- Attention: {attn_desc}
 - Who you see: {display_name} ({familiarity_desc})
 - They look: {emotion or "neutral"}
 - You've interacted {total} times before
