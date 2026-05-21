@@ -3,10 +3,17 @@ Working memory — last ~5 minutes of events and current context.
 Fast in-memory, never persisted. Cleared on restart.
 """
 
+import asyncio
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Deque, Dict, List, Optional
+
+try:
+    from utils.logger import get_logger
+    _log = get_logger(__name__)
+except Exception:
+    _log = None
 
 
 @dataclass
@@ -76,6 +83,16 @@ class WorkingMemory:
 
     def clear_conversation(self) -> None:
         self._conversation.clear()
+
+    async def start(self) -> None:
+        asyncio.create_task(self._cleanup_loop())
+
+    async def _cleanup_loop(self) -> None:
+        while True:
+            await asyncio.sleep(60)
+            removed = self.purge_expired()
+            if removed and _log:
+                _log.debug("working_memory.purged", count=removed)
 
     def purge_expired(self) -> int:
         expired = [k for k, v in self._store.items() if v.is_expired()]

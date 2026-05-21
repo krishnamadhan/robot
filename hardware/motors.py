@@ -1,23 +1,24 @@
 """
-TB6612FNG dual motor driver.
+TB6612FNG dual motor driver — 4WD configuration (2 chips, 4 channels).
 
-GPIO pins (BCM, from config/hardware.yaml):
-  AIN1 = cfg.hardware.motors.ain1   left forward
-  AIN2 = cfg.hardware.motors.ain2   left backward
-  PWMA = cfg.hardware.motors.pwm_a  left speed (HW PWM)
-  BIN1 = cfg.hardware.motors.bin1   right forward
-  BIN2 = cfg.hardware.motors.bin2   right backward
-  PWMB = cfg.hardware.motors.pwm_b  right speed (HW PWM)
-  STBY = cfg.hardware.motors.stby   standby (LOW = disabled)
+Hardware layout (from config/hardware.yaml):
+  Chip 1 — LEFT side:
+    left_front  AIN1/AIN2/PWM  (GPIO17/22/12)
+    left_rear   BIN1/BIN2/PWM  (GPIO23/6/13)
+  Chip 2 — RIGHT side:
+    right_front AIN1/AIN2/PWM  (GPIO20/21/18)
+    right_rear  BIN1/BIN2/PWM  (GPIO25/26/19)
+  Shared STBY GPIO27
 
 Safety rules (hardcoded — never bypass):
   - STBY LOW on init, HIGH only after self_test passes
   - AIN1 + AIN2 never both HIGH (MotorSafetyError)
   - Watchdog kills motors if heartbeat > 500ms old
   - CLIFF_DETECTED or PICKUP_DETECTED → emergency stop
+  - Always clear OFF pin before setting ON pin (no both-HIGH glitch)
 
 Mock mode: no GPIO imported — logs actions instead.
-Real mode: set cfg.hardware.simulation.enabled = false (or "never").
+Real mode: set cfg.hardware.simulation.enabled = never
 """
 
 import asyncio
@@ -125,7 +126,7 @@ class _MotorChannel:
             self._in2.off(); self._in1.on()  # clear before set — prevents both-HIGH glitch
             self._pwm.set_duty(duty)
         elif speed < 0:
-            self._in1.off(); self._in2.on()  # IN1 already low from prev state or init
+            self._in1.off(); self._in2.on()
             self._pwm.set_duty(duty)
         else:
             self._in1.off(); self._in2.off()
@@ -143,7 +144,8 @@ class _MotorChannel:
 
 class MotorController:
     """
-    Full TB6612FNG motor controller.
+    TB6612FNG 4WD motor controller.
+    Left side (front+rear) and right side (front+rear) driven in sync.
     Mock mode: logs actions. Real mode: drives GPIO.
     """
 
@@ -153,8 +155,10 @@ class MotorController:
     def __init__(self) -> None:
         self._mock = _is_mock()
         self._enabled = False
-        self._left:  Optional[_MotorChannel] = None
-        self._right: Optional[_MotorChannel] = None
+        self._left_front:  Optional[_MotorChannel] = None
+        self._left_rear:   Optional[_MotorChannel] = None
+        self._right_front: Optional[_MotorChannel] = None
+        self._right_rear:  Optional[_MotorChannel] = None
         self._stby = None
         self._last_heartbeat: float = time.monotonic()
         self._watchdog_task: Optional[asyncio.Task] = None
@@ -168,16 +172,28 @@ class MotorController:
         mc = cfg.hardware.motors
         if self._mock:
             log.info("motors.mock_mode")
-            self._left  = _MotorChannel(0, 0, 0, "left",  mock=True)
-            self._right = _MotorChannel(0, 0, 0, "right", mock=True)
+            self._left_front  = _MotorChannel(0, 0, 0, "left_front",  mock=True)
+            self._left_rear   = _MotorChannel(0, 0, 0, "left_rear",   mock=True)
+            self._right_front = _MotorChannel(0, 0, 0, "right_front", mock=True)
+            self._right_rear  = _MotorChannel(0, 0, 0, "right_rear",  mock=True)
         else:
             try:
                 _GpioDevice.pin_factory = LGPIOFactory()
-                self._stby  = DigitalOutputDevice(mc.stby)
+                self._stby = DigitalOutputDevice(mc.stby)
                 self._stby.off()  # SAFETY: motors off on init
-                self._left  = _MotorChannel(mc.ain1, mc.ain2, mc.pwm_a, "left",  mock=False)
-                self._right = _MotorChannel(mc.bin1, mc.bin2, mc.pwm_b, "right", mock=False)
-                log.info("motors.real", stby=mc.stby)
+                lf = mc.left_front
+                lr = mc.left_rear
+                rf = mc.right_front
+                rr = mc.right_rear
+                self._left_front  = _MotorChannel(lf.ain1, lf.ain2, lf.pwm, "left_front",  mock=False)
+                self._left_rear   = _MotorChannel(lr.bin1, lr.bin2, lr.pwm, "left_rear",   mock=False)
+                self._right_front = _MotorChannel(rf.ain1, rf.ain2, rf.pwm, "right_front", mock=False)
+                self._right_rear  = _MotorChannel(rr.bin1, rr.bin2, rr.pwm, "right_rear",  mock=False)
+                log.info("motors.real_4wd", stby=mc.stby,
+                         pins_lf=(lf.ain1, lf.ain2, lf.pwm),
+                         pins_lr=(lr.bin1, lr.bin2, lr.pwm),
+                         pins_rf=(rf.ain1, rf.ain2, rf.pwm),
+                         pins_rr=(rr.bin1, rr.bin2, rr.pwm))
             except Exception as e:
                 log.warning("motors.init_failed", error=str(e))
                 self._mock = True
@@ -200,7 +216,7 @@ class MotorController:
         async def _on_obstacle(event: Event) -> None:
             if self._web_drive:
                 return
-            if self._left and self._left.speed > 0.01 and self._right.speed > 0.01:
+            if self._left_front and self._left_front.speed > 0.01 and self._right_front.speed > 0.01:
                 cm = event.data.get("distance_cm", 0)
                 log.warning("motors.emergency_stop", reason="obstacle", cm=cm)
                 await self.stop(emergency=True)
@@ -221,9 +237,11 @@ class MotorController:
             self._enabled = True
             return True
         try:
-            # Brief forward pulse on each channel
-            self._left.set(0.1); await asyncio.sleep(0.05); self._left.brake()
-            self._right.set(0.1); await asyncio.sleep(0.05); self._right.brake()
+            for ch in (self._left_front, self._left_rear,
+                       self._right_front, self._right_rear):
+                ch.set(0.1)
+                await asyncio.sleep(0.05)
+                ch.brake()
             if self._stby:
                 self._stby.on()
             self._enabled = True
@@ -278,19 +296,25 @@ class MotorController:
         left  = max(-1.0, min(1.0, left))
         right = max(-1.0, min(1.0, right))
 
-        if emergency or not self._left:
-            if self._left:
-                self._left.set(left,  self.LEFT_TRIM)
-                self._right.set(right, self.RIGHT_TRIM)
+        if emergency or not self._left_front:
+            if self._left_front:
+                self._left_front.set(left,  self.LEFT_TRIM)
+                self._left_rear.set(left,   self.LEFT_TRIM)
+                self._right_front.set(right, self.RIGHT_TRIM)
+                self._right_rear.set(right,  self.RIGHT_TRIM)
             return
 
-        cur_l = self._left.speed
-        cur_r = self._right.speed
+        cur_l = self._left_front.speed
+        cur_r = self._right_front.speed
         steps = 10
         for i in range(1, steps + 1):
             t = i / steps
-            self._left.set(cur_l + (left  - cur_l) * t, self.LEFT_TRIM)
-            self._right.set(cur_r + (right - cur_r) * t, self.RIGHT_TRIM)
+            l = cur_l + (left  - cur_l) * t
+            r = cur_r + (right - cur_r) * t
+            self._left_front.set(l,  self.LEFT_TRIM)
+            self._left_rear.set(l,   self.LEFT_TRIM)
+            self._right_front.set(r, self.RIGHT_TRIM)
+            self._right_rear.set(r,  self.RIGHT_TRIM)
             await asyncio.sleep(self.RAMP_MS / 1000.0 / steps)
 
     async def heartbeat(self) -> None:
@@ -309,19 +333,28 @@ class MotorController:
 
     @property
     def is_moving(self) -> bool:
-        if not self._left:
+        if not self._left_front:
             return False
-        return abs(self._left.speed) > 0.01 or abs(self._right.speed) > 0.01
+        return abs(self._left_front.speed) > 0.01 or abs(self._right_front.speed) > 0.01
 
     @property
     def current_speed(self) -> Tuple[float, float]:
-        if not self._left:
+        if not self._left_front:
             return (0.0, 0.0)
-        return (self._left.speed, self._right.speed)
+        return (self._left_front.speed, self._right_front.speed)
 
     @property
     def is_mock(self) -> bool:
         return self._mock
+
+    # Convenience alias — kept for callers that held a reference to _left/_right
+    @property
+    def _left(self) -> Optional[_MotorChannel]:
+        return self._left_front
+
+    @property
+    def _right(self) -> Optional[_MotorChannel]:
+        return self._right_front
 
 
 motor_controller = MotorController()

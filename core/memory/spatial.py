@@ -105,18 +105,18 @@ class SpatialMemory:
         if not self._rooms:
             return None, 0.0
 
+        lux_vals = [r.avg_lux for r in self._rooms.values()]
+        lux_range = max(lux_vals) - min(lux_vals)
+
         scores: Dict[str, float] = {}
         for room_id, room in self._rooms.items():
             score = 0.0
             # Lux match (primary signal)
-            if self._rooms:
-                lux_range = max(r.avg_lux for r in self._rooms.values()) - \
-                            min(r.avg_lux for r in self._rooms.values())
-                if lux_range > 10:
-                    lux_diff = abs(lux - room.avg_lux)
-                    score = max(0.0, 1.0 - lux_diff / (lux_range / 2))
-                else:
-                    score = 0.5  # rooms look the same, no confidence
+            if lux_range > 10:
+                lux_diff = abs(lux - room.avg_lux)
+                score = max(0.0, 1.0 - lux_diff / (lux_range / 2))
+            else:
+                score = 0.5  # rooms look the same, no confidence
 
             # Time-of-day match
             hour = time.localtime().tm_hour
@@ -125,8 +125,11 @@ class SpatialMemory:
 
             scores[room_id] = score
 
+        if not scores:
+            return None, 0.0
+
         best_id = max(scores, key=scores.__getitem__)
-        best_score = scores[best_id]
+        best_score = scores[best_id]  # noqa: F841
 
         # Normalize to [0, 1]
         total = sum(scores.values())
@@ -200,7 +203,9 @@ class SpatialMemory:
                 "rooms": {rid: asdict(r) for rid, r in self._rooms.items()},
                 "landmarks": {lid: asdict(l) for lid, l in self._landmarks.items()},
             }
-            SPATIAL_PATH.write_text(json.dumps(data, indent=2))
+            tmp = SPATIAL_PATH.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, indent=2))
+            tmp.replace(SPATIAL_PATH)  # atomic on Linux — no partial-write corruption
         except Exception as e:
             log.error("spatial.save_failed", error=str(e))
 

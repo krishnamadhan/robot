@@ -82,7 +82,7 @@ class LLMInterface:
     Fallback: Claude Haiku (cloud)
     """
 
-    OLLAMA_TIMEOUT_S = 90.0
+    OLLAMA_TIMEOUT_S = 60.0
     MAX_TOKENS = 150
 
     def __init__(self) -> None:
@@ -327,8 +327,17 @@ class LLMInterface:
                         buffer = buffer[m.end():]
                         if sentence:
                             yield sentence
-            if buffer.strip():
-                yield buffer.strip()
+                if buffer.strip():
+                    yield buffer.strip()
+                # Capture usage after stream ends — callers use this for budget tracking
+                try:
+                    final = await stream.get_final_message()
+                    log.info("llm.stream_usage",
+                             input_tokens=final.usage.input_tokens,
+                             output_tokens=final.usage.output_tokens,
+                             total=final.usage.input_tokens + final.usage.output_tokens)
+                except Exception:
+                    pass
         except Exception as e:
             log.warning("llm.stream_failed", error=str(e)[:80])
             # Fall back to non-streaming

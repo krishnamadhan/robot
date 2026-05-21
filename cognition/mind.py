@@ -432,15 +432,21 @@ Response rules:
 
         loop = asyncio.get_event_loop()
         try:
-            response = await loop.run_in_executor(
-                None,
-                lambda: self._client.messages.create(
-                    model=MODEL,
-                    max_tokens=60,
-                    system=system_prompt,
-                    messages=[{"role": "user", "content": prompt}],
-                )
+            response = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: self._client.messages.create(
+                        model=MODEL,
+                        max_tokens=60,
+                        system=system_prompt,
+                        messages=[{"role": "user", "content": prompt}],
+                    )
+                ),
+                timeout=15.0,
             )
+        except asyncio.TimeoutError:
+            log.error("cosmo_mind.api_timeout", trigger=trigger)
+            return
         except Exception as e:
             log.error("cosmo_mind.api_error", error=str(e)[:300])
             return

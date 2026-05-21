@@ -67,6 +67,7 @@ class TTSEngine:
     def _speak_thread(self, text: str) -> None:
         with self._lock:
             self._speaking = True
+        paplay = None
         try:
             piper = subprocess.Popen(
                 [str(_PIPER_BIN), "--model", str(_MODEL_PATH), "--output_raw"],
@@ -77,7 +78,14 @@ class TTSEngine:
             with self._lock:
                 self._proc = piper
 
-            raw_audio, _ = piper.communicate(text.encode("utf-8"))
+            try:
+                raw_audio, _ = piper.communicate(text.encode("utf-8"), timeout=10.0)
+            except subprocess.TimeoutExpired:
+                piper.kill()
+                piper.communicate()  # drain pipes
+                log.error("tts.piper_timeout", text_len=len(text))
+                return
+
             if not raw_audio:
                 return
 
@@ -93,6 +101,8 @@ class TTSEngine:
             paplay.wait()
         except Exception as e:
             log.debug("tts.error", error=str(e)[:80])
+            if paplay and paplay.poll() is None:
+                paplay.kill()
         finally:
             with self._lock:
                 self._speaking = False

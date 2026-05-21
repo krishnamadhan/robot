@@ -8,13 +8,13 @@ config/hardware.yaml and the real driver activates automatically.
 Mock behaviors:
   BH1750     — time-of-day lux curve
   PIR        — random trigger every 2-5 min  (GPIO8)
-  Touch      — never triggers (needs physical touch)  (GPIO5,25,4,7)
+  Touch      — never triggers (needs physical touch)  (GPIO5,4,7; belly TBD)
   APDS9960   — random gesture every 10 min
   MPU6050    — slight drift, random pickup spike
-  Cliff      — always safe  (GPIO20,21 via LLC)
+  Cliff      — always safe  (GPIO14,15 via LLC)
   Ultrasonic — 100cm open space  (TRIG=GPIO16, ECHO=GPIO24 via LLC)
-  Sound      — never triggers (needs audio input)  (GPIO19 via divider)
-  Vibration  — random trigger every 15 min  (GPIO26 via divider)
+  Sound      — never triggers (needs audio input)  (GPIO11 via divider)
+  Vibration  — never triggers  (pin reassigned to motor — see hardware.yaml)
   UPS HAT    — drains 0.1%/min from 85%
 """
 
@@ -142,16 +142,26 @@ class PIRSensor:
 # ── Touch Sensor Array ────────────────────────────────────────────────────────
 
 class TouchSensorArray:
-    """4× TTP223 capacitive touch — GPIO5(head), GPIO25(belly), GPIO4(left), GPIO7(right).
-    CORRECTED: removed GPIO6 (=motor BIN2) and GPIO12 (=APDS9960 INT).
+    """TTP223 capacitive touch array — pins from hardware.yaml.
+    Note: belly (GPIO25) reassigned to right_rear motor BIN1 — not available.
+    Active zones: head=GPIO5, left=GPIO4, right=GPIO7.
     """
 
-    PINS = {"head": 5, "belly": 25, "left": 4, "right": 7}
+    # Default zones and pins — overridden by hardware.yaml touch.pins list
+    _DEFAULT_ZONES = ["head", "left", "right"]
 
     def __init__(self) -> None:
         self._mock = True
         self._devices: Dict[str, Any] = {}
         self._press_start: Dict[str, float] = {}
+        # Load pins from config; yaml has list matching zone order
+        cfg_t = cfg.hardware.sensors.get("touch", {})
+        raw_pins = cfg_t.get("pins", [5, 4, 7])
+        self.PINS: Dict[str, int] = {
+            self._DEFAULT_ZONES[i]: p
+            for i, p in enumerate(raw_pins)
+            if i < len(self._DEFAULT_ZONES)
+        }
 
     def initialize(self) -> bool:
         if not _GPIO_OK:
@@ -427,22 +437,25 @@ class UPSHATSensor:
 # ── Sound Sensor ─────────────────────────────────────────────────────────────
 
 class SoundSensor:
-    """KY-038 analog sound sensor — GPIO19 via 10kΩ+10kΩ voltage divider."""
-
-    GPIO_PIN = 19
+    """KY-038 analog sound sensor — pin from hardware.yaml (GPIO11 via 10kΩ+10kΩ divider)."""
 
     def __init__(self) -> None:
         self._mock = True
         self._device = None
+        cfg_s = cfg.hardware.sensors.get("sound", {})
+        self._pin = cfg_s.get("pin")  # None means pin not assigned
 
     def initialize(self) -> bool:
+        if self._pin is None:
+            log.info("sound.mock", reason="pin not assigned in hardware.yaml")
+            return False
         if not _GPIO_OK:
             log.info("sound.mock")
             return False
         try:
-            self._device = DigitalInputDevice(self.GPIO_PIN)
+            self._device = DigitalInputDevice(self._pin)
             self._mock = False
-            log.info("sound.real", pin=self.GPIO_PIN)
+            log.info("sound.real", pin=self._pin)
             return True
         except Exception as e:
             log.info("sound.mock", reason=str(e)[:60])
@@ -460,23 +473,28 @@ class SoundSensor:
 # ── Vibration Sensor ──────────────────────────────────────────────────────────
 
 class VibrationSensor:
-    """SW-420 vibration sensor — GPIO26 via 10kΩ+10kΩ voltage divider."""
-
-    GPIO_PIN = 26
+    """SW-420 vibration sensor — pin from hardware.yaml.
+    Note: GPIO26 reassigned to right_rear motor BIN2 — pin is null until sensor rewired.
+    """
 
     def __init__(self) -> None:
         self._mock = True
         self._device = None
         self._next_mock_trigger: float = time.monotonic() + random.uniform(600, 1200)
+        cfg_v = cfg.hardware.sensors.get("vibration", {})
+        self._pin = cfg_v.get("pin")  # None means pin not assigned
 
     def initialize(self) -> bool:
+        if self._pin is None:
+            log.info("vibration.mock", reason="pin not assigned in hardware.yaml — GPIO26 taken by motor")
+            return False
         if not _GPIO_OK:
             log.info("vibration.mock")
             return False
         try:
-            self._device = DigitalInputDevice(self.GPIO_PIN)
+            self._device = DigitalInputDevice(self._pin)
             self._mock = False
-            log.info("vibration.real", pin=self.GPIO_PIN)
+            log.info("vibration.real", pin=self._pin)
             return True
         except Exception as e:
             log.info("vibration.mock", reason=str(e)[:60])

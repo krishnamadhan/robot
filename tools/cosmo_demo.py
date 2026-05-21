@@ -475,6 +475,8 @@ async def main() -> None:
 
     await bus.start()
     episodic.initialize()
+    from core.memory.working import wm
+    await wm.start()
     await personality.start()
     await sm.start(RobotState.IDLE_CALM)
 

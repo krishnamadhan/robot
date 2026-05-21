@@ -114,23 +114,13 @@
 - **Priority:** Low — document and accept
 
 ### KI-013: Motor direction pin ordering — brief both-HIGH glitch on direction change (CRITICAL)
-- **Status:** Open — fix before enabling real motors
-- **Service:** hardware/motors.py line ~125
-- **Symptom:** When transitioning from backward (IN1=0, IN2=1) to forward, code does `self._in1.on(); self._in2.off()`. This sets IN1=HIGH before IN2 goes LOW — creating a momentary AIN1=1, AIN2=1 state, which the TB6612FNG datasheet explicitly prohibits. Safety check runs BEFORE the pin change, so it doesn't catch this.
-- **Root cause:** Off-before-on ordering violated. Code sets the ON pin first, then clears the OFF pin.
-- **Fix:**
-  ```python
-  # Wrong (current):
-  self._in1.on(); self._in2.off()   # forward
-  # Correct (fix):
-  self._in2.off(); self._in1.on()   # clear first, then set
-  ```
-  Apply same pattern to every direction change in motors.py (backward, brake transitions).
-- **Risk:** At minimum, causes current spike and H-bridge shoot-through. At worst, destroys TB6612FNG. **Must fix before connecting LiPo / real motor testing.**
-- **Priority:** P0 — block on real motor enable
+- **Status:** ✅ Fixed in commit 3d00059 (2026-05-21)
+- **Service:** hardware/motors.py line 125
+- **Fix applied:** `self._in2.off(); self._in1.on()` — clear OFF pin before setting ON pin. Same pattern applied to all direction changes in `_MotorChannel.set()`.
+- **Note:** Also refactored motors.py (2026-05-21) to support 4WD nested hardware.yaml structure (left_front/left_rear/right_front/right_rear). Flat `mc.ain1`, `mc.pwm_a` attributes replaced with nested `mc.left_front.ain1`, `mc.left_front.pwm`, etc.
 
 ### KI-014: Claude API call in mind.py has no timeout — can hang thread pool forever
-- **Status:** Open — medium urgency
+- **Status:** ✅ Fixed (2026-05-21)
 - **Service:** cognition/mind.py line ~423
 - **Symptom:** `run_in_executor(None, lambda: self._client.messages.create(...))` submits the synchronous Anthropic client call to asyncio's default thread pool executor with no `asyncio.wait_for()` wrapper. If the Claude API hangs (network drop, upstream issue), the executor thread blocks indefinitely. Default executor has 8 threads on Pi 5 — 8 concurrent hangs = entire asyncio loop blocked.
 - **Root cause:** Missing timeout on synchronous API call wrapped in executor.
@@ -144,7 +134,7 @@
 - **Priority:** Medium — only fires if Claude API goes down, but recovery is full process restart
 
 ### KI-015: Piper TTS subprocess has no timeout — _speaking flag can lock forever
-- **Status:** Open — medium urgency
+- **Status:** ✅ Fixed (2026-05-21)
 - **Service:** expression/speech.py line ~80
 - **Symptom:** `piper.communicate(text.encode("utf-8"))` blocks until Piper process exits. No timeout. If Piper hangs (OOM, corrupt model file, I/O stall), the `_speaking` flag stays `True` permanently. All future TTS calls are silently dropped. Cosmo goes mute with no recovery path except full restart.
 - **Root cause:** Missing timeout on subprocess.communicate().
@@ -250,6 +240,24 @@
   return False  # reject instead of silently allow
   ```
 - **Priority:** Low — only fires on code bugs (typo'd state name). But silent failures are very hard to debug.
+
+### KI-024: GPIO8 double-claimed — PIR sensor AND I2C software bus 4 SDA
+- **Status:** Open — requires config.txt edit + reboot (user action)
+- **Service:** /boot/firmware/config.txt, hardware/sensor_manager.py (PIR)
+- **Symptom:** `/boot/firmware/config.txt` has `dtoverlay=i2c-gpio,bus=4,i2c_gpio_sda=8,i2c_gpio_scl=9`. This creates a software I2C bus on GPIO8 (SDA) and GPIO9 (SCL). GPIO8 is simultaneously the PIR motion sensor pin. When the PIR sensor is enabled, both the kernel I2C driver and gpiozero will compete for GPIO8 ownership — kernel wins, PIR reads garbage or raises permission error.
+- **Fix (requires reboot):**
+  1. Comment out `dtoverlay=i2c-gpio,bus=4,i2c_gpio_sda=8,i2c_gpio_scl=9` in `/boot/firmware/config.txt`
+  2. Reboot
+  3. Verify no I2C bus 4 devices are connected that need that overlay
+- **Priority:** Fix before enabling PIR sensor (`pir.available: true`)
+
+### KI-025: OLLAMA_TIMEOUT_S too long + streaming path token usage not recorded
+- **Status:** Partially fixed (2026-05-21) — logging added, budget enforcement still caller-side
+- **Service:** cognition/llm.py
+- **Symptom (a):** `OLLAMA_TIMEOUT_S = 90.0` but Ollama cold start is ~51s. A hung Ollama blocks the path for up to 90s.
+- **Fix (a):** Lower to 60s (applied 2026-05-21 — see KI-023 now folded in here).
+- **Symptom (b):** `generate_streaming()` yields sentences but never called `_budget.record()`. Token usage was invisible to the daily budget enforcer in mind.py and conversation.py.
+- **Fix (b):** Added `stream.get_final_message()` call after streaming completes — usage is now logged. Callers (conversation.py) still need to wire the usage into their budget. Tracked as KI-017.
 
 ---
 
