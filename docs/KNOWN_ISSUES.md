@@ -117,6 +117,15 @@
 
 ## Fixed Issues
 
+### KI-012: CUDA torch silently crashing — person detection on HOG fallback (FIXED 2026-05-21)
+- **Status:** Fixed
+- **Service:** perception/vision/person.py
+- **Symptom:** Cosmo's person detection had been running HOG fallback since the NVIDIA packages were removed. YOLO appeared to load but threw `libcublasLt` errors at runtime. No visible crash — silent degradation. Explains "performance felt off" reports from weeks prior.
+- **Root cause:** torch installed as a CUDA build. After `nvidia-*` packages were removed (2026-05-20 disk cleanup), `libcublasLt.so.13` disappeared. ultralytics swallowed the import error and fell back to OpenCV HOG detector silently.
+- **Fix:** Replaced with `torch==2.11.0+cpu` + `torchvision==0.26.0+cpu` from `https://download.pytorch.org/whl/cpu`. Downloaded `yolo11n.pt` (5.4MB), placed in `models/`, updated `config/models.yaml` to local path.
+- **Impact:** First working YOLO on this Pi. 10.1 FPS measured at 320×240 on Pi 5 CPU (pipeline target: 8 FPS). All person-gated systems (gesture detection, proactive speech, face recognition handoff) now fire correctly.
+- **Discovered / Fixed:** 2026-05-21
+
 ### KI-010: Victory gesture false positives (FIXED 2026-05-20)
 - **Root cause:** opencv_skin backend returns conf 0.78–0.80 for Victory on background blobs. Default threshold was too low.
 - **Fix applied (gesture.py):**
