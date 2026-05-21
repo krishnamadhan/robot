@@ -182,6 +182,63 @@
   ```
 - **Priority:** Low — requires unusual concurrency. Budget overruns are cost exposure, not a crash.
 
+### KI-019: Shared I2C bus has no mutex — concurrent sensor + OLED writes collide
+- **Status:** Open — medium priority
+- **Service:** hardware/sensor_manager.py, expression/eyes.py
+- **Symptom:** Multiple async tasks share `smbus.SMBus(1)` with no locking. When OLED rendering (eyes.py) runs concurrently with sensor polling (BH1750, MPU-6050, UPS HAT battery reads), they can collide mid-transaction and raise `OSError: [Errno 121] Remote I/O error`. Silent sensor drop or display glitch.
+- **Root cause:** No `asyncio.Lock()` protecting the physical I2C bus. smbus2 is not thread/coroutine-safe.
+- **Becomes active when:** OLED eyes are wired and enabled. Until then, sensor_manager is the only I2C writer and collisions are unlikely.
+- **Fix:** One shared `asyncio.Lock` in a central location (e.g. `hardware/i2c_bus.py`), wrapping every `smbus` transaction across sensor_manager and eyes.py:
+  ```python
+  async with i2c_lock:
+      self._bus.write_i2c_block_data(...)
+  ```
+- **Priority:** Fix before wiring OLED eyes — collisions guaranteed once both sensor polling and display rendering are live
+
+### KI-020: Spatial memory write is not atomic — power loss mid-write corrupts JSON
+- **Status:** Open — low priority
+- **Service:** core/memory/spatial.py line ~200
+- **Symptom:** `SPATIAL_PATH.write_text(json.dumps(data))` truncates the file before writing. If the Pi loses power mid-write (UPS HAT limits this but doesn't eliminate it), `spatial.json` is left as an empty or partial file. Next boot: `json.JSONDecodeError` in spatial memory load, Cosmo loses all room fingerprints permanently.
+- **Root cause:** `Path.write_text()` is not atomic across all conditions. No temp-file pattern used.
+- **Fix:** Write to a temp file then atomically rename:
+  ```python
+  tmp = SPATIAL_PATH.with_suffix(".tmp")
+  tmp.write_text(json.dumps(data, indent=2))
+  tmp.replace(SPATIAL_PATH)   # os.replace() — atomic on Linux
+  ```
+- **Priority:** Low — UPS HAT makes clean shutdown likely, but still worth fixing
+
+### KI-021: dtoverlay=inmp441-pi5 still active — GPIO20/21 latent conflict with motor direction pins
+- **Status:** Open — fix before enabling motors
+- **Service:** /boot/firmware/config.txt, hardware/motors.py
+- **Symptom:** `/boot/firmware/config.txt` has `dtoverlay=inmp441-pi5` active. The I2S overlay claims GPIO18 (BCLK), GPIO19 (LRCLK), GPIO20 (DIN), GPIO21 (DOUT). GPIO18/19 are used as hardware PWM for motors — PWM is a separate function, no conflict. But GPIO20/21 are motor AIN1/AIN2 direction pins AND I2S DIN/DOUT. Kernel may fight gpiozero for ownership of those pins.
+- **Not live yet:** INMP441 is `available: false` and motors are mock mode — conflict is latent, not active.
+- **Fix before motor enable:** Comment out `dtoverlay=inmp441-pi5` and `dtparam=i2s=on` in `/boot/firmware/config.txt`, then reboot. Confirm `i2cdetect` and motor init still work. INMP441 will need GPIO reassignment before re-enabling anyway.
+- **Priority:** Must fix before connecting XT60 pigtail / enabling real motor driver
+
+### KI-022: Working memory has no automatic expiry loop — _store grows unbounded
+- **Status:** Open — low priority
+- **Service:** core/memory/working.py line ~80
+- **Symptom:** `purge_expired()` exists and correctly deletes expired entries, but it's only called when `snapshot()` is triggered manually. If nothing calls `snapshot()`, expired entries accumulate in `_store` indefinitely. Slow heap growth over days of runtime.
+- **Root cause:** No background cleanup task wired up.
+- **Fix:** Add a periodic cleanup coroutine on startup:
+  ```python
+  async def _cleanup_loop(self) -> None:
+      while True:
+          await asyncio.sleep(60)
+          removed = self.purge_expired()
+          if removed:
+              log.debug("working_memory.purged", count=removed)
+  ```
+- **Priority:** Low — entries are small, growth is slow. Fix when next touching working.py.
+
+### KI-023: Ollama timeout set to 90s — longer than worst-case cold start
+- **Status:** Open — low priority
+- **Service:** cognition/llm.py — `OLLAMA_TIMEOUT_S = 90.0`
+- **Symptom:** Ollama cold start is ~51s. Timeout is 90s — so a hung/unresponsive Ollama blocks the fallback path for up to 90s before giving up. During that window the robot is silent.
+- **Fix:** Lower `OLLAMA_TIMEOUT_S` to 60 — covers cold start with 9s margin, halves worst-case hang time.
+- **Priority:** Low — Ollama is already the fallback-of-last-resort. Claude Haiku is primary.
+
 ### KI-018: State machine silently accepts transitions to unregistered states
 - **Status:** Open — low urgency
 - **Service:** core/state_machine.py line ~244
