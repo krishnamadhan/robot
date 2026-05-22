@@ -413,6 +413,8 @@ class SoundEngine:
             return
         priority = int(_SOUND_PRIORITY.get(name, P.LOW))
         log.info("sounds.play", sound=name, priority=priority)
+        from utils.action_log import action_log
+        action_log.record("sound", name)
         loop = asyncio.get_event_loop()
         loop.run_in_executor(None, self._play_thread, samples, priority)
 

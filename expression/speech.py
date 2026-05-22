@@ -117,6 +117,8 @@ class TTSEngine:
             with self._lock:
                 self._kill_current()
         log.info("tts.speak", preview=text[:60])
+        from utils.action_log import action_log
+        action_log.record("speech", text[:60])
         loop = asyncio.get_event_loop()
         loop.run_in_executor(None, self._speak_thread, text)
 

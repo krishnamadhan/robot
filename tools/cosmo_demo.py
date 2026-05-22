@@ -188,6 +188,7 @@ async def _face_and_approach(person_x: float) -> None:
 
 
 async def setup_event_handlers() -> None:
+    from utils.action_log import action_log
 
     @bus.on(EventType.PERSON_DETECTED)
     async def on_person(event: Event) -> None:
@@ -196,6 +197,7 @@ async def setup_event_handlers() -> None:
         cosmo_bb.person_visible = True
         person_x = event.data.get("bbox_center_x", 0.0)
 
+        action_log.set_context("person_detected", f"x={person_x:.2f}")
         # Stop any wandering immediately
         if navigation.state.value == "wandering":
             await navigation.stop()
@@ -221,6 +223,7 @@ async def setup_event_handlers() -> None:
         cosmo_bb.person_id = person_id
         _state["events"].append(f"Face: {name} ({conf:.0%})")
 
+        action_log.set_context("face_recognized", f"{name} {conf:.0%}")
         audio_pipeline.update_person(person_id, _state.get("last_emotion") or None)
         await sm.transition_to(RobotState.INTERACTIVE, trigger="face_recognized")
 
@@ -244,7 +247,7 @@ async def setup_event_handlers() -> None:
         _state["face_conf"] = 0.0
         _state["last_person_time"] = time.monotonic()
         _state["events"].append("Unknown face")
-        # Curious but cautious
+        action_log.set_context("face_unknown", "stranger")
         eye_engine.set_expression(EyeExpression.CURIOUS, duration=3.0)
         await sounds.play("chirp_curious")
 
@@ -281,6 +284,7 @@ async def setup_event_handlers() -> None:
             return
         _state["last_emotion"] = emotion
         _state["events"].append(f"Emotion: {emotion}")
+        action_log.set_context("emotion", f"{emotion} {conf:.0%}")
 
         reaction = _EMOTION_REACTIONS.get(emotion.lower(), _EMOTION_REACTIONS["neutral"])
         eye_engine.set_expression(reaction["expr"], duration=4.0)
@@ -301,7 +305,9 @@ async def setup_event_handlers() -> None:
 
     @bus.on(EventType.WAKE_WORD)
     async def on_wake(event: Event) -> None:
-        _state["events"].append(f"Wake: '{event.data.get('word', '?')}'")
+        word = event.data.get('word', '?')
+        _state["events"].append(f"Wake: '{word}'")
+        action_log.set_context("wake_word", word)
         eye_engine.set_expression(EyeExpression.CURIOUS, duration=3.0)
         await sounds.play("beep_ack")
         await sm.transition_to(RobotState.LISTENING, trigger="wake_word")
@@ -379,12 +385,15 @@ async def setup_event_handlers() -> None:
         from expression.eyes import PRIORITY_TOUCH
         zone = event.data.get("zone", "?")
         _state["events"].append(f"Touch: {zone}")
+        action_log.set_context("touch", zone)
         eye_engine.set_expression(EyeExpression.LOVING, duration=3.0, priority=PRIORITY_TOUCH)
         await sounds.play("purr_petted")
 
     @bus.on(EventType.MOTION_DETECTED)
     async def on_motion(event: Event) -> None:
+        src = event.data.get("source", "pir")
         _state["events"].append("Motion (PIR)")
+        action_log.set_context("motion_detected", src)
         if _state["person_name"] == "no one":
             eye_engine.set_expression(EyeExpression.CURIOUS, duration=2.0)
             await sounds.play("chirp_curious")
@@ -393,6 +402,7 @@ async def setup_event_handlers() -> None:
     async def on_bat_crit(event: Event) -> None:
         pct = event.data.get("percent", 0)
         _state["events"].append(f"Battery CRITICAL: {pct:.0f}%")
+        action_log.set_context("battery_critical", f"{pct:.0f}%")
         eye_engine.set_expression(EyeExpression.SCARED, duration=10.0)
         await sounds.play("battery_low")
 
@@ -422,6 +432,8 @@ async def alone_watcher() -> None:
 
         if alone_s > WANDER_AFTER_S and navigation.state.value == "idle":
             _state["events"].append("Alone → wandering")
+            from utils.action_log import action_log
+            action_log.set_context("behavior_wander", f"alone {alone_s:.0f}s")
             eye_engine.set_expression(EyeExpression.SLEEPY, duration=5.0)
             asyncio.create_task(navigation.wander(duration=30))
 
@@ -429,6 +441,8 @@ async def alone_watcher() -> None:
             now = time.monotonic()
             if now - _last_lonely_speak > 300:
                 _last_lonely_speak = now
+                from utils.action_log import action_log
+                action_log.set_context("behavior_lonely", f"alone {alone_s:.0f}s")
                 eye_engine.set_expression(EyeExpression.SAD, duration=5.0)
                 asyncio.create_task(sounds.play("whimper_lonely"))
 

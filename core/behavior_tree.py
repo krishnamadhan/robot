@@ -179,6 +179,8 @@ class _GestureAction(_AsyncAction):
         from expression.sounds import sounds
 
         bb.last_gesture_bt_reacted[self._gesture_name] = time.monotonic()
+        from utils.action_log import action_log
+        action_log.set_context("gesture", self._gesture_name)
         expr = getattr(EyeExpression, self._eye_expr, EyeExpression.CURIOUS)
         eye_engine.set_expression(expr, duration=3.0)
         self._fire(sounds.play(self._sound_name))
@@ -240,6 +242,8 @@ class DoGreet(_AsyncAction):
         name = bb.person_name
         bb.last_greeted[name] = time.monotonic()
 
+        from utils.action_log import action_log
+        action_log.set_context("face_greet", name)
         eye_engine.set_expression(EyeExpression.HAPPY, duration=3.0)
         self._fire(sounds.play("chime_greeting"))
         log.info("bt.greet", name=name)
@@ -346,11 +350,14 @@ class DoWanderExplore(_AsyncAction):
         from expression.eyes import EyeExpression, eye_engine
         from expression.sounds import sounds
         from behavior.navigation import navigation
+        from utils.action_log import action_log
 
+        alone_s = time.monotonic() - bb.alone_since
+        action_log.set_context("behavior_wander", f"alone {alone_s:.0f}s")
         eye_engine.set_expression(EyeExpression.CURIOUS, duration=5.0)
         self._fire(sounds.play("curious_pip"))
         self._fire(navigation.wander(duration=20))
-        log.info("bt.wander", alone_s=time.monotonic() - bb.alone_since)
+        log.info("bt.wander", alone_s=alone_s)
         return Status.SUCCESS
 
 
@@ -365,9 +372,11 @@ class DoIdleSound(_AsyncAction):
 
         from expression.eyes import EyeExpression, eye_engine
         from expression.sounds import sounds
+        from utils.action_log import action_log
         import random
 
         sound = random.choice(["bored_sigh", "yawn_sweep"])
+        action_log.set_context("behavior_idle", "no person, bored")
         eye_engine.set_expression(EyeExpression.SLEEPY, duration=3.0)
         self._fire(sounds.play(sound))
         log.info("bt.bored_idle", sound=sound)

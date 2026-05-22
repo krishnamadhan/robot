@@ -259,6 +259,8 @@ class MotorController:
         if self._safety_stop:
             log.debug("motors.blocked_by_safety")
             return
+        from utils.action_log import action_log
+        action_log.record("move", f"forward {speed:.0%}")
         await self.ramp_to(speed, speed, emergency=not ramp)
         if self._mock:
             log.info("motors.forward", speed=speed)
@@ -269,6 +271,8 @@ class MotorController:
             return
         if self._safety_stop:
             return
+        from utils.action_log import action_log
+        action_log.record("move", f"backward {speed:.0%}")
         await self.ramp_to(-speed, -speed, emergency=not ramp)
         if self._mock:
             log.info("motors.backward", speed=speed)
@@ -298,6 +302,9 @@ class MotorController:
             await self.stop()
 
     async def stop(self, emergency: bool = False) -> None:
+        if self.is_moving:
+            from utils.action_log import action_log
+            action_log.record("move", "stop" + (" [EMERGENCY]" if emergency else ""))
         await self.ramp_to(0.0, 0.0, emergency=True)
         if self._mock and emergency:
             log.info("motors.stop", emergency=emergency)
