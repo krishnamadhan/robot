@@ -35,7 +35,7 @@ llm:
   backends:
     ollama:
       base_url: http://127.0.0.1:11434
-      model: llama3.2:1b    # fits comfortably in Pi 5 RAM
+      model: llama3.2:1b-instruct-q4_K_M  # Q4_K_M: ~700MB vs 1.3GB, negligible quality loss (ADR-017)
       fallback_model: gemma2:2b
       timeout_s: 15
       temperature: 0.8
