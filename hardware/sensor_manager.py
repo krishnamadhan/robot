@@ -116,6 +116,10 @@ class PIRSensor:
         self._next_mock_trigger: float = time.monotonic() + random.uniform(120, 300)
 
     def initialize(self) -> bool:
+        pir_cfg = cfg.hardware.sensors.get("pir", {})
+        if not pir_cfg.get("available", False):
+            log.info("pir.mock", reason="disabled in hardware.yaml")
+            return False
         if not _GPIO_OK:
             log.info("pir.mock", reason="gpiozero not available")
             return False
@@ -540,6 +544,7 @@ class SensorManager:
         self._bat_warned_low = False
         self._bat_warned_crit = False
         self._touch_press_times: Dict[str, float] = {}
+        self._long_fired: set = set()
         self._pickup_count: int = 0
 
     def initialize_all(self) -> None:
@@ -605,15 +610,24 @@ class SensorManager:
                 ))
             await asyncio.sleep(30)
 
+    _PIR_COOLDOWN_S = 10.0  # suppress re-fire while PIR hold-time is active
+
     async def _poll_pir(self) -> None:
+        if self.pir._mock:
+            return  # PIR not wired — skip entirely, mock fires are just noise
+        _last_fired: float = 0.0
         while self._running:
             if self.pir.check():
-                await bus.publish(Event(
-                    type=EventType.MOTION_DETECTED,
-                    data={"source": "pir"},
-                    priority=EventPriority.HIGH,
-                ))
-                personality.process_event(_P_MOTION)
+                now = time.monotonic()
+                if now - _last_fired >= self._PIR_COOLDOWN_S:
+                    _last_fired = now
+                    await bus.publish(Event(
+                        type=EventType.MOTION_DETECTED,
+                        data={"source": "pir"},
+                        priority=EventPriority.HIGH,
+                    ))
+                    personality.process_event(_P_MOTION)
+                    log.info("sensor.pir_motion")
             await asyncio.sleep(0.5)
 
     async def _poll_touch(self) -> None:
@@ -634,9 +648,7 @@ class SensorManager:
             now = time.monotonic()
             for zone in active:
                 start = self._touch_press_times.get(zone, now)
-                if now - start > 2.0 and zone not in getattr(self, "_long_fired", set()):
-                    if not hasattr(self, "_long_fired"):
-                        self._long_fired = set()
+                if now - start > 2.0 and zone not in self._long_fired:
                     self._long_fired.add(zone)
                     await bus.publish(Event(
                         type=EventType.TOUCH_LONG,
@@ -646,8 +658,7 @@ class SensorManager:
             # Released
             for zone in prev_active - active:
                 self._touch_press_times.pop(zone, None)
-                if hasattr(self, "_long_fired"):
-                    self._long_fired.discard(zone)
+                self._long_fired.discard(zone)
             prev_active = active
             await asyncio.sleep(0.1)
 

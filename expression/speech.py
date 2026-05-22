@@ -100,7 +100,7 @@ class TTSEngine:
             paplay.stdin.close()
             paplay.wait()
         except Exception as e:
-            log.debug("tts.error", error=str(e)[:80])
+            log.error("tts.error", error=str(e)[:80])
             if paplay and paplay.poll() is None:
                 paplay.kill()
         finally:

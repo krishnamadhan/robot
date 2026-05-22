@@ -105,6 +105,7 @@ class CosmoMind:
         self._last_spoke    = 0.0
         self._last_action   = time.monotonic()
         self._budget        = _DailyBudget(DAILY_TOKEN_LIMIT)
+        self._budget_lock   = asyncio.Lock()
 
         # Per-trigger last-fired times (avoids spam across different triggers)
         self._trigger_last: dict = {}
@@ -386,25 +387,27 @@ Response rules:
         """Call Claude to produce speech, guarded by cooldowns and budget."""
         if not self._enabled or not self._client:
             return
-        if self._budget.over_limit():
-            log.warning("cosmo_mind.budget_exceeded", day_total=self._budget.day_total)
-            return
         if tts.is_speaking:
             return
         if self._is_busy():
             return
 
-        now = time.monotonic()
-        # Global cooldown
-        if now - self._last_spoke < self._get_cooldown(trigger, cooldown):
-            return
-        # Per-trigger cooldown
-        trigger_cd = _TRIGGER_COOLDOWNS.get(trigger, SPEAK_COOLDOWN_S)
-        if now - self._trigger_last.get(trigger, 0.0) < trigger_cd:
-            return
+        async with self._budget_lock:
+            if self._budget.over_limit():
+                log.warning("cosmo_mind.budget_exceeded", day_total=self._budget.day_total)
+                return
 
-        self._last_spoke = now
-        self._trigger_last[trigger] = now
+            now = time.monotonic()
+            # Global cooldown
+            if now - self._last_spoke < self._get_cooldown(trigger, cooldown):
+                return
+            # Per-trigger cooldown
+            trigger_cd = _TRIGGER_COOLDOWNS.get(trigger, SPEAK_COOLDOWN_S)
+            if now - self._trigger_last.get(trigger, 0.0) < trigger_cd:
+                return
+
+            self._last_spoke = now
+            self._trigger_last[trigger] = now
 
         prompt_fn = _SPEAK_PROMPTS.get(trigger, lambda n: "[Say something short in English.]")
         prompt = prompt_fn(name)

@@ -65,8 +65,8 @@ class _SoftPWM:
         self._duty: float = 0.0
         self._lock = threading.Lock()
         self._stop = False
-        t = threading.Thread(target=self._run, daemon=True)
-        t.start()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
 
     def set_duty(self, duty: float) -> None:
         with self._lock:
@@ -95,6 +95,7 @@ class _SoftPWM:
 
     def close(self) -> None:
         self._stop = True
+        self._thread.join(timeout=0.5)
         self._pin.off()
         self._pin.close()
 
@@ -252,6 +253,9 @@ class MotorController:
             return False
 
     async def forward(self, speed: float = 0.55, ramp: bool = True) -> None:
+        if not self._enabled and not self._mock:
+            log.warning("motors.not_enabled", hint="self_test() must pass first")
+            return
         if self._safety_stop:
             log.debug("motors.blocked_by_safety")
             return
@@ -260,6 +264,9 @@ class MotorController:
             log.info("motors.forward", speed=speed)
 
     async def backward(self, speed: float = 0.55, ramp: bool = True) -> None:
+        if not self._enabled and not self._mock:
+            log.warning("motors.not_enabled", hint="self_test() must pass first")
+            return
         if self._safety_stop:
             return
         await self.ramp_to(-speed, -speed, emergency=not ramp)
@@ -267,6 +274,8 @@ class MotorController:
             log.info("motors.backward", speed=speed)
 
     async def turn_left(self, speed: float = 0.5, duration: float = None) -> None:
+        if not self._enabled and not self._mock:
+            return
         if self._safety_stop:
             return
         await self.ramp_to(-speed, speed)
@@ -277,6 +286,8 @@ class MotorController:
             await self.stop()
 
     async def turn_right(self, speed: float = 0.5, duration: float = None) -> None:
+        if not self._enabled and not self._mock:
+            return
         if self._safety_stop:
             return
         await self.ramp_to(speed, -speed)

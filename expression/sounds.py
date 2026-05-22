@@ -412,6 +412,7 @@ class SoundEngine:
         if samples is None:
             return
         priority = int(_SOUND_PRIORITY.get(name, P.LOW))
+        log.info("sounds.play", sound=name, priority=priority)
         loop = asyncio.get_event_loop()
         loop.run_in_executor(None, self._play_thread, samples, priority)
 
@@ -433,7 +434,8 @@ class SoundEngine:
             EventType.WAKE_WORD:        "wake_chime",
             EventType.FACE_RECOGNIZED:  "chime_greeting",
             EventType.BATTERY_CRITICAL: "battery_low",
-            EventType.MOTION_DETECTED:  "curious_pip",
+            # MOTION_DETECTED removed — cosmo_demo.py already handles it with
+            # person-presence context; having both caused double beeps on every event.
         }
         for evt_type, sound_name in _event_map.items():
             async def _handler(event: Event, _name=sound_name) -> None:
