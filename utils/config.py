@@ -22,19 +22,32 @@ class SimulationConfig(BaseModel):
     scenario: Optional[str] = None
 
 
+class MotorChannelConfig(BaseModel):
+    """Pin config for one TB6612FNG H-bridge channel (A or B side)."""
+    ain1: int = 0
+    ain2: int = 0
+    bin1: int = 0
+    bin2: int = 0
+    pwm: int = 0
+    model_config = {"extra": "allow"}
+
+
 class MotorConfig(BaseModel):
     driver: str = "TB6612FNG"
-    ain1: int = 23
-    ain2: int = 24
-    pwm_a: int = 12
-    bin1: int = 27
-    bin2: int = 22
-    pwm_b: int = 13
-    stby: int = 25
+    boards: int = 1
+    stby: int = 27
     max_speed: int = 100
     default_speed: int = 60
-    ramp_ms: int = 200
+    ramp_ms: int = 150
     stall_detect_ms: int = 500
+    left_trim: float = 0.600
+    right_trim: float = 1.000
+    # 4WD nested channel configs
+    left_front:  Optional[MotorChannelConfig] = None
+    left_rear:   Optional[MotorChannelConfig] = None
+    right_front: Optional[MotorChannelConfig] = None
+    right_rear:  Optional[MotorChannelConfig] = None
+    model_config = {"extra": "allow"}
 
 
 class ServoLimits(BaseModel):
