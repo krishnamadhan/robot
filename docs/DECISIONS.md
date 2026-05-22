@@ -130,7 +130,6 @@
 
 ## ADR-018: Enable Anthropic prompt caching for conversation context
 - **Date:** 2026-05-21
-- **Decision:** Add `cache_control` to system prompt in `cognition/conversation.py` and `cognition/mind.py` Claude API calls
-- **Rationale:** Per-person conversation context and the Cosmo system prompt are sent on every Claude call. Anthropic prompt caching (available May 2026) can reduce input token cost by ~90% for repeated context blocks. The per-person thread cache in `conversation.py` is already structured for this.
-- **Implementation:** Add `{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}` to messages. No behaviour change.
-- **Status:** 📅 Queued — do after YOLO11n + Ollama Q4_K_M
+- **Decision:** Deferred — not viable at current prompt sizes
+- **Rationale:** Claude Haiku 4.5 requires a minimum of 2048 tokens in a cached block. Cosmo's system prompts in mind.py are ~281 tokens even at their richest. Caching would never activate. Revisit when multi-turn conversation history accumulates 2048+ tokens of repeated context, or if Anthropic lowers the minimum cacheable block size for Haiku.
+- **Status:** ❌ Deferred — prompt too short for Haiku cache minimum (2048 tokens)

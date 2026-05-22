@@ -288,7 +288,7 @@ class MotorController:
 
     async def stop(self, emergency: bool = False) -> None:
         await self.ramp_to(0.0, 0.0, emergency=True)
-        if self._mock:
+        if self._mock and emergency:
             log.info("motors.stop", emergency=emergency)
 
     async def ramp_to(self, left: float, right: float,
@@ -324,7 +324,9 @@ class MotorController:
     async def _watchdog_loop(self) -> None:
         while True:
             await asyncio.sleep(0.1)
-            if self.is_moving:
+            # Watchdog only applies to web/manual-drive — autonomous navigation
+            # manages its own stop logic and never calls heartbeat()
+            if self._web_drive and self.is_moving:
                 elapsed_ms = (time.monotonic() - self._last_heartbeat) * 1000
                 if elapsed_ms > self.WATCHDOG_MS:
                     log.warning("motors.watchdog_stop",
