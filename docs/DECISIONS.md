@@ -126,7 +126,8 @@
 - **Decision:** Replace `llama3.2:1b` Ollama model with `llama3.2:1b-instruct-q4_K_M`
 - **Rationale:** Q4_K_M quantization reduces model size from ~1.3GB to ~700MB with negligible quality loss. Same model family, same Ollama API, no code changes. Frees ~600MB RAM headroom for future Phase 2/3 components.
 - **How:** `ollama pull llama3.2:1b-instruct-q4_K_M` then update model name in `config/models.yaml`
-- **Status:** 📅 Queued — do after YOLO11n validated
+- **Actual size:** 807MB (not ~700MB as estimated — still 38% smaller than 1.3GB original)
+- **Status:** ✅ Complete (2026-05-22) — model pulled, models.yaml updated, smoke test passed
 
 ## ADR-018: Enable Anthropic prompt caching for conversation context
 - **Date:** 2026-05-21

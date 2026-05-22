@@ -2,81 +2,106 @@
 
 > This file contains the focused task for the next Claude Code session.
 > Replace entirely at end of each session with the new top priority.
-> Last updated: 2026-05-21 (4th session — Phase 2 complete)
+> Last updated: 2026-05-22 (5th session)
 
 ---
 
-## Current Hardware State (as of 2026-05-21)
+## Current Hardware State (as of 2026-05-22)
 
 **Connected and working:**
 - Camera: Logitech C920 (USB, /dev/video0) — YOLO11n @ 10.1 FPS confirmed
 - Speaker: JBL Flip 5 Bluetooth (28:FA:19:C1:73:F8) — paired and working via PipeWire
 - Mic: C920 USB mic — `HD Pro Webcam C920: USB Audio (hw:3,0)` confirmed in logs
-- UPS HAT: battery at ~94%, I2C 0x36 active
-- Wake word: OpenWakeWord "hey_jarvis" — confirmed `oww.loaded` in logs
+- UPS HAT: battery ~94%, I2C 0x36 active
+- Wake word: OpenWakeWord "hey_jarvis" — confirmed working
 - Full audio pipeline: STT → Claude Haiku → Piper TTS → JBL — confirmed working
+- Ollama fallback: llama3.2:1b-instruct-q4_K_M (807MB, smoke-tested)
 
 **Not yet wired:**
-- OLED eyes (0x3C + 0x3D) — hardware on desk
-- PIR, touch ×4, MPU-6050, BH1750 — wired but not enabled in hardware.yaml
+- OLED eyes (0x3C + 0x3D) — hardware on desk, highest priority
+- PIR, touch ×3, MPU-6050, BH1750 — wired but not enabled in hardware.yaml
 - XT60 pigtail for LiPo → motors — on order
 
-**Required before next PIR enable:**
-- Comment out `dtoverlay=i2c-gpio,bus=4,i2c_gpio_sda=8,i2c_gpio_scl=9` in `/boot/firmware/config.txt`
-- Reboot (KI-024 — GPIO8/I2C bus 4 conflict)
+**Pending reboot (KI-024):**
+- `/boot/firmware/config.txt` i2c-gpio overlay already commented out (2026-05-22)
+- Reboot will: (1) apply KI-024 fix, (2) clear stale GPIO27 pin claim → motors.real_4wd will persist
+- Safe to reboot — banteragent will auto-restart via PM2
 
 ---
 
-## Session start task: Ollama Q4_K_M + first live test
+## Session start: Wire OLED Eyes (biggest visual impact — hardware on desk)
+
+**Before starting:** `sudo i2cdetect -y 1` — verify baseline, should see 0x36 (UPS)
+
+**Wiring (both SSD1306s to I2C bus 1):**
+```
+VCC → Pi 3.3V (Pin 1)
+GND → Pi GND (Pin 6)
+SDA → GPIO2 / Pin 3
+SCL → GPIO3 / Pin 5
+Left eye  addr 0x3C — A0 pad floating (default)
+Right eye addr 0x3D — bridge A0 pad to VCC (solder blob or 10kΩ to 3.3V)
+```
+
+**After wiring:**
+```bash
+sudo i2cdetect -y 1   # Must show 0x3C AND 0x3D
+```
+
+**Software (fix KI-019 I2C mutex FIRST, then switch render target):**
+
+KI-019 is the I2C bus contention issue — multiple drivers hitting the bus simultaneously
+without locking. Read `hardware/sensor_manager.py` and `expression/eyes.py` to understand
+current I2C access patterns, then add an asyncio.Lock() at the hardware layer before enabling
+both OLED + sensors simultaneously.
+
+After KI-019 fix:
+```python
+# In expression/eyes.py — change:
+eye_engine.set_render_target("terminal")
+# to:
+eye_engine.set_render_target("oled")
+```
 
 ```bash
-ollama pull llama3.2:1b-instruct-q4_K_M
-# Then update config/models.yaml: llm.backends.ollama.model → llama3.2:1b-instruct-q4_K_M
-# Verify: ollama run llama3.2:1b-instruct-q4_K_M "hello"
+pm2 restart cosmo && pm2 logs cosmo --lines 30 --nostream | grep eyes
 ```
 
-Then do a live test session with someone in frame. Watch:
-- Proactive speech trigger rate (face_seen, emotion triggers firing)
-- Face recognition handoffs (should be clean after Phase 2 fixes)
-- Check `pm2 logs cosmo --lines 30` for any new errors from Phase 2 code
+Expected: eyes render on hardware, expressions visible (happy/sleepy/alert etc.)
 
 ---
 
-## Next priorities after live test
+## After OLED: Enable sensors (one at a time)
 
-### 1. Wire OLED Eyes (biggest visual impact — hardware on desk)
-1. Connect both SSD1306s to I2C (SDA=GPIO2/Pin3, SCL=GPIO3/Pin5, VCC=3.3V, GND)
-2. Bridge A0 pad on right eye board (solder blob → VCC) for address 0x3D
-3. `sudo i2cdetect -y 1` → verify 0x3C and 0x3D appear
-4. In `expression/eyes.py` change render target `"terminal"` → `"oled"`
-5. `pm2 restart cosmo` → verify eyes render on hardware
-6. Fix KI-019 (I2C mutex) BEFORE enabling OLED + sensors simultaneously
+**Order:** BH1750 → touch × 3 → MPU-6050 → PIR (PIR requires reboot first for KI-024)
 
-### 2. Prompt caching (ADR-018) — API cost cut ~40%
-Implement ephemeral cache prefix in `cognition/mind.py`:
-```python
-# In _build_rich_system_prompt() — return tuple (static_prefix, dynamic_suffix)
-# In _maybe_speak() — pass system as list with cache_control block
-system=[
-    {"type": "text", "text": static_prefix,
-     "cache_control": {"type": "ephemeral"}},
-    {"type": "text", "text": dynamic_suffix},
-]
-```
+For each sensor:
+1. Set `available: true` in `config/hardware.yaml`
+2. `pm2 restart cosmo`
+3. Watch logs: `pm2 logs cosmo --lines 20 --nostream | grep sensor`
+4. Verify event fires on hardware trigger
+5. Only then move to next sensor
 
-### 3. KI-016 — aiosqlite migration (episodic memory)
-Use `aiosqlite` — not `asyncio.Lock()` bolted onto sync calls.
-Migrate `core/memory/episodic.py` fully to async aiosqlite.
+---
 
-### 4. Enable sensors (one at a time, verify after each)
-Enable order: BH1750 → touch × 3 → MPU-6050 → PIR (only after KI-024 config.txt fix)
+## Stack status (all upgrades complete or deferred)
+
+| Component | Status |
+|---|---|
+| YOLO11n person detection | ✅ Complete (ADR-012) |
+| SFace face recognition | ✅ Locked (ADR-013) |
+| Ollama Q4_K_M | ✅ Complete (ADR-017, 2026-05-22) |
+| Prompt caching | ❌ Deferred — 281 tokens < 2048 minimum (ADR-018) |
+| Custom wake word | 📅 Phase 4 (ADR-015) |
+| TTS swap (Kitten) | 📅 Quality test first (ADR-016) |
 
 ---
 
 ## Disk warning
-cosmo-err.log now receives ALSA/Jack noise. Cap it:
+
+Check before starting:
 ```bash
-# Check size after 24h:
-ls -lh /home/pi/.robot/logs/cosmo-err.log
-# If growing fast, add logrotate rule or grep filter in ecosystem.config.js
+df -h / | tail -1
+ls -lh /home/pi/.robot/logs/
 ```
+Was at 90% on 2026-05-20. If >93%, check cosmo-err.log size.

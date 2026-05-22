@@ -242,7 +242,7 @@
 - **Priority:** Low — only fires on code bugs (typo'd state name). But silent failures are very hard to debug.
 
 ### KI-024: GPIO8 double-claimed — PIR sensor AND I2C software bus 4 SDA
-- **Status:** Open — requires config.txt edit + reboot (user action)
+- **Status:** Config fixed 2026-05-22 — overlay commented out in /boot/firmware/config.txt; reboot required to take effect
 - **Service:** /boot/firmware/config.txt, hardware/sensor_manager.py (PIR)
 - **Symptom:** `/boot/firmware/config.txt` has `dtoverlay=i2c-gpio,bus=4,i2c_gpio_sda=8,i2c_gpio_scl=9`. This creates a software I2C bus on GPIO8 (SDA) and GPIO9 (SCL). GPIO8 is simultaneously the PIR motion sensor pin. When the PIR sensor is enabled, both the kernel I2C driver and gpiozero will compete for GPIO8 ownership — kernel wins, PIR reads garbage or raises permission error.
 - **Fix (requires reboot):**

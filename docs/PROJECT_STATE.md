@@ -56,7 +56,7 @@
 | Emotion detection | DeepFace 7-class | FER 5-class candidate | 📅 Deferred — test after OLED + face tests | ADR-014 |
 | Wake word | OWW hey_jarvis | OWW hey_cosmo (custom) | 📅 Phase 4 | ADR-015 |
 | TTS | Piper lessac-medium 61MB | Kitten Micro 25MB | 📅 Quality test first | ADR-016 |
-| Local LLM | Ollama llama3.2:1b 1.3GB | Q4_K_M ~700MB | 📅 After YOLO11n | ADR-017 |
+| Local LLM | Ollama llama3.2:1b 1.3GB | Q4_K_M 807MB | ✅ Complete (2026-05-22) | ADR-017 |
 | Claude context | No caching | Prompt caching (ephemeral) | 📅 After YOLO11n | ADR-018 |
 
 ---
@@ -131,24 +131,21 @@
 
 ## In Progress
 
-- [ ] Rebooted Pi (KI-024 — GPIO8/I2C conflict, config.txt change required)
-- [ ] Ollama Q4_K_M pull (next session task)
+- [ ] Reboot Pi — KI-024 config.txt overlay commented out 2026-05-22, reboot still pending (clears GPIO27 stale pin claim too)
 
 ## Next Up (priority order)
 
-1. Pull Ollama Q4_K_M + live test with someone in frame
-2. Wire OLEDs (0x3C + 0x3D) → verify with i2cdetect → switch eyes.py to oled mode + fix KI-019 I2C mutex first
-3. Prompt caching ADR-018 (ephemeral cache prefix in mind.py — ~40% API cost cut)
-4. KI-016 — aiosqlite migration for episodic memory
-5. Enable sensors one at a time: BH1750 → touch × 3 → MPU-6050 → PIR (only after KI-024 config.txt fix)
-6. Re-enroll Indhu face (20 samples, good light)
+1. Wire OLEDs (0x3C + 0x3D) → verify with i2cdetect → switch eyes.py to oled mode + fix KI-019 I2C mutex first
+2. Enable sensors one at a time: BH1750 → touch × 3 → MPU-6050 → PIR (PIR only after reboot clears KI-024)
+3. KI-016 — aiosqlite migration for episodic memory
+4. Re-enroll Indhu face (20 samples, good light)
 
 ## Blocked On
 
 - XT60 female pigtail (Robocraze) — no motor testing with LiPo until this arrives
 - APDS-9960 replacement (Robocraze) — keep available: false until confirmed
 - PCA9685 + MG90S + pan-tilt bracket (Robocraze) — Phase 3 starts when these arrive
-- KI-024 config.txt edit (done during reboot on 2026-05-21)
+- Pi reboot — needed to apply KI-024 config.txt change
 
 ## Performance Snapshot (2026-05-20)
 
