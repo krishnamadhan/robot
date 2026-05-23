@@ -46,13 +46,14 @@ SYSTEM 2 — Motor Power (completely isolated)
 | GPIO3 | Pin 5 | I2C SCL (shared) | 3.3V | All I2C devices |
 | GPIO4 | Pin 7 | TTP223 Touch LEFT | 3.3V | Active HIGH |
 | GPIO5 | Pin 29 | TTP223 Touch HEAD | 3.3V | Active HIGH |
-| GPIO6 | Pin 31 | TB6612FNG BIN2 | 3.3V | Right motor backward ⚠️ CONFLICT FIXED |
+| GPIO6 | Pin 31 | **FIT0992 HAT — adapter-fail detect** | — | ⛔ RESERVED BY HAT — LOW=adapter failed, causes converter burnout. DO NOT USE. |
+| GPIO10 | Pin 19 | TB6612FNG BIN2 (left_rear backward) | 3.3V | Moved from GPIO6 to avoid HAT conflict |
 | GPIO7 | Pin 26 | TTP223 Touch RIGHT | 3.3V | Active HIGH |
 | GPIO8 | Pin 24 | HC-SR501 PIR OUT | 3.3V | Active HIGH on motion |
 | GPIO13 | Pin 33 | TB6612FNG PWMB (left_rear PWM) | 3.3V | HW PWM1 |
 | GPIO14 | Pin 8  | TCRT5000 Cliff LEFT | 3.3V | Via LLC (5V→3.3V) — moved from GPIO20 |
 | GPIO15 | Pin 10 | TCRT5000 Cliff RIGHT | 3.3V | Via LLC (5V→3.3V) — moved from GPIO21 |
-| GPIO16 | Pin 36 | HC-SR04 TRIG | 3.3V | Direct — sensor accepts 3.3V |
+| GPIO16 | Pin 36 | **FIT0992 HAT — charging control** | — | ⛔ RESERVED BY HAT — HIGH=disable charging. HC-SR04 TRIG moved off this pin. |
 | GPIO17 | Pin 11 | TB6612FNG AIN1 (left_front dir1) | 3.3V | Left forward direction |
 | GPIO18 | Pin 12 | TB6612FNG PWMA (right_front PWM) | 3.3V | HW PWM0, freed I2S BCLK |
 | GPIO19 | Pin 35 | TB6612FNG PWMB (right_rear PWM) | 3.3V | HW PWM1 alt, freed I2S LRCLK |
