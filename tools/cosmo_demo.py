@@ -503,6 +503,8 @@ async def main() -> None:
         console.print("[yellow]⚠ LLM — ANTHROPIC_API_KEY not set, set it in robot/.env[/yellow]")
 
     # Camera + vision — graceful degradation if C920 not plugged in
+    enrolled: list = []
+    em_ok: bool = False
     _camera_ok = await camera.start()
     if _camera_ok:
         console.print("[green]✓ Camera[/green]")
@@ -597,7 +599,8 @@ async def main() -> None:
     console.print(f"\n[bold green]Cosmo is alive! {personality.describe()}[/bold green]")
     if enrolled:
         console.print(f'[dim]Walk in — Cosmo knows {", ".join(enrolled)}[/dim]')
-    console.print(f'[dim]📹 Live stream: {stream_server.best_url()}[/dim]\n')
+    if _camera_ok:
+        console.print(f'[dim]📹 Live stream: {stream_server.best_url()}[/dim]\n')
 
     asyncio.create_task(state_watcher())
     asyncio.create_task(memory_maintenance_loop())
