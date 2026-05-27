@@ -1,7 +1,21 @@
 #!/usr/bin/env python3
-"""Keyboard robot control — W/S/A/D to drive, Space to stop, Q to quit.
-   Loads separate forward and backward calibration from calibration.json.
-"""
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  ⚠️  DEPRECATED — DO NOT RUN  ⚠️                                         ║
+# ║                                                                          ║
+# ║  This script uses the OLD 2WD pinout:                                    ║
+# ║    bin2  = GPIO6   ← BURNS FIT0992 UPS HAT (adapter-fail pin)           ║
+# ║    pwm_a = GPIO18  ← Now right_front PWM in 4WD config                  ║
+# ║    pwm_b = GPIO13  ← Now left_rear PWM in 4WD config                    ║
+# ║                                                                          ║
+# ║  Use hardware/motors.py via tools/motor_test.py instead.                 ║
+# ║  See config/hardware.yaml for the current 4WD GPIO map.                  ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+"""Keyboard robot control — DEPRECATED, see warning above."""
+import sys
+print("ERROR: robot_control.py is deprecated and uses a dangerously wrong pinout.")
+print("       Run tools/motor_test.py instead.")
+sys.exit(1)
+
 import curses, json, os, time
 from gpiozero import PWMOutputDevice, DigitalOutputDevice
 
@@ -11,9 +25,9 @@ stby  = DigitalOutputDevice(27, initial_value=False)
 ain1  = DigitalOutputDevice(17)
 ain2  = DigitalOutputDevice(22)
 bin1  = DigitalOutputDevice(23)
-bin2  = DigitalOutputDevice(6)
-pwm_a = PWMOutputDevice(18, frequency=1000)
-pwm_b = PWMOutputDevice(13, frequency=1000)
+bin2  = DigitalOutputDevice(6)   # WRONG: GPIO6 = UPS HAT adapter-fail pin
+pwm_a = PWMOutputDevice(18, frequency=1000)  # WRONG: now right_front PWM
+pwm_b = PWMOutputDevice(13, frequency=1000)  # WRONG: now left_rear PWM
 
 def stop():
     ain1.off(); ain2.off(); bin1.off(); bin2.off()

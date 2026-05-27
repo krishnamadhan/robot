@@ -43,6 +43,7 @@ from behavior.navigation import navigation
 from cognition.conversation import conversation
 from cognition.intent import intent_parser
 from cognition.mind import cosmo_mind
+from cognition.pet_brain import pet_brain
 from core.attention import attention
 from core.event_bus import bus, Event, EventType
 from core.memory.episodic import episodic
@@ -501,25 +502,23 @@ async def main() -> None:
     else:
         console.print("[yellow]⚠ LLM — ANTHROPIC_API_KEY not set, set it in robot/.env[/yellow]")
 
-    # Camera + vision
-    if not await camera.start():
-        console.print("[red]✗ Camera failed[/red]"); return
-    console.print("[green]✓ Camera[/green]")
-
-    await person_detector.start()
-    console.print(f"[green]✓ Person detector ({person_detector.stats()['backend']})[/green]")
-
-    await vision_loop.start()
-    enrolled = vision_loop.get_face_engine().list_enrolled()
-    em_ok = vision_loop.get_emotion_detector().is_available
-    console.print(f"[green]✓ Face recognition — enrolled: {enrolled or ['none']}[/green]")
-    console.print(f"[green]✓ Emotion detection ({'ON' if em_ok else 'OFF'})[/green]")
-
-    # MJPEG stream server
-    if await stream_server.start():
-        console.print(f"[green]✓ Stream server — {stream_server.best_url()}[/green]")
+    # Camera + vision — graceful degradation if C920 not plugged in
+    _camera_ok = await camera.start()
+    if _camera_ok:
+        console.print("[green]✓ Camera[/green]")
+        await person_detector.start()
+        console.print(f"[green]✓ Person detector ({person_detector.stats()['backend']})[/green]")
+        await vision_loop.start()
+        enrolled = vision_loop.get_face_engine().list_enrolled()
+        em_ok = vision_loop.get_emotion_detector().is_available
+        console.print(f"[green]✓ Face recognition — enrolled: {enrolled or ['none']}[/green]")
+        console.print(f"[green]✓ Emotion detection ({'ON' if em_ok else 'OFF'})[/green]")
+        if await stream_server.start():
+            console.print(f"[green]✓ Stream server — {stream_server.best_url()}[/green]")
+        else:
+            console.print("[yellow]⚠ Stream server failed to start[/yellow]")
     else:
-        console.print("[yellow]⚠ Stream server failed to start[/yellow]")
+        console.print("[yellow]⚠ Camera not found — running without vision (plug in C920 and restart)[/yellow]")
 
     # Sensors (mocked until hardware arrives)
     await sensor_manager.start()
@@ -558,6 +557,9 @@ async def main() -> None:
 
     await cosmo_mind.start()
     console.print("[green]✓ Cosmo Mind (rule engine)[/green]")
+
+    await pet_brain.start()
+    console.print("[green]✓ Pet Brain (movement decisions)[/green]")
 
     behavior_tree.setup()
     await behavior_tree.start()
@@ -624,6 +626,7 @@ async def main() -> None:
         await behavior_tree.stop()
         await attention.stop()
         await cosmo_mind.stop()
+        await pet_brain.stop()
         await audio_pipeline.stop()
         await motor_controller.stop(emergency=True)
         await stream_server.stop()

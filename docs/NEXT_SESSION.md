@@ -2,7 +2,7 @@
 
 > This file contains the focused task for the next Claude Code session.
 > Replace entirely at end of each session with the new top priority.
-> Last updated: 2026-05-22 (5th session)
+> Last updated: 2026-05-28 (Codex collaboration session)
 
 ---
 
@@ -29,7 +29,17 @@
 
 ---
 
-## Session start: Wire OLED Eyes (biggest visual impact — hardware on desk)
+## Session start: Test Pet Brain + Wire OLED Eyes
+
+### First: Test PetBrain (5 min, no hardware needed)
+```bash
+cd ~/robot && python3 tools/pet_brain_test.py
+```
+Test all state transitions: toggle person (p), change energy (+/-), toggle dark (l), close obstacle (o).
+Verify FLEE immediately overrides other states.
+Verify wander weight increases when curiosity boosted (c key).
+
+### Then: Wire OLED Eyes (biggest visual impact — hardware on desk)
 
 **Before starting:** `sudo i2cdetect -y 1` — verify baseline, should see 0x36 (UPS)
 

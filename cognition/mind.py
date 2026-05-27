@@ -18,6 +18,7 @@ from typing import List, Optional
 from core.attention import attention
 from core.event_bus import bus, Event, EventType
 from expression.eyes import EyeExpression, eye_engine
+from expression.sounds import sounds
 from expression.speech import tts
 from hardware.motors import motor_controller
 from hardware.sensor_manager import sensor_manager
@@ -106,6 +107,8 @@ class CosmoMind:
         self._last_action   = time.monotonic()
         self._budget        = _DailyBudget(DAILY_TOKEN_LIMIT)
         self._budget_lock   = asyncio.Lock()
+        # Prevents two concurrent triggers from both passing tts.is_speaking check
+        self._speech_in_flight = asyncio.Event()
 
         # Per-trigger last-fired times (avoids spam across different triggers)
         self._trigger_last: dict = {}
@@ -378,16 +381,34 @@ Response rules:
         base = override if override is not None else _TRIGGER_COOLDOWNS.get(trigger, SPEAK_COOLDOWN_S)
         return base * random.uniform(0.85, 1.15)
 
+    # Non-verbal reaction map: fired BEFORE Claude speech to feel more alive
+    _NONVERBAL: dict = {
+        "face_seen":     (EyeExpression.HAPPY,     "chirp_happy"),
+        "emotion_happy": (EyeExpression.HAPPY,     "trill_excited"),
+        "emotion_sad":   (EyeExpression.SAD,       "whimper_sad"),
+        "emotion_angry": (EyeExpression.SCARED,    None),
+        "touched":       (EyeExpression.LOVING,    "purr_content"),
+        "alone_long":    (EyeExpression.SAD,       "whimper_sad"),
+        "obstacle":      (EyeExpression.SURPRISED, None),
+        "dark_room":     (EyeExpression.SCARED,    None),
+    }
+
     async def _maybe_speak(
         self,
         trigger: str,
         name: Optional[str],
         cooldown: Optional[int] = None,
     ) -> None:
-        """Call Claude to produce speech, guarded by cooldowns and budget."""
+        """Call Claude to produce speech, guarded by cooldowns and budget.
+
+        Improvements over original:
+        - Non-verbal reaction (eyes + sound) fires BEFORE the API call
+        - _speech_in_flight flag prevents concurrent triggers both passing
+        - Cooldowns committed only AFTER successful TTS handoff (not burned on failure)
+        """
         if not self._enabled or not self._client:
             return
-        if tts.is_speaking:
+        if tts.is_speaking or self._speech_in_flight.is_set():
             return
         if self._is_busy():
             return
@@ -398,67 +419,81 @@ Response rules:
                 return
 
             now = time.monotonic()
-            # Global cooldown
             if now - self._last_spoke < self._get_cooldown(trigger, cooldown):
                 return
-            # Per-trigger cooldown
             trigger_cd = _TRIGGER_COOLDOWNS.get(trigger, SPEAK_COOLDOWN_S)
             if now - self._trigger_last.get(trigger, 0.0) < trigger_cd:
                 return
 
-            self._last_spoke = now
-            self._trigger_last[trigger] = now
-
-        prompt_fn = _SPEAK_PROMPTS.get(trigger, lambda n: "[Say something short in English.]")
-        prompt = prompt_fn(name)
-
-        # Get person context
+        # Mark in-flight immediately to block concurrent callers
+        self._speech_in_flight.set()
         try:
-            from cognition.conversation import conversation as _conv
-            person_id = _conv._active_person_id
-            emotion   = _conv._their_emotion
-        except Exception:
-            person_id = None
-            emotion   = None
+            # ── Non-verbal reaction FIRST (free, zero latency) ────────────────
+            nv = self._NONVERBAL.get(trigger)
+            if nv:
+                eye_expr, sound_name = nv
+                eye_engine.set_expression(eye_expr, duration=3.0)
+                if sound_name:
+                    asyncio.create_task(sounds.play(sound_name))
+                await asyncio.sleep(random.uniform(0.2, 0.5))
 
-        if emotion and trigger not in ("emotion_happy", "emotion_sad", "emotion_angry"):
-            prompt = f"{prompt} (They seem {emotion} right now.)"
+            # ── Build prompt ──────────────────────────────────────────────────
+            prompt_fn = _SPEAK_PROMPTS.get(trigger, lambda n: "[Say something short in English.]")
+            prompt = prompt_fn(name)
 
-        if person_id:
-            system_prompt = await self._build_rich_system_prompt(person_id, name, emotion)
-        else:
-            mem = await self._memory_context()
-            system_prompt = _SYSTEM + (f"\n\nRecent context: {mem}" if mem else "")
+            try:
+                from cognition.conversation import conversation as _conv
+                person_id = _conv._active_person_id
+                emotion   = _conv._their_emotion
+            except Exception:
+                person_id = None
+                emotion   = None
 
-        log.info("cosmo_mind.speak_trigger", trigger=trigger, name=name,
-                 has_person=bool(person_id))
+            if emotion and trigger not in ("emotion_happy", "emotion_sad", "emotion_angry"):
+                prompt = f"{prompt} (They seem {emotion} right now.)"
 
-        loop = asyncio.get_event_loop()
-        try:
-            response = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None,
-                    lambda: self._client.messages.create(
-                        model=MODEL,
-                        max_tokens=60,
-                        system=system_prompt,
-                        messages=[{"role": "user", "content": prompt}],
-                    )
-                ),
-                timeout=15.0,
-            )
-        except asyncio.TimeoutError:
-            log.error("cosmo_mind.api_timeout", trigger=trigger)
-            return
-        except Exception as e:
-            log.error("cosmo_mind.api_error", error=str(e)[:300])
-            return
+            if person_id:
+                system_prompt = await self._build_rich_system_prompt(person_id, name, emotion)
+            else:
+                mem = await self._memory_context()
+                system_prompt = _SYSTEM + (f"\n\nRecent context: {mem}" if mem else "")
 
-        self._budget.record(response.usage)
-        text = response.content[0].text.strip() if response.content else ""
-        if text:
-            asyncio.create_task(tts.speak(text))
-            log.info("cosmo_mind.spoke", trigger=trigger, text=text[:60])
+            log.info("cosmo_mind.speak_trigger", trigger=trigger, name=name,
+                     has_person=bool(person_id))
+
+            # ── Claude API call ───────────────────────────────────────────────
+            loop = asyncio.get_event_loop()
+            try:
+                response = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None,
+                        lambda: self._client.messages.create(
+                            model=MODEL,
+                            max_tokens=60,
+                            system=system_prompt,
+                            messages=[{"role": "user", "content": prompt}],
+                        )
+                    ),
+                    timeout=15.0,
+                )
+            except asyncio.TimeoutError:
+                log.error("cosmo_mind.api_timeout", trigger=trigger)
+                return
+            except Exception as e:
+                log.error("cosmo_mind.api_error", error=str(e)[:300])
+                return
+
+            self._budget.record(response.usage)
+            text = response.content[0].text.strip() if response.content else ""
+            if text:
+                asyncio.create_task(tts.speak(text))
+                log.info("cosmo_mind.spoke", trigger=trigger, text=text[:60])
+                # Only commit cooldowns after successful TTS handoff
+                now = time.monotonic()
+                self._last_spoke = now
+                self._trigger_last[trigger] = now
+        finally:
+            self._speech_in_flight.clear()
 
     def _is_busy(self) -> bool:
         try:

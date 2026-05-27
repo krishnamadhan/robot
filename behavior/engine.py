@@ -106,14 +106,17 @@ class BehaviorEngine:
         self._last_memory_ref: float = 0.0
         self._last_ambient_act: float = 0.0
         self._last_proactive_spoke: float = 0.0
+        self._proactive_lock = asyncio.Lock()  # prevent concurrent trigger fires
 
         # ── Idle behaviors ────────────────────────────────────────────────────
+        # Wander weight is dynamic — see _personality_wander_weight() below.
+        # Static weight here is overridden at selection time.
         self._behaviors: List[Behavior] = [
             Behavior("look_left_right", 0.30, 15,  self._look_around,  energy_min=0.2),
             Behavior("slow_blink",      0.25,  8,  self._slow_blink),
             Behavior("curious_sound",   0.25, 15,  self._curious_sound, energy_min=0.4),
             Behavior("purr_idle",       0.20, 40,  self._purr_idle,     energy_max=0.5),
-            Behavior("wander",          0.10, 60,  self._wander,        energy_min=0.5),
+            Behavior("wander",          0.10, 60,  self._wander,        energy_min=0.3),
             Behavior("seek_attention",  0.20, 300, self._seek_attention, energy_max=0.15),
             Behavior("breathing",       0.35,  5,  self._breathe),
         ]
@@ -270,6 +273,9 @@ class BehaviorEngine:
             if not ready:
                 continue
 
+            # Apply personality-aware weight to wander before selection
+            self._apply_personality_weights(ready)
+
             total = sum(b.weight for b in ready)
             r = random.uniform(0, total)
             cumulative = 0.0
@@ -322,6 +328,8 @@ class BehaviorEngine:
                     continue
                 if tts.is_speaking:
                     continue
+                if self._proactive_lock.locked():
+                    continue
                 # Don't fire proactive speech if attention is locked on something
                 # else (e.g. wake word still held) — wait for natural gap
                 if attention.focused and attention.state.interruptibility < 0.3:
@@ -340,22 +348,23 @@ class BehaviorEngine:
                 log.info("behavior.proactive", trigger=trigger.name,
                          phrase=phrase[:40])
                 self._last_proactive_spoke = time.monotonic()
-                try:
-                    mood_before = personality.state.mood
-                    await tts.speak(phrase)
-                    # Record outcome after a brief window — person present = responded
-                    await asyncio.sleep(5)
+                async with self._proactive_lock:
                     try:
-                        from core.personality import personality_learning
-                        personality_learning.record_outcome(
-                            interaction_type="proactive_speech",
-                            person_responded=bool(self._current_person),
-                            mood_delta=personality.state.mood - mood_before,
-                        )
-                    except Exception:
-                        pass
-                except Exception as e:
-                    log.warning("behavior.speak_error", error=str(e)[:60])
+                        mood_before = personality.state.mood
+                        await tts.speak(phrase)
+                        # Record outcome after a brief window — person present = responded
+                        await asyncio.sleep(5)
+                        try:
+                            from core.personality import personality_learning
+                            personality_learning.record_outcome(
+                                interaction_type="proactive_speech",
+                                person_responded=bool(self._current_person),
+                                mood_delta=personality.state.mood - mood_before,
+                            )
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        log.warning("behavior.speak_error", error=str(e)[:60])
                 break  # one trigger per cycle
 
     # ── Ambient awareness loop ────────────────────────────────────────────────
@@ -535,8 +544,37 @@ class BehaviorEngine:
         if played:
             eye_engine.set_expression(expr, duration=3.0)
 
+    def _apply_personality_weights(self, behaviors: list) -> None:
+        """Scale wander weight by curiosity trait so curious Cosmo wanders more."""
+        try:
+            from core.personality import personality_learning
+            curiosity = personality_learning.get("curiosity", 0.7)
+            energy    = personality.state.energy
+        except Exception:
+            return
+        for b in behaviors:
+            if b.name == "wander":
+                # curiosity 0.3 → weight 0.05, curiosity 0.95 → weight 0.30
+                b.weight = 0.05 + 0.25 * curiosity * energy
+            elif b.name == "curious_sound":
+                b.weight = 0.15 + 0.20 * curiosity
+            elif b.name == "seek_attention":
+                # More expressive when expressiveness trait is high
+                expressiveness = personality_learning.get("expressiveness", 0.65)
+                b.weight = 0.10 + 0.20 * expressiveness
+
     async def _wander(self) -> None:
-        await navigation.wander(duration=20)
+        """Personality-aware wander: speed and duration scale with energy+curiosity."""
+        try:
+            from core.personality import personality_learning
+            curiosity = personality_learning.get("curiosity", 0.7)
+        except Exception:
+            curiosity = 0.7
+        energy = personality.state.energy
+        # High curiosity + high energy → faster, longer; tired → slow drift
+        speed    = 0.15 + 0.15 * energy
+        duration = int(15 + 20 * curiosity * energy)
+        await navigation.wander(duration=duration)
 
     async def _seek_attention(self) -> None:
         phrases = [

@@ -6,6 +6,30 @@
 
 ---
 
+## Fixed This Session (2026-05-28)
+
+### KI-CRASH-01: Cosmo crash loop — 34 restarts
+- **Status:** FIXED
+- **Symptom:** C920 not plugged in → camera.start() returns False → cosmo_demo.py hard-exits → PM2 restarts → repeat
+- **Fix:** camera.py auto-scans /dev/video0–18 for USB camera (skips Pi ISP video19+). cosmo_demo.py continues in degraded no-vision mode instead of return-on-failure.
+
+### KI-ROBOT-CTRL-DEPRECATED: robot_control.py dangerous pinout
+- **Status:** FIXED — sys.exit(1) guard added
+- **Symptom:** Old 2WD script uses GPIO6 (UPS HAT adapter-fail pin) for BIN2. Running it would burn HAT converter.
+- **Fix:** robot_control.py now prints error and exits immediately. Use tools/motor_test.py instead.
+
+### KI-MIND-RACE-01: mind.py speech race + cooldown burn
+- **Status:** FIXED
+- **Symptom:** (1) Two concurrent trigger events could both pass tts.is_speaking gate before TTS state flipped. (2) Cooldowns burned even when API call timed out or errored.
+- **Fix:** `_speech_in_flight` asyncio.Event blocks concurrent callers. Cooldowns committed only after successful TTS handoff.
+
+### KI-MIND-NONVERBAL-01: Speech before non-verbal reaction
+- **Status:** FIXED
+- **Symptom:** Triggers went straight to Claude API with no eye/sound reaction first. Robot felt like a voice assistant not a pet.
+- **Fix:** `_NONVERBAL` dict fires eye expression + sound cue BEFORE Claude call, with 0.2–0.5s organic delay.
+
+---
+
 ## Open Issues
 
 ### KI-001: Wake word is "Hey Jarvis" not "Hey Cosmo"

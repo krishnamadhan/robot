@@ -105,10 +105,48 @@ class CameraPipeline:
                 pass
         await asyncio.get_event_loop().run_in_executor(None, self._release_camera)
 
+    def _find_usb_camera(self) -> Optional[int]:
+        """Scan /dev/video0..18 for a real USB capture device.
+
+        Pi 5's internal ISP pipeline occupies video19+. A USB webcam
+        (C920) will appear in the 0-18 range when plugged in.
+        """
+        import subprocess
+        for idx in range(19):
+            path = f"/dev/video{idx}"
+            try:
+                import os
+                if not os.path.exists(path):
+                    continue
+                # Quick v4l2 caps check — rejects meta/ISP nodes
+                result = subprocess.run(
+                    ["v4l2-ctl", "--device", path, "--list-formats"],
+                    capture_output=True, timeout=1,
+                )
+                if b"MJPEG" in result.stdout or b"YUYV" in result.stdout:
+                    return idx
+            except Exception:
+                continue
+        return None
+
     def _open_camera(self) -> bool:
-        self._cap = cv2.VideoCapture(self._cfg.device)
-        if not self._cap.isOpened():
-            return False
+        device = self._cfg.device
+        cap = cv2.VideoCapture(device)
+        if not cap.isOpened():
+            cap.release()
+            log.info("camera.trying_auto_detect", configured=device)
+            found = self._find_usb_camera()
+            if found is None:
+                return False
+            log.info("camera.auto_detected", device=found)
+            device = found
+            cap = cv2.VideoCapture(device)
+            if not cap.isOpened():
+                cap.release()
+                return False
+            self._cfg.device = device  # update so logs reflect reality
+
+        self._cap = cap
         self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._cfg.width)
         self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._cfg.height)
         self._cap.set(cv2.CAP_PROP_FPS, self._cfg.fps)

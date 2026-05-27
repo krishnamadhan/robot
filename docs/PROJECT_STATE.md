@@ -2,7 +2,7 @@
 
 > Updated at end of every session. Read at start of every session.  
 > Source of truth for sprint state.
-> Last updated: 2026-05-21 (4th session — Phase 2 complete)
+> Last updated: 2026-05-28 (autonomous session — Codex collaboration)
 
 ---
 
@@ -10,6 +10,31 @@
 
 **Goal:** Get all wired sensors alive in software. Wire OLED eyes. Enable real motors.  
 **Blocker:** XT60 pigtail (Robocraze delivery pending) + APDS-9960 replacement pending.
+
+---
+
+## Session: 2026-05-28 — Codex Collaboration + Pet Brain + Bug Fixes
+
+### What happened this session
+- **Codex code review**: used `codex exec` as a peer reviewer on mind.py and behavior/engine.py. Key findings confirmed and fixed.
+- **crash loop fixed**: camera.py now auto-scans /dev/video0–18 for USB camera instead of hard-failing on index 0. cosmo_demo.py continues in degraded mode (no vision) instead of exiting.
+- **cognition/pet_brain.py** (NEW): full pet movement decision brain. States: RESTING, CURIOUS_WANDER, SEEK_LIGHT, APPROACH_PERSON, PLAY, FLEE. Personality-aware (curiosity, energy, mood), time-of-day aware, memory-informed direction. Wired into cosmo_demo.py start/stop. Codex review applied: FLEE bypasses hold timer, blocked movement updates `_last_moved` to prevent spam, idempotent start/stop with handler cleanup.
+- **cognition/mind.py**: three Codex-identified issues fixed: (1) non-verbal reaction (eyes + sound) fires BEFORE Claude API call; (2) `_speech_in_flight` Event blocks concurrent trigger callbacks from both passing the TTS gate; (3) cooldowns only committed after successful TTS handoff, not burned on API failure.
+- **behavior/engine.py**: wander is now personality-aware — weight scales with curiosity trait × energy. `_wander()` reads curiosity/energy to set speed and duration. Proactive trigger loop has `_proactive_lock` (asyncio.Lock) to prevent concurrent fires.
+- **robot_control.py**: hard-deprecated with sys.exit(1) — was using dangerously wrong 2WD pinout (GPIO6=UPS HAT pin, old motor assignments).
+- **Hardware review complete** (see conversation): GPIO16/HC-SR04 conflict documented, cliff sensor bug confirmed fixed, LiPo capacitor requirement noted.
+- **tools/pet_brain_test.py** (NEW): Rich interactive dashboard for testing PetBrain decisions. Keyboard controls to simulate personality state, sensors, person presence. No hardware needed.
+
+### Status after this session
+| Component | Status |
+|---|---|
+| Pet Brain (movement decisions) | ✅ NEW — cognition/pet_brain.py |
+| Camera resilience | ✅ FIXED — auto-detect + degraded mode |
+| mind.py sound-first | ✅ FIXED |
+| mind.py speech races | ✅ FIXED |
+| behavior/engine.py personality wander | ✅ FIXED |
+| robot_control.py | ✅ DEPRECATED |
+| Cosmo crash loop (34 restarts) | ✅ FIXED |
 
 ---
 
