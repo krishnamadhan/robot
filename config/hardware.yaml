@@ -21,24 +21,28 @@ motors:
   stall_detect_ms: 500    # ms without encoder change = stall
   left_trim: 0.600        # scale factor to compensate left-motor drift (1.0 = no trim)
   right_trim: 1.000       # scale factor for right motor
-  # Board 1 — LEFT side (Pin 32 = HW PWM0, Pin 33 = HW PWM1)
+  # Board 1 — LEFT side
+  # WARNING: GPIO12=PWM0_Alt0 and GPIO18=PWM0_Alt5 are the SAME HW PWM channel.
+  # GPIO13=PWM1_Alt0 and GPIO19=PWM1_Alt5 are the SAME HW PWM channel.
+  # NEVER add dtoverlay=pwm or dtoverlay=pwm-2chan — it couples left+right speeds.
+  # Software PWM (thread-based) is intentional and required for independent control.
   left_front:
     ain1: 17              # GPIO17 (Pin 11)
     ain2: 22              # GPIO22 (Pin 15)
-    pwm:  12              # GPIO12 (Pin 32) — HW PWM0
+    pwm:  11              # GPIO11 (Pin 23) — REMAPPED from GPIO12 (Pin 32 faulty on this unit)
   left_rear:
     bin1: 23              # GPIO23 (Pin 16)
-    bin2: 6               # GPIO6  (Pin 31)
-    pwm:  13              # GPIO13 (Pin 33) — HW PWM1
-  # Board 2 — RIGHT side (freed I2S pins: GPIO18-21; GPIO25/26 taken from unconnected sensors)
+    bin2: 10              # GPIO10 (Pin 19) — MOVED from GPIO6: FIT0992 HAT uses GPIO6 (Pin 31) for adapter-fail detection
+    pwm:  13              # GPIO13 (Pin 33) — SW PWM only
+  # Board 2 — RIGHT side (freed I2S pins: GPIO18-21; GPIO25/26 freed from unconnected sensors)
   right_front:
     ain1: 20              # GPIO20 (Pin 38) — freed I2S DIN
     ain2: 21              # GPIO21 (Pin 40) — freed I2S DOUT
-    pwm:  18              # GPIO18 (Pin 12) — HW PWM0 alt, freed I2S BCLK
+    pwm:  18              # GPIO18 (Pin 12) — SW PWM only (shares HW PWM0 with GPIO12)
   right_rear:
-    bin1: 25              # GPIO25 (Pin 22) — reassigned from touch-belly (not yet wired)
-    bin2: 26              # GPIO26 (Pin 37) — reassigned from vibration  (not yet wired)
-    pwm:  19              # GPIO19 (Pin 35) — HW PWM1 alt, freed I2S LRCLK
+    bin1: 25              # GPIO25 (Pin 22) — freed from touch-belly
+    bin2: 26              # GPIO26 (Pin 37) — freed from vibration sensor
+    pwm:  19              # GPIO19 (Pin 35) — SW PWM only (shares HW PWM1 with GPIO13)
 
 servos:
   driver: PCA9685
@@ -76,11 +80,11 @@ sensors:
     available: false       # set true when wired
 
   ultrasonic:
-    trigger_pin: 16        # GPIO16 — TRIG direct (Pin 36, 3.3V OK)
+    trigger_pin: 16        # GPIO16 (Pin 36) — DISABLED: FIT0992 HAT uses GPIO16 for charging-disable (HIGH=stop charging)
     echo_pin: 24           # GPIO24 — ECHO via LLC ch1 (Pin 18)
     timeout_s: 0.03
     max_distance_cm: 400
-    available: true
+    available: false       # MUST stay false until TRIG moves off GPIO16
 
   pir:
     pin: 8                 # GPIO8  — CORRECTED from 16 (was conflicting with HC-SR04 TRIG)

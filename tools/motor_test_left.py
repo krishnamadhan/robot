@@ -33,7 +33,7 @@ STBY     = 27
 
 LF_IN1   = 17   # Left Front direction 1
 LF_IN2   = 22   # Left Front direction 2
-LF_PWM   = 12   # Left Front speed
+LF_PWM   = 11   # Left Front speed (remapped from GPIO12 — Pin 32 faulty)
 
 LR_IN1   = 23   # Left Rear direction 1
 LR_IN2   = 10   # Left Rear direction 2
