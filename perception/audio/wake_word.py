@@ -32,7 +32,14 @@ COOLDOWN_S          = 1.5
 CUSTOM_PPM_PATH     = Path.home() / ".robot/models/porcupine/hey-cosmo.ppn"
 FALLBACK_KEYWORD    = "computer"
 OWW_THRESHOLD       = 0.65  # confidence threshold for OWW detection
-OWW_WAKE_LABEL      = "hey jarvis"
+
+# Active wake word label for OWW bundled models.
+# Options: "hey_jarvis" (bundled, works now), "hey_mycroft", "alexa"
+# To use custom "hey_cosmo": train via openwakeword, save to
+#   ~/.robot/models/hey_cosmo.tflite, then set OWW_CUSTOM_MODEL_PATH.
+# Env override: COSMO_WAKE_LABEL=hey_cosmo  (useful for testing trained models)
+OWW_WAKE_LABEL      = os.environ.get("COSMO_WAKE_LABEL", "hey_jarvis")
+OWW_CUSTOM_MODEL_PATH = Path.home() / ".robot/models/hey_cosmo.tflite"
 
 
 # ── OpenWakeWord detector (primary, no account required) ─────────────────────
@@ -52,13 +59,19 @@ class OpenWakeWordDetector:
     def load(self) -> bool:
         try:
             from openwakeword.model import Model as OWWModel
-            # 0.4.0 API: Model() with no args loads bundled models
-            # (alexa, hey_mycroft, hey_jarvis, timer, weather)
-            self._model = OWWModel()
+            if OWW_CUSTOM_MODEL_PATH.exists():
+                # Custom trained model (e.g. hey_cosmo.tflite)
+                self._model = OWWModel(wakeword_models=[str(OWW_CUSTOM_MODEL_PATH)])
+                self._label = OWW_WAKE_LABEL
+                log.info("oww.loaded_custom", keyword=self._label,
+                         model_path=str(OWW_CUSTOM_MODEL_PATH))
+            else:
+                # Bundled models: alexa, hey_mycroft, hey_jarvis, timer, weather
+                self._model = OWWModel()
+                self._label = OWW_WAKE_LABEL
+                log.info("oww.loaded_bundled", keyword=self._label,
+                         models=list(self._model.models.keys()))
             self._available = True
-            self._label = "hey_jarvis"
-            log.info("oww.loaded", keyword=self._label,
-                     models=list(self._model.models.keys()))
             return True
         except Exception as e:
             log.warning("oww.load_failed", error=str(e)[:80])

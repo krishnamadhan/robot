@@ -1,14 +1,14 @@
 """
-TB6612FNG dual motor driver — 4WD configuration (2 chips, 4 channels).
+TB6612FNG motor driver — 2-motor differential drive + caster (boards: 1).
 
 Hardware layout (from config/hardware.yaml):
-  Chip 1 — LEFT side:
-    left_front  AIN1/AIN2/PWM  (GPIO17/22/12)
-    left_rear   BIN1/BIN2/PWM  (GPIO23/6/13)
-  Chip 2 — RIGHT side:
-    right_front AIN1/AIN2/PWM  (GPIO20/21/18)
-    right_rear  BIN1/BIN2/PWM  (GPIO25/26/19)
+  Chip 1 — LEFT board: DISCONNECTED (left board removed, caster at rear)
+  Chip 2 — RIGHT board (active):
+    right_front AIN1/AIN2/PWM  (GPIO20/24/18)  ← AIN2 remapped: GPIO21 dead
+    right_rear  BIN1/BIN2/PWM  (GPIO25/26/9)   ← PWM remapped: GPIO19 dead
   Shared STBY GPIO27
+
+  Dead pins on this Pi 5 unit: GPIO4, GPIO5, GPIO7, GPIO12, GPIO19, GPIO21
 
 Safety rules (hardcoded — never bypass):
   - STBY LOW on init, HIGH only after self_test passes
@@ -53,6 +53,9 @@ def _is_mock() -> bool:
     if sim == "never":
         return False
     return not _GPIO_OK
+
+
+MAX_DUTY = 0.75  # never exceed 75% — reduces stall current by 25%, protects TB6612FNG
 
 
 class _SoftPWM:
@@ -117,6 +120,8 @@ class _MotorChannel:
 
     def set(self, speed: float, trim: float = 1.0) -> None:
         speed = max(-1.0, min(1.0, speed)) * trim
+        # Hard ceiling — protects TB6612FNG from overcurrent on stall
+        speed = max(-MAX_DUTY, min(MAX_DUTY, speed))
         self._speed = speed
         if self._mock:
             return
@@ -150,8 +155,10 @@ class MotorController:
     Mock mode: logs actions. Real mode: drives GPIO.
     """
 
-    RAMP_MS:    int   = 150
-    WATCHDOG_MS: int  = 500
+    RAMP_MS:      int   = 150
+    WATCHDOG_MS:  int  = 500
+    IDLE_STBY_S:  float = 3.0   # drop STBY LOW after this many seconds idle (saves heat)
+    MAX_MOVE_S:   float = 5.0   # max continuous motor run before forced 200ms pause
 
     def __init__(self) -> None:
         self._mock = _is_mock()
@@ -165,6 +172,8 @@ class MotorController:
         self._watchdog_task: Optional[asyncio.Task] = None
         self._safety_stop = False
         self._web_drive: bool = False
+        self._last_move_start: float = 0.0   # monotonic time when motors last started moving
+        self._last_stop_time:  float = 0.0   # monotonic time when motors last stopped
         mc = cfg.hardware.motors
         self.LEFT_TRIM  = float(getattr(mc, "left_trim",  0.600))
         self.RIGHT_TRIM = float(getattr(mc, "right_trim", 1.000))
@@ -314,6 +323,18 @@ class MotorController:
         left  = max(-1.0, min(1.0, left))
         right = max(-1.0, min(1.0, right))
 
+        # Re-enable STBY if it was powered down during idle
+        if self._stby is not None and not self._stby.value:
+            self._stby.on()
+            await asyncio.sleep(0.01)  # 10ms settle before driving
+
+        moving = abs(left) > 0.01 or abs(right) > 0.01
+        if moving and not self.is_moving:
+            self._last_move_start = time.monotonic()
+        elif not moving:
+            self._last_stop_time = time.monotonic()
+            self._last_move_start = 0.0
+
         if emergency or not self._left_front:
             if self._left_front:
                 self._left_front.set(left,  self.LEFT_TRIM)
@@ -342,14 +363,31 @@ class MotorController:
     async def _watchdog_loop(self) -> None:
         while True:
             await asyncio.sleep(0.1)
-            # Watchdog only applies to web/manual-drive — autonomous navigation
-            # manages its own stop logic and never calls heartbeat()
+            now = time.monotonic()
+
             if self._web_drive and self.is_moving:
-                elapsed_ms = (time.monotonic() - self._last_heartbeat) * 1000
+                elapsed_ms = (now - self._last_heartbeat) * 1000
                 if elapsed_ms > self.WATCHDOG_MS:
-                    log.warning("motors.watchdog_stop",
-                                elapsed_ms=int(elapsed_ms))
+                    log.warning("motors.watchdog_stop", elapsed_ms=int(elapsed_ms))
                     await self.stop(emergency=True)
+
+            # Max continuous run guard — forces a brief coast to let driver cool
+            if self.is_moving and self._last_move_start > 0:
+                run_s = now - self._last_move_start
+                if run_s > self.MAX_MOVE_S:
+                    log.warning("motors.max_run_exceeded", run_s=round(run_s, 1))
+                    await self.stop(emergency=True)
+                    await asyncio.sleep(0.2)   # 200ms coast
+                    self._safety_stop = False  # allow resume
+
+            # Idle STBY power-down — drops TB6612FNG to standby after inactivity
+            if (not self.is_moving
+                    and self._stby is not None
+                    and self._stby.value
+                    and self._last_stop_time > 0
+                    and (now - self._last_stop_time) > self.IDLE_STBY_S):
+                self._stby.off()
+                log.debug("motors.stby_idle_off")
 
     @property
     def is_moving(self) -> bool:

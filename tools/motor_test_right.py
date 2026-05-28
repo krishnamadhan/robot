@@ -32,12 +32,12 @@ from pathlib import Path
 STBY     = 27
 
 RF_IN1   = 20   # Right Front AIN1
-RF_IN2   = 21   # Right Front AIN2
+RF_IN2   = 24   # Right Front AIN2 (remapped: GPIO21 dead → GPIO14 UART → GPIO5 dead → GPIO24 Pin 18)
 RF_PWM   = 18   # Right Front PWMA
 
 RR_IN1   = 25   # Right Rear BIN1
 RR_IN2   = 26   # Right Rear BIN2
-RR_PWM   = 19   # Right Rear PWMB
+RR_PWM   =  9   # Right Rear PWMB (remapped from GPIO19 — Pin 35 faulty)
 
 MAX_TEST_SPEED = 0.60
 

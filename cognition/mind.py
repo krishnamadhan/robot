@@ -308,7 +308,12 @@ class CosmoMind:
         else:
             familiarity_desc = "someone new"
 
-        memory_block = "\n".join(memories) if memories else "No memories yet."
+        # Cap injected memory to ~200 tokens (≈800 chars) to keep prompt cost predictable
+        MAX_MEMORY_CHARS = 800
+        raw_block = "\n".join(memories) if memories else ""
+        if len(raw_block) > MAX_MEMORY_CHARS:
+            raw_block = raw_block[:MAX_MEMORY_CHARS].rsplit("\n", 1)[0] + "\n[...older memories omitted]"
+        memory_block = raw_block if raw_block else "No memories yet."
 
         from core.personality import personality as pers
         mood = pers.state.mood

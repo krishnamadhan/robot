@@ -13,14 +13,21 @@ i2c:
 
 motors:
   driver: TB6612FNG
-  boards: 2               # two TB6612FNG boards, one per side
+  boards: 1               # single TB6612FNG (right board) — left board disconnected, caster wheel at rear
   stby: 27                # GPIO27 — shared STBY, active HIGH = enabled (Pin 13)
   max_speed: 100          # % 0-100
   default_speed: 60       # % 0-100
   ramp_ms: 150            # acceleration ramp in ms (was 200, tuned 2026-05-20)
   stall_detect_ms: 500    # ms without encoder change = stall
-  left_trim: 0.600        # scale factor to compensate left-motor drift (1.0 = no trim)
-  right_trim: 1.000       # scale factor for right motor
+  left_trim: 1.000        # global left-side scale (legacy — prefer per-motor trim below)
+  right_trim: 1.000       # global right-side scale (legacy)
+  # Per-motor trim — calibrate by running timed test and adjusting until all spin equal
+  # RR is strongest on this unit; LF is weakest — adjust these values empirically
+  trim:
+    LF: 1.00              # left  front — boost if weakest
+    LR: 1.00              # left  rear
+    RF: 1.00              # right front
+    RR: 1.00              # right rear  — reduce if strongest
   # Board 1 — LEFT side
   # WARNING: GPIO12=PWM0_Alt0 and GPIO18=PWM0_Alt5 are the SAME HW PWM channel.
   # GPIO13=PWM1_Alt0 and GPIO19=PWM1_Alt5 are the SAME HW PWM channel.
@@ -37,12 +44,12 @@ motors:
   # Board 2 — RIGHT side (freed I2S pins: GPIO18-21; GPIO25/26 freed from unconnected sensors)
   right_front:
     ain1: 20              # GPIO20 (Pin 38) — freed I2S DIN
-    ain2: 21              # GPIO21 (Pin 40) — freed I2S DOUT
+    ain2: 24              # GPIO24 (Pin 18) — REMAPPED: GPIO21 dead → GPIO14 UART conflict → GPIO5 dead → GPIO24
     pwm:  18              # GPIO18 (Pin 12) — SW PWM only (shares HW PWM0 with GPIO12)
   right_rear:
     bin1: 25              # GPIO25 (Pin 22) — freed from touch-belly
     bin2: 26              # GPIO26 (Pin 37) — freed from vibration sensor
-    pwm:  19              # GPIO19 (Pin 35) — SW PWM only (shares HW PWM1 with GPIO13)
+    pwm:   9              # GPIO9  (Pin 21) — REMAPPED from GPIO19 (Pin 35 faulty on this unit)
 
 servos:
   driver: PCA9685

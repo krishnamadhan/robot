@@ -491,6 +491,16 @@ async def state_watcher() -> None:
 async def main() -> None:
     console.print("\n[bold cyan]COSMO — Starting up[/bold cyan]")
 
+    # Register all GPIO pins from config and assert no conflicts before any driver inits
+    try:
+        from hardware.pin_registry import register_from_config, pin_registry
+        register_from_config()
+        pin_registry.assert_no_conflicts()
+        console.print("[green]✓ GPIO pin registry — no conflicts[/green]")
+    except Exception as e:
+        console.print(f"[bold red]✗ GPIO pin conflict at boot: {e}[/bold red]")
+        raise SystemExit(1)
+
     await bus.start()
     episodic.initialize()
     from core.memory.working import wm

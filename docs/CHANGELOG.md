@@ -4,7 +4,7 @@
 
 ---
 
-2026-05-29 | Added CLAUDE_SESSION_PROTOCOL.md, COSMO_BACKLOG.md, docs/CHANGELOG.md; verified env (Python 3.13.5, Debian trixie, yolo11n.pt)
+2026-05-29 | Session protocol, backlog, pin registry, cosmo_doctor, 19 safety+budget tests, memory token cap, config-driven wake word, /dashboard UI
 2026-05-28 | Pet brain + camera resilience + mind.py race fixes + robot_control.py deprecated (Codex collaboration session)
 2026-05-22 | Ollama llama3.2:1b Q4_K_M wired as local LLM (ADR-017); KI-024 config.txt fix pending reboot
 2026-05-21 | Full P0-P4 code audit: motors 4WD fix, I2C mutex, timeouts, spatial atomic write, state machine deny-by-default

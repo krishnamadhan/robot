@@ -19,7 +19,7 @@
 - [ ] Enable TTP223 touch × 3 (belly removed): `available: false → true` in hardware.yaml
 - [ ] Enable MPU-6050 gyro: `available: false → true` in hardware.yaml
 - [ ] Enable PIR HC-SR501: `available: false → true` — ONLY AFTER reboot (KI-024)
-- [ ] Enable HC-SR04 ultrasonic — BLOCKED on XT60 pigtail + capacitors arriving
+- [ ] Enable HC-SR04 ultrasonic — BLOCKED on XT60 pigtail + capacitors arriving; also TRIG currently mapped to GPIO16 (FIT0992 HAT conflict) — remap TRIG to a free pin in hardware.yaml first
 - [ ] Enable motors (TB6612FNG real mode) — BLOCKED on XT60 pigtail + capacitors arriving
 - [ ] Enable TCRT5000 cliff sensors × 2 — BLOCKED on parcel arriving
 
@@ -28,7 +28,7 @@
 ## P2 — Code improvements
 
 - [ ] KI-016: migrate episodic memory to aiosqlite (currently blocking async loop)
-- [ ] Re-enroll Indhu face: 20 samples, good light (currently 75% — target 90%+)
+- [ ] Re-enroll Indhu face: 20 samples, good light (currently 75% — target 90%+) → run `tools/enroll_face.py`
 - [ ] Fix person.py docstring: still says "YOLOv8n" — model is yolo11n.pt
 - [ ] Prompt caching (ADR-018): add ephemeral cache headers to Claude calls — after OLED + face tests
 - [ ] Test Piper Kitten Micro 25MB vs current lessac-medium 61MB (ADR-016)
@@ -46,12 +46,25 @@
 
 ## P4 — Phase 4
 
-- [ ] Custom OpenWakeWord "hey_cosmo" model (Picovoice or OWW training)
-- [ ] Switch wake word from hey_jarvis → hey_cosmo
+- [ ] Train custom "hey_cosmo" OWW model → save to ~/.robot/models/hey_cosmo.tflite (COSMO_WAKE_LABEL env var now controls active label — no code change needed)
+- [ ] Test custom model: COSMO_WAKE_LABEL=hey_cosmo pm2 restart cosmo
 
 ---
 
-## Done (recent)
+## Done (recent — 2026-05-29 session)
+
+- [x] CLAUDE_SESSION_PROTOCOL.md + COSMO_BACKLOG.md + docs/CHANGELOG.md created
+- [x] CLAUDE.md updated with protocol reference
+- [x] CONTEXT_Part*.md archived to docs/archive/
+- [x] tools/cosmo_doctor.sh — one-shot health snapshot
+- [x] hardware/pin_registry.py — boot-time GPIO conflict detection; wired into cosmo_demo.py
+- [x] tests/unit/test_token_budget.py — 9 tests, all passing
+- [x] tests/unit/test_safety_paths.py — 10 tests, all passing (obstacle/cliff/STBY/budget gate)
+- [x] mind.py: memory injection capped at 800 chars (~200 tokens) to keep cost predictable
+- [x] wake_word.py: OWW label now config-driven via COSMO_WAKE_LABEL env var; custom .tflite model auto-loaded from ~/.robot/models/hey_cosmo.tflite
+- [x] services/api/service.py: /dashboard (phone-friendly live UI), /mind/on, /mind/off endpoints
+
+## Done (older sessions)
 
 - [x] Pet brain (cognition/pet_brain.py) — movement decision states wired
 - [x] Camera auto-detect + degraded mode (no more crash loop)

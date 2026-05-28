@@ -2,7 +2,13 @@
 
 > Updated at end of every session. Read at start of every session.  
 > Source of truth for sprint state.
-> Last updated: 2026-05-28 (autonomous session — Codex collaboration)
+> Last updated: 2026-05-29 (backlog + session protocol session)
+
+## Verified environment (checked 2026-05-29)
+- **OS:** Debian GNU/Linux 13 (trixie)
+- **Python:** 3.13.5 (not 3.11 — update any doc that says 3.11)
+- **Vision model on disk:** `models/yolo11n.pt` (5.4MB) — person.py docstring still says YOLOv8n, fix when touching that file
+- **yolov8n.pt** also present in root — unused, can be deleted to save 6MB
 
 ---
 
@@ -10,6 +16,26 @@
 
 **Goal:** Get all wired sensors alive in software. Wire OLED eyes. Enable real motors.  
 **Blocker:** XT60 pigtail (Robocraze delivery pending) + APDS-9960 replacement pending.
+
+---
+
+## Session: 2026-05-29 — Backlog overhaul + session protocol + safety tests
+
+### What happened this session
+- **CLAUDE_SESSION_PROTOCOL.md** created — start/end rituals, guardrails, env facts
+- **COSMO_BACKLOG.md** created — priority-ordered task list (P0–P4) seeded from PROJECT_STATE.md
+- **docs/CHANGELOG.md** created — one-line-per-session history
+- **docs/archive/** created — CONTEXT_Part1.md + CONTEXT_Part2.md moved there
+- **CLAUDE.md** updated — top line now points to protocol + PROJECT_STATE.md
+- **tools/cosmo_doctor.sh** — one-command health snapshot: PM2, RAM, disk, temp, camera, BT, I2C, token budget, pin conflicts
+- **hardware/pin_registry.py** — boot-time GPIO conflict detector; `register_from_config()` reads hardware.yaml and claims all pins; `assert_no_conflicts()` raises SystemExit at boot if any double-claim; wired into cosmo_demo.py main()
+- **tests/unit/test_token_budget.py** — 9 tests: over_limit detection, cumulative tracking, daily rollover log, mind silences on budget exceeded
+- **tests/unit/test_safety_paths.py** — 10 tests: obstacle stop <25cm, no stop >25cm, cliff/pickup/battery blocks, _obstacle_warn dedup, STBY mock stop, budget gate on speech
+- **mind.py** — memory injection capped at 800 chars (~200 tokens) to keep prompt cost predictable
+- **wake_word.py** — OWW label now driven by `COSMO_WAKE_LABEL` env var; auto-loads custom .tflite from `~/.robot/models/hey_cosmo.tflite` when present
+- **services/api/service.py** — added `/dashboard` (phone-friendly HTML UI: personality, attention, system, hardware, memories, controls), `/mind/on`, `/mind/off`
+
+### All tests: 19/19 passing
 
 ---
 

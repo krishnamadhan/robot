@@ -19,12 +19,12 @@ except Exception as e:
 
 STBY  = 27
 IN1   = 20   # AIN1 — Right Front
-IN2   = 21   # AIN2 — Right Front
+IN2   = 24   # AIN2 — Right Front (remapped: GPIO21 dead → GPIO14 UART → GPIO5 dead → GPIO24 Pin 18)
 PWM_A = 18   # PWMA — Right Front
 
 IN3   = 25   # BIN1 — Right Rear
 IN4   = 26   # BIN2 — Right Rear
-PWM_B = 19   # PWMB — Right Rear
+PWM_B =  9   # PWMB — Right Rear  (remapped from GPIO19 — Pin 35 faulty)
 
 def claim(pin, name):
     try:
