@@ -50,6 +50,7 @@ from core.memory.episodic import episodic
 from core.personality import personality
 from core.state_machine import sm, RobotState
 from expression.eyes import EyeExpression, eye_engine
+from expression.speech import tts
 from core.behavior_tree import behavior_tree, bb as cosmo_bb
 from perception.vision.gesture import gesture_loop
 from expression.sounds import sounds
@@ -226,6 +227,7 @@ async def setup_event_handlers() -> None:
 
         action_log.set_context("face_recognized", f"{name} {conf:.0%}")
         audio_pipeline.update_person(person_id, _state.get("last_emotion") or None)
+        tts.set_voice_profile(name)
         await sm.transition_to(RobotState.INTERACTIVE, trigger="face_recognized")
 
         if name not in _state["greeted"]:
@@ -265,6 +267,7 @@ async def setup_event_handlers() -> None:
         cosmo_bb.person_id = ""
         cosmo_bb.alone_since = time.monotonic()
         audio_pipeline.update_person(None)
+        tts.set_voice_profile(None)
         if conversation.in_conversation:
             await conversation.end_session()
         await sm.transition_to(RobotState.IDLE_CURIOUS, trigger="person_lost")
