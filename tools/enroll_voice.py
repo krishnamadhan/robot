@@ -3,17 +3,17 @@
 Voice enrollment tool for Cosmo.
 
 Records a reference audio clip of a person reading a paragraph,
-then benchmarks XTTS v2 synthesis speed with that clip.
+then benchmarks XTTS v2 synthesis speed using the 3.11 venv subprocess.
 Enrolled voice activates automatically when that person's face is recognized.
 
 Usage:
     python3 tools/enroll_voice.py --name "Madhan"
     python3 tools/enroll_voice.py --name "Indhu"
     python3 tools/enroll_voice.py --name "Madhan" --play   # play test output
+    python3 tools/enroll_voice.py --name "Madhan" --record-only  # skip benchmark
 """
 
 import argparse
-import asyncio
 import os
 import subprocess
 import sys
@@ -32,11 +32,13 @@ from rich.text import Text
 
 console = Console()
 
-_VOICES_DIR   = Path.home() / ".robot/memory/voices"
-_RATE         = 22050
-_DURATION     = 30       # seconds to record
-_CHANNELS     = 1
-_TEST_SENTENCE = "Hey, it's me! I'm Cosmo. I'm really happy to see you today."
+_VOICES_DIR  = Path.home() / ".robot/memory/voices"
+_VENV_PYTHON = Path.home() / ".robot/venvs/xtts311/bin/python3"
+_WORKER      = Path(__file__).parent / "xtts_worker.py"
+_RATE        = 22050
+_DURATION    = 30
+_CHANNELS    = 1
+_TEST_SENT   = "Hey, it's me! I'm Cosmo. I'm really happy to see you today."
 
 # Phonetically balanced passage — covers all English phonemes
 _PARAGRAPH = """\
@@ -55,32 +57,8 @@ _PW_ENV = {
 }
 
 
-def _check_xtts() -> bool:
-    try:
-        from TTS.api import TTS  # noqa: F401
-        return True
-    except ImportError:
-        return False
-
-
-def _record(duration: int, rate: int) -> "np.ndarray":
-    import numpy as np
-    console.print(f"\n[bold red]● RECORDING[/bold red] — {duration}s")
-    audio = sd.rec(int(duration * rate), samplerate=rate, channels=_CHANNELS, dtype="int16")
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        TimeElapsedColumn(),
-        console=console,
-    ) as prog:
-        task = prog.add_task(f"Recording... speak clearly into the mic", total=duration)
-        start = time.monotonic()
-        while time.monotonic() - start < duration:
-            elapsed = time.monotonic() - start
-            prog.update(task, completed=elapsed)
-            time.sleep(0.1)
-    sd.wait()
-    return audio
+def _xtts_ready() -> bool:
+    return _VENV_PYTHON.exists() and _WORKER.exists()
 
 
 def _countdown(n: int) -> None:
@@ -90,59 +68,74 @@ def _countdown(n: int) -> None:
     console.print("[bold green]GO![/bold green]   ")
 
 
-def _benchmark_xtts(ref_wav: Path, play: bool) -> float:
-    console.print("\n[cyan]Loading XTTS v2 model (first run downloads ~1.8 GB)...[/cyan]")
-    from TTS.api import TTS
+def _record(duration: int, rate: int):
+    console.print(f"\n[bold red]● RECORDING[/bold red] — {duration}s — speak clearly")
+    audio = sd.rec(int(duration * rate), samplerate=rate, channels=_CHANNELS, dtype="int16")
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
+        console=console,
+    ) as prog:
+        task = prog.add_task("Recording...", total=duration)
+        start = time.monotonic()
+        while time.monotonic() - start < duration:
+            prog.update(task, completed=time.monotonic() - start)
+            time.sleep(0.1)
+    sd.wait()
+    return audio
 
-    t0 = time.monotonic()
-    xtts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False)
-    load_time = time.monotonic() - t0
-    console.print(f"[dim]Model loaded in {load_time:.1f}s[/dim]")
 
+def _benchmark(ref_wav: Path, play: bool) -> float:
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-        out_path = f.name
+        tmp = f.name
 
-    console.print(f'[cyan]Synthesising test sentence:[/cyan] "[italic]{_TEST_SENTENCE}[/italic]"')
-    t0 = time.monotonic()
-    xtts.tts_to_file(
-        text=_TEST_SENTENCE,
-        speaker_wav=str(ref_wav),
-        language="en",
-        file_path=out_path,
-    )
-    synth_time = time.monotonic() - t0
+    console.print(f'\n[cyan]Synthesising:[/cyan] "[italic]{_TEST_SENT}[/italic]"')
+    console.print("[dim](first run downloads ~1.8 GB XTTS model — be patient)[/dim]")
 
-    if play:
-        console.print("[cyan]Playing test output...[/cyan]")
-        subprocess.run(["paplay", out_path], env=_PW_ENV, check=False)
+    try:
+        result = subprocess.run(
+            [str(_VENV_PYTHON), str(_WORKER), str(ref_wav), _TEST_SENT, tmp],
+            capture_output=True, text=True, timeout=600,
+        )
+        if result.returncode != 0:
+            console.print(f"[red]XTTS worker failed:[/red] {result.stderr[:200]}")
+            return -1.0
 
-    os.unlink(out_path)
-    return synth_time
+        elapsed = float(result.stdout.strip().split(":")[-1])
+
+        if play:
+            console.print("[cyan]Playing test output...[/cyan]")
+            subprocess.run(["paplay", tmp], env=_PW_ENV, check=False)
+
+        return elapsed
+    finally:
+        try:
+            os.unlink(tmp)
+        except Exception:
+            pass
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Enroll a voice profile for Cosmo")
     parser.add_argument("--name", required=True, help="Person's name (must match face enrolment)")
-    parser.add_argument("--play", action="store_true", help="Play the synthesised test sentence after benchmark")
+    parser.add_argument("--play", action="store_true", help="Play the synthesised test sentence")
+    parser.add_argument("--record-only", action="store_true",
+                        help="Just record — skip XTTS benchmark")
     args = parser.parse_args()
 
-    name = args.name.strip().title()
+    name      = args.name.strip().title()
     voice_dir = _VOICES_DIR / name.lower()
     ref_wav   = voice_dir / "reference.wav"
-
-    xtts_ok = _check_xtts()
+    xtts_ok   = _xtts_ready()
 
     console.print(Panel(
         f"[bold]Cosmo Voice Enrolment — {name}[/bold]\n\n"
-        f"XTTS v2 available: [{'green]✓' if xtts_ok else 'red]✗ — install coqui-tts first'}[/{'green' if xtts_ok else 'red'}]\n"
-        f"Output: [dim]{ref_wav}[/dim]",
+        f"XTTS venv: [{'green]✓ ready' if xtts_ok else 'red]✗ missing — run tools/setup_xtts_venv.sh'}[/{'green' if xtts_ok else 'red'}]\n"
+        f"Output:    [dim]{ref_wav}[/dim]",
         title="Voice Enrolment",
         border_style="cyan",
     ))
-
-    if not xtts_ok:
-        console.print("[red]Install TTS first: pip install --break-system-packages coqui-tts[all][/red]")
-        sys.exit(1)
 
     # Show the passage
     console.print(Panel(
@@ -160,30 +153,33 @@ def main() -> None:
 
     voice_dir.mkdir(parents=True, exist_ok=True)
     sf.write(str(ref_wav), audio, _RATE)
-    duration_s = len(audio) / _RATE
-    console.print(f"[green]✓ Saved {duration_s:.1f}s reference clip → {ref_wav}[/green]")
+    console.print(f"[green]✓ Saved {_DURATION}s reference clip → {ref_wav}[/green]")
 
-    # Benchmark synthesis
-    synth_time = _benchmark_xtts(ref_wav, play=args.play)
+    if args.record_only or not xtts_ok:
+        if not xtts_ok:
+            console.print("\n[yellow]Run [bold]bash tools/setup_xtts_venv.sh[/bold] to enable synthesis benchmark.[/yellow]")
+        console.print("\n[bold green]Recording saved.[/bold green]")
+        return
+
+    synth_time = _benchmark(ref_wav, play=args.play)
+    if synth_time < 0:
+        return
 
     console.print(f"\n[bold]Results:[/bold]")
-    console.print(f"  Synthesis time: [{'green' if synth_time < 15 else 'yellow' if synth_time < 30 else 'red'}]{synth_time:.1f}s[/{'green' if synth_time < 15 else 'yellow' if synth_time < 30 else 'red'}]")
-    console.print(f"  Characters:     {len(_TEST_SENTENCE)}")
-    console.print(f"  Chars/sec:      {len(_TEST_SENTENCE) / synth_time:.1f}")
-
     if synth_time < 10:
-        verdict = "[green]Excellent — fast enough for conversation[/green]"
+        verdict, color = "Excellent — fast enough for conversation", "green"
     elif synth_time < 20:
-        verdict = "[yellow]Usable — noticeable delay but acceptable for Cosmo[/yellow]"
-    elif synth_time < 35:
-        verdict = "[yellow]Slow — works as novelty, not for fluid conversation[/yellow]"
+        verdict, color = "Usable — noticeable pause, acceptable for Cosmo", "yellow"
+    elif synth_time < 40:
+        verdict, color = "Slow — novelty use, not fluid conversation", "yellow"
     else:
-        verdict = "[red]Too slow for real-time use on this Pi[/red]"
+        verdict, color = "Too slow for real-time — consider Hailo accelerator", "red"
 
-    console.print(f"\n  Verdict: {verdict}")
+    console.print(f"  Synthesis time:  [{color}]{synth_time:.1f}s[/{color}]")
+    console.print(f"  Chars/sec:       {len(_TEST_SENT) / synth_time:.1f}")
+    console.print(f"  Verdict:         [{color}]{verdict}[/{color}]")
     console.print(f"\n[bold green]Enrolment complete![/bold green]")
     console.print(f"[dim]Cosmo will speak in {name}'s voice when their face is recognized.[/dim]")
-    console.print(f"[dim]Run with --play to hear the test output.[/dim]")
 
 
 if __name__ == "__main__":

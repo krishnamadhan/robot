@@ -3,11 +3,13 @@ TTS engine — Piper (default) + XTTS v2 voice cloning (per-person profiles).
 
 Default: Piper offline TTS (fast, 1.5s, always available)
 Cloned:  XTTS v2 activated when a known person's voice profile exists.
-         Lazy-loaded on first use — model is ~1.8 GB, kept in RAM while active.
+         Runs via subprocess in a Python 3.11 venv (XTTS is 3.13-incompatible).
+         Venv: ~/.robot/venvs/xtts311/  — set up by tools/setup_xtts_venv.sh
 
 Binary: /usr/local/bin/piper
 Model:  ~/.robot/models/piper/en_US-lessac-medium.onnx  (22050 Hz mono s16le)
 Voices: ~/.robot/memory/voices/<name>/reference.wav
+Worker: tools/xtts_worker.py (runs inside 3.11 venv)
 """
 
 import asyncio
@@ -26,6 +28,8 @@ log = get_logger(__name__)
 _MODEL_PATH  = Path.home() / ".robot/models/piper/en_US-lessac-medium.onnx"
 _PIPER_BIN   = Path("/usr/local/bin/piper")
 _VOICES_DIR  = Path.home() / ".robot/memory/voices"
+_VENV_PYTHON = Path.home() / ".robot/venvs/xtts311/bin/python3"
+_WORKER      = Path(__file__).parent.parent / "tools/xtts_worker.py"
 _RATE        = 22050
 
 _PW_ENV = {
@@ -39,6 +43,10 @@ def _piper_available() -> bool:
     return _PIPER_BIN.exists() and _MODEL_PATH.exists()
 
 
+def _xtts_available() -> bool:
+    return _VENV_PYTHON.exists() and _WORKER.exists()
+
+
 def _voice_ref_path(name: str) -> Optional[Path]:
     p = _VOICES_DIR / name.lower() / "reference.wav"
     return p if p.exists() else None
@@ -47,8 +55,8 @@ def _voice_ref_path(name: str) -> Optional[Path]:
 class TTSEngine:
     """
     Non-blocking TTS with two backends:
-      - Piper (default, fast)
-      - XTTS v2 (activated via set_voice_profile, lazy-loaded)
+      - Piper (default, fast, always on)
+      - XTTS v2 (activated via set_voice_profile, runs in 3.11 venv subprocess)
 
     speak() always returns immediately. Audio plays in a background thread.
     interrupt=True (default) kills any currently playing speech before starting.
@@ -62,10 +70,9 @@ class TTSEngine:
         self._available     = _piper_available()
 
         # XTTS state
-        self._xtts_model    = None          # lazy loaded
         self._xtts_ref_wav: Optional[str] = None
         self._xtts_name:    Optional[str] = None
-        self._xtts_lock     = threading.Lock()
+        self._xtts_ready    = _xtts_available()
 
         if not self._available:
             log.warning("tts.unavailable",
@@ -73,46 +80,35 @@ class TTSEngine:
         else:
             log.info("tts.ready", model=_MODEL_PATH.name, rate=_RATE)
 
+        if self._xtts_ready:
+            log.info("tts.xtts_venv_found", venv=str(_VENV_PYTHON))
+        else:
+            log.info("tts.xtts_venv_missing",
+                     hint="run tools/setup_xtts_venv.sh to enable voice cloning")
+
     # ── Voice profile ──────────────────────────────────────────────────────────
 
     def set_voice_profile(self, name: Optional[str]) -> None:
-        """Switch to a cloned voice profile (or None to revert to Piper)."""
+        """Activate a cloned voice for the named person, or None to revert to Piper."""
         if name is None:
-            with self._xtts_lock:
-                self._xtts_ref_wav = None
-                self._xtts_name    = None
+            self._xtts_ref_wav = None
+            self._xtts_name    = None
             log.info("tts.voice_profile_cleared")
             return
 
+        if not self._xtts_ready:
+            return  # silently skip — Piper stays active
+
         ref = _voice_ref_path(name)
         if ref is None:
-            log.info("tts.voice_profile_missing", name=name)
-            return
+            return  # no voice enrolled for this person
 
-        with self._xtts_lock:
-            if self._xtts_name == name:
-                return  # already active
-            self._xtts_ref_wav = str(ref)
-            self._xtts_name    = name
+        if self._xtts_name == name:
+            return  # already active
 
+        self._xtts_ref_wav = str(ref)
+        self._xtts_name    = name
         log.info("tts.voice_profile_set", name=name, ref=str(ref))
-
-        # Warm-load the model in background so first speech isn't delayed
-        threading.Thread(target=self._load_xtts, daemon=True).start()
-
-    def _load_xtts(self) -> None:
-        with self._xtts_lock:
-            if self._xtts_model is not None:
-                return
-        try:
-            from TTS.api import TTS
-            log.info("tts.xtts_loading")
-            model = TTS("tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False)
-            with self._xtts_lock:
-                self._xtts_model = model
-            log.info("tts.xtts_ready")
-        except Exception as e:
-            log.error("tts.xtts_load_failed", error=str(e)[:80])
 
     # ── Piper backend ──────────────────────────────────────────────────────────
 
@@ -163,28 +159,26 @@ class TTSEngine:
             if paplay and paplay.poll() is None:
                 paplay.kill()
 
-    # ── XTTS backend ───────────────────────────────────────────────────────────
+    # ── XTTS backend (subprocess into 3.11 venv) ───────────────────────────────
 
     def _speak_xtts(self, text: str, ref_wav: str) -> bool:
-        with self._xtts_lock:
-            model = self._xtts_model
-
-        if model is None:
-            log.warning("tts.xtts_not_ready_yet", fallback="piper")
-            return False
-
         try:
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
                 tmp = f.name
 
-            t0 = time.monotonic()
-            model.tts_to_file(
-                text=text,
-                speaker_wav=ref_wav,
-                language="en",
-                file_path=tmp,
+            result = subprocess.run(
+                [str(_VENV_PYTHON), str(_WORKER), ref_wav, text, tmp],
+                capture_output=True,
+                text=True,
+                timeout=120,
             )
-            elapsed = time.monotonic() - t0
+
+            if result.returncode != 0:
+                log.warning("tts.xtts_failed",
+                            stderr=result.stderr[:120], fallback="piper")
+                return False
+
+            elapsed = float(result.stdout.strip().split(":")[-1])
             log.info("tts.xtts_synth", chars=len(text), elapsed_s=round(elapsed, 1))
 
             subprocess.run(
@@ -194,6 +188,9 @@ class TTSEngine:
                 stderr=subprocess.DEVNULL,
             )
             return True
+        except subprocess.TimeoutExpired:
+            log.error("tts.xtts_timeout")
+            return False
         except Exception as e:
             log.error("tts.xtts_error", error=str(e)[:80])
             return False
@@ -209,11 +206,10 @@ class TTSEngine:
         with self._lock:
             self._speaking = True
         try:
-            with self._xtts_lock:
-                ref_wav  = self._xtts_ref_wav
-                name     = self._xtts_name
+            ref_wav = self._xtts_ref_wav
+            name    = self._xtts_name
 
-            if ref_wav and name:
+            if ref_wav and name and self._xtts_ready:
                 success = self._speak_xtts(text, ref_wav)
                 if not success:
                     self._speak_piper(text)
@@ -256,7 +252,7 @@ class TTSEngine:
         pass
 
     def set_mood_params(self, mood: float, energy: float) -> None:
-        pass  # future: adjust piper speed via --length_scale
+        pass
 
     def mute(self, seconds: float = 30) -> None:
         self._muted_until = time.monotonic() + seconds
