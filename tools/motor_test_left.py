@@ -209,7 +209,22 @@ def main() -> None:
         print(f"WARNING: GPIO not available ({_GPIO_ERR if '_GPIO_ERR' in dir() else 'import failed'})")
         print("Running in mock mode — no real motor movement.\n")
 
-    stby = DigitalOutputDevice(STBY) if _GPIO_OK else None
+    stby = None
+    if _GPIO_OK:
+        try:
+            stby = DigitalOutputDevice(STBY)
+        except Exception as e:
+            if "busy" in str(e).lower() or "GPIO busy" in str(e):
+                print("\n╔══════════════════════════════════════════════════════╗")
+                print("║  GPIO27 (STBY) is claimed by another process.        ║")
+                print("║                                                      ║")
+                print("║  Stop cosmo first:   pm2 stop cosmo                 ║")
+                print("║  Then run again:     python3 tools/motor_test_left.py║")
+                print("║  When done:          pm2 start cosmo                ║")
+                print("╚══════════════════════════════════════════════════════╝\n")
+                sys.exit(1)
+            else:
+                print(f"WARNING: STBY init failed ({e}) — running without STBY control")
 
     lf = Motor(LF_IN1, LF_IN2, LF_PWM, "left_front")
     lr = Motor(LR_IN1, LR_IN2, LR_PWM, "left_rear")
