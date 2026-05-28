@@ -167,18 +167,21 @@ GPIO5  → TTP223 Touch HEAD
 GPIO6  → TB6612FNG BIN2 (right motor backward) ← CONFLICT FIXED (see KNOWN_ISSUES)
 GPIO7  → TTP223 Touch RIGHT
 GPIO8  → HC-SR501 PIR OUT (3.3V direct)
-GPIO13 → TB6612FNG PWMB (hardware PWM1, right motor speed)
-GPIO16 → HC-SR04 TRIG (3.3V direct)
-GPIO17 → TB6612FNG AIN1 (left motor direction 1)
-GPIO18 → TB6612FNG PWMA (hardware PWM0, left motor speed)
-GPIO19 → KY-038 Sound DO (via 10kΩ+10kΩ divider → 2.5V)
-GPIO20 → TCRT5000 Cliff LEFT (via LLC ch3, 5V→3.3V)
-GPIO21 → TCRT5000 Cliff RIGHT (via LLC ch4, 5V→3.3V)
-GPIO22 → TB6612FNG AIN2 (left motor direction 2)
-GPIO23 → TB6612FNG BIN1 (right motor direction 1)
+GPIO10 → TB6612FNG left_rear BIN2 (direction 2)
+GPIO11 → TB6612FNG left_front PWM (SW PWM — remapped from GPIO12, Pin 32 confirmed faulty on this unit)
+GPIO12 → DEAD PIN — do not use (Pin 32 faulty on this Pi 5 unit, confirmed 2026-05-28)
+GPIO13 → TB6612FNG left_rear PWM (SW PWM — shares HW PWM1 with GPIO19, never use dtoverlay)
+GPIO16 → HC-SR04 TRIG — DISABLED: FIT0992 HAT uses GPIO16 for charge control
+GPIO17 → TB6612FNG left_front AIN1 (direction 1)
+GPIO18 → TB6612FNG right_front PWM (SW PWM)
+GPIO19 → TB6612FNG right_rear PWM (SW PWM)
+GPIO20 → TB6612FNG right_front AIN1 (direction 1)
+GPIO21 → TB6612FNG right_front AIN2 (direction 2)
+GPIO22 → TB6612FNG left_front AIN2 (direction 2)
+GPIO23 → TB6612FNG left_rear BIN1 (direction 1)
 GPIO24 → HC-SR04 ECHO (via LLC ch1, 5V→3.3V)
-GPIO25 → TTP223 Touch BELLY
-GPIO26 → SW-420 Vibration DO (via 10kΩ+10kΩ divider → 2.5V)
+GPIO25 → TB6612FNG right_rear BIN1 (direction 1)
+GPIO26 → TB6612FNG right_rear BIN2 (direction 2)
 GPIO27 → TB6612FNG STBY (LOW at boot always — HIGH only after self-test)
 ```
 
@@ -211,6 +214,15 @@ Always set OFF pin LOW before ON pin HIGH — prevents both-HIGH glitch.
 4. All Pi 5 GPIO pins are 3.3V max — no exceptions
 5. 470µF cap across TB6612FNG VM+GND (motor surge)
 6. 220µF caps per motor terminal pair (back-EMF)
+
+### ⛔ FIT0992 UPS HAT — RESERVED GPIO (never assign to anything else)
+These pins are used by the HAT internally. Driving them from robot code destroys the HAT converter IC.
+| GPIO | Pin | HAT function | What happens if driven |
+|------|-----|--------------|----------------------|
+| GPIO6 | Pin 31 | Adapter-fail detect | LOW = HAT thinks 12V adapter gone → battery boost → converter overheats and burns |
+| GPIO16 | Pin 36 | Charging control | HIGH = disables charging circuit |
+
+**This was the root cause of 5 burned chips.** GPIO6 was assigned to left_rear BIN2, which went LOW on every forward command.
 
 ---
 
