@@ -2,13 +2,42 @@
 
 > Updated at end of every session. Read at start of every session.  
 > Source of truth for sprint state.
-> Last updated: 2026-05-29 (backlog + session protocol session)
+> Last updated: 2026-05-29 (Brain BUILD_BRAIN.md mission B0→B6 complete)
 
 ## Verified environment (checked 2026-05-29)
 - **OS:** Debian GNU/Linux 13 (trixie)
 - **Python:** 3.13.5 (not 3.11 — update any doc that says 3.11)
 - **Vision model on disk:** `models/yolo11n.pt` (5.4MB) — person.py docstring still says YOLOv8n, fix when touching that file
 - **yolov8n.pt** also present in root — unused, can be deleted to save 6MB
+
+---
+
+---
+
+## Session: 2026-05-29 — Brain BUILD_BRAIN.md mission (B0→B6)
+
+### What happened this session
+- **B0 Harness**: `tests/brain/` created with conftest (FakeLLM/BudgetSpy/mock HAL), 11 JSON fixture scenarios, `tools/brain_replay.py` with I1-I7 invariant checking
+- **B1 Tier-1**: 17 tests for rule engine (dark_room, obstacle, wander, nonverbal ordering)
+- **B2 LLM routing**: `TokenBudget`, `OllamaProvider`, `ClaudeProvider`, `LLMRouter` added to `cognition/llm.py`; LLMInterface routing fixed to Ollama-first (was Claude-first); 21 tests
+- **B3 Personality prompt**: `cognition/personality_prompt.py` — deterministic preamble builder; 14 tests; I7 green
+- **B4 Memory recall**: `recall_for_prompt()` + `store_fact()` added to `core/memory/episodic.py`; `conversation._build_context()` wired to use it; 12 tests; I5 green
+- **B5 Conversation loop**: 8 tests — budget gate, full_day soak, I5 memory injection, graceful degradation
+- **B6 Hardening + dashboard**: 17 hardening tests; service.py dashboard fully rebuilt (mobile, dark, camera, motor pad, budget bar, memory, log tail, brain controls, token budget); motor+budget+logs+trigger endpoints added
+- **Final state**: 89/89 tests pass, 11/11 scenarios pass, I1✅ I2✅ I3✅ I4✅ I5✅ I6✅ I7✅
+
+### Status after this session
+| Component | Status |
+|---|---|
+| Brain test harness (tests/brain/) | ✅ NEW — 89 tests |
+| Brain replay tool (tools/brain_replay.py) | ✅ NEW |
+| TokenBudget (cognition/llm.py) | ✅ NEW |
+| OllamaProvider / ClaudeProvider / LLMRouter | ✅ NEW |
+| PersonalityPromptBuilder | ✅ NEW — cognition/personality_prompt.py |
+| recall_for_prompt / store_fact | ✅ NEW — core/memory/episodic.py |
+| Dashboard (services/api/service.py) | ✅ REBUILT — full B6 spec |
+| Motor/budget/logs endpoints | ✅ NEW |
+| All 7 invariants | ✅ ALL GREEN |
 
 ---
 

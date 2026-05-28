@@ -277,19 +277,28 @@ class ConversationManager:
             name = p.name if p else (self._active_person_name or "someone")
             persons_present = [name]
 
-        # Recall relevant memories
+        # Recall relevant memories — use recall_for_prompt for I5
         memories = ""
         if person_id:
             try:
-                episodes = await episodic.retrieve(
+                # Extract keywords from current user_text if available
+                memories = await episodic.recall_for_prompt(
                     person_id=person_id,
-                    limit=MEMORY_RECALL_LIMIT,
-                    min_importance=0.2,
+                    limit=MEMORY_RECALL_LIMIT + 2,
+                    max_chars=800,
                 )
-                if episodes:
-                    memories = "; ".join(e.summary for e in episodes)
             except Exception:
-                pass
+                # Fallback to simple retrieve
+                try:
+                    episodes = await episodic.retrieve(
+                        person_id=person_id,
+                        limit=MEMORY_RECALL_LIMIT,
+                        min_importance=0.2,
+                    )
+                    if episodes:
+                        memories = "; ".join(e.summary[:80] for e in episodes)
+                except Exception:
+                    pass
 
         return {
             "mood_desc": personality.describe(),

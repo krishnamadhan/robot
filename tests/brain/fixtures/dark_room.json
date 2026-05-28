@@ -1,0 +1,20 @@
+{
+  "name": "dark_room",
+  "description": "Lux drops to 10 → scared eyes, dark_room rule fires, speech trigger",
+  "initial_state": {
+    "sensor_dist_cm": 100,
+    "sensor_lux": 10,
+    "personality": {"mood": 0.3, "energy": 0.5, "arousal": 0.4, "attachment": 0.5}
+  },
+  "events": [
+    {"t": 0.0, "type": "hardware.light_changed", "data": {"lux": 10}},
+    {"t": 0.1, "type": "RULE_TICK", "data": {"dist_cm": 100, "lux": 10, "idle_s": 5, "moving": false}},
+    {"t": 0.5, "type": "TRIGGER", "trigger": "dark_room", "name": null}
+  ],
+  "expected": {
+    "llm_calls_in_tier1": 0,
+    "nonverbal_before_speech": true,
+    "speech_triggered": true,
+    "eye_expression": "SCARED"
+  }
+}

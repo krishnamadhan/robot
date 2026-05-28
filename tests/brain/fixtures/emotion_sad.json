@@ -1,0 +1,21 @@
+{
+  "name": "emotion_sad",
+  "description": "Sad emotion detected → emotion_sad trigger → whimper + sad eyes",
+  "initial_state": {
+    "sensor_dist_cm": 90,
+    "sensor_lux": 250,
+    "personality": {"mood": 0.3, "energy": 0.5, "arousal": 0.3, "attachment": 0.6}
+  },
+  "events": [
+    {"t": 0.0, "type": "perception.face.recognized", "data": {"person_id": "indhu", "name": "Indhu", "confidence": 0.88}},
+    {"t": 0.5, "type": "perception.emotion", "data": {"emotion": "sad", "confidence": 0.75, "person_id": "indhu"}},
+    {"t": 0.6, "type": "TRIGGER", "trigger": "emotion_sad", "name": "Indhu"}
+  ],
+  "expected": {
+    "nonverbal_before_speech": true,
+    "llm_calls_in_tier1": 0,
+    "speech_triggered": true,
+    "eye_expression": "SAD",
+    "sound": "whimper_sad"
+  }
+}

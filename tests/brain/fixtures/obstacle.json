@@ -1,0 +1,19 @@
+{
+  "name": "obstacle",
+  "description": "Ultrasonic distance drops to 10cm → obstacle stop + surprised eyes",
+  "initial_state": {
+    "sensor_dist_cm": 10,
+    "sensor_lux": 300,
+    "personality": {"mood": 0.5, "energy": 0.7, "arousal": 0.5, "attachment": 0.5}
+  },
+  "events": [
+    {"t": 0.0, "type": "safety.obstacle.critical", "data": {"dist_cm": 10}},
+    {"t": 0.1, "type": "RULE_TICK", "data": {"dist_cm": 10, "lux": 300, "idle_s": 10, "moving": true}}
+  ],
+  "expected": {
+    "llm_calls_in_tier1": 0,
+    "motor_stop_called": true,
+    "eye_expression": "SURPRISED",
+    "nonverbal_before_speech": true
+  }
+}

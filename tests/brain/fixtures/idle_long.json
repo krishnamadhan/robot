@@ -1,0 +1,19 @@
+{
+  "name": "idle_long",
+  "description": "200s elapsed with no activity, idle rule fires wander",
+  "initial_state": {
+    "sensor_dist_cm": 150,
+    "sensor_lux": 300,
+    "personality": {"mood": 0.4, "energy": 0.5, "arousal": 0.3, "attachment": 0.5},
+    "idle_seconds": 200
+  },
+  "events": [
+    {"t": 200.0, "type": "TICK", "data": {"elapsed_s": 200}},
+    {"t": 200.1, "type": "RULE_TICK", "data": {"idle_s": 200, "moving": false, "dist_cm": 150, "lux": 300}}
+  ],
+  "expected": {
+    "llm_calls_in_tier1": 0,
+    "wander_triggered": true,
+    "eye_expression": "CURIOUS"
+  }
+}

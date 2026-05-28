@@ -45,11 +45,15 @@ async def health():
     uptime = int(time.monotonic() - _start_time)
     cpu_temp = _read_cpu_temp()
     free_ram = _read_free_ram_mb()
+    total_ram = _read_total_ram_mb()
+    disk_pct = _read_disk_pct()
     return {
         "status":           "ok",
         "uptime_s":         uptime,
         "cpu_temp_c":       cpu_temp,
         "free_ram_mb":      free_ram,
+        "total_ram_mb":     total_ram,
+        "disk_pct":         disk_pct,
         "mood":             round(personality.state.mood, 2),
         "energy":           round(personality.state.energy, 2),
         "latency":          LatencyTracker.snapshot(),
@@ -96,6 +100,26 @@ def _read_free_ram_mb() -> int:
     except Exception:
         pass
     return -1
+
+
+def _read_total_ram_mb() -> int:
+    try:
+        data = Path("/proc/meminfo").read_text()
+        for line in data.splitlines():
+            if line.startswith("MemTotal:"):
+                return int(line.split()[1]) // 1024
+    except Exception:
+        pass
+    return 8192
+
+
+def _read_disk_pct() -> int:
+    try:
+        import shutil
+        usage = shutil.disk_usage("/")
+        return round(usage.used / usage.total * 100)
+    except Exception:
+        return -1
 
 
 # ── /state ────────────────────────────────────────────────────────────────────
@@ -258,222 +282,420 @@ async def dashboard():
     return HTMLResponse(content=_DASHBOARD_HTML)
 
 
+
+
 _DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <title>Cosmo</title>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: system-ui, sans-serif; background: #0d1117; color: #e6edf3;
-         padding: 12px; max-width: 480px; margin: auto; }
-  h1 { font-size: 1.3rem; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
-  .dot { width: 10px; height: 10px; border-radius: 50%; background: #3fb950; display: inline-block; }
-  .dot.off { background: #8b949e; }
-  section { background: #161b22; border-radius: 8px; padding: 12px; margin-bottom: 10px; }
-  section h2 { font-size: 0.8rem; text-transform: uppercase; color: #8b949e; margin-bottom: 8px; }
-  .row { display: flex; justify-content: space-between; padding: 3px 0;
-         font-size: 0.9rem; border-bottom: 1px solid #21262d; }
-  .row:last-child { border-bottom: none; }
-  .label { color: #8b949e; }
-  .val { font-weight: 600; }
-  .bar-wrap { background: #21262d; border-radius: 4px; height: 8px;
-              width: 120px; overflow: hidden; display: inline-block; }
-  .bar { height: 100%; border-radius: 4px; background: #3fb950; transition: width 0.4s; }
-  .bar.warn { background: #d29922; }
-  .bar.crit { background: #f85149; }
-  .memories { font-size: 0.8rem; line-height: 1.5; color: #c9d1d9; }
-  .mem-item { padding: 4px 0; border-bottom: 1px solid #21262d; }
-  .mem-item:last-child { border-bottom: none; }
-  .mem-meta { color: #8b949e; font-size: 0.72rem; }
-  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
-  button { background: #21262d; color: #e6edf3; border: 1px solid #30363d;
-           border-radius: 6px; padding: 8px 14px; font-size: 0.85rem; cursor: pointer; }
-  button:hover { background: #30363d; }
-  button.danger { border-color: #f85149; }
-  button.primary { background: #238636; border-color: #238636; }
-  .ts { font-size: 0.72rem; color: #8b949e; text-align: right; margin-top: 8px; }
-  .badge { font-size: 0.7rem; padding: 2px 6px; border-radius: 10px;
-           background: #21262d; color: #8b949e; }
-  .badge.real { background: #1f4a2e; color: #3fb950; }
-  .badge.mock { background: #2d2a0f; color: #d29922; }
-  .badge.error { background: #3d1a1a; color: #f85149; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: system-ui, -apple-system, sans-serif; background: #0d1117; color: #e6edf3;
+       padding: 10px; max-width: 540px; margin: auto; }
+h1 { font-size: 1.2rem; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: #3fb950; display: inline-block;
+       box-shadow: 0 0 6px #3fb950; }
+.dot.off { background: #8b949e; box-shadow: none; }
+section { background: #161b22; border-radius: 10px; padding: 12px; margin-bottom: 8px; }
+section h2 { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em;
+             color: #8b949e; margin-bottom: 8px; }
+.row { display: flex; justify-content: space-between; align-items: center;
+       padding: 4px 0; font-size: 0.88rem; border-bottom: 1px solid #21262d; }
+.row:last-child { border-bottom: none; }
+.label { color: #8b949e; }
+.val { font-weight: 600; font-family: monospace; }
+.bar-outer { background: #21262d; border-radius: 4px; height: 8px; width: 100px;
+             overflow: hidden; display: inline-block; vertical-align: middle; }
+.bar-inner { height: 100%; border-radius: 4px; background: #3fb950;
+             transition: width 0.5s ease; }
+.bar-inner.warn { background: #d29922; }
+.bar-inner.crit { background: #f85149; }
+.badge { font-size: 0.7rem; padding: 2px 7px; border-radius: 10px;
+         font-weight: 600; white-space: nowrap; }
+.badge.real { background: #1a3326; color: #3fb950; border: 1px solid #2d5a3d; }
+.badge.mock { background: #332a0d; color: #d29922; border: 1px solid #5a4a1a; }
+.badge.error { background: #3d1515; color: #f85149; border: 1px solid #6d2020; }
+.badge.unknown { background: #21262d; color: #8b949e; border: 1px solid #30363d; }
+.hw-row { display: flex; justify-content: space-between; align-items: center;
+          padding: 3px 0; border-bottom: 1px solid #21262d; font-size: 0.82rem; }
+.hw-row:last-child { border-bottom: none; }
+.hw-name { color: #c9d1d9; }
+.cam-wrap { background: #000; border-radius: 8px; overflow: hidden; text-align: center;
+            margin-top: 6px; }
+.cam-wrap img { width: 100%; max-width: 480px; display: block; }
+.cam-wrap .cam-off { color: #8b949e; font-size: 0.8rem; padding: 20px; }
+.mem-item { padding: 5px 0; border-bottom: 1px solid #21262d; font-size: 0.82rem; }
+.mem-item:last-child { border-bottom: none; }
+.mem-summary { color: #c9d1d9; }
+.mem-meta { color: #8b949e; font-size: 0.72rem; margin-top: 1px; }
+.valence-pos { color: #3fb950; }
+.valence-neg { color: #f85149; }
+.valence-neu { color: #8b949e; }
+.log-box { background: #0d1117; border-radius: 6px; padding: 8px;
+           font-family: monospace; font-size: 0.72rem; line-height: 1.5;
+           color: #8b949e; max-height: 200px; overflow-y: auto; margin-top: 4px; }
+.log-line { white-space: pre-wrap; word-break: break-all; }
+.log-line.warn { color: #d29922; }
+.log-line.error { color: #f85149; }
+.log-line.info { color: #58a6ff; }
+.btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 4px; }
+.btn-grid.motor { grid-template-columns: 1fr 1fr 1fr; }
+button { background: #21262d; color: #e6edf3; border: 1px solid #30363d;
+         border-radius: 8px; padding: 10px 8px; font-size: 0.85rem; cursor: pointer;
+         transition: background 0.15s; width: 100%; }
+button:hover { background: #30363d; }
+button:active { background: #21262d; transform: scale(0.97); }
+button.green { background: #1a3326; border-color: #2d5a3d; color: #3fb950; }
+button.green:hover { background: #2d5a3d; }
+button.red { background: #3d1515; border-color: #6d2020; color: #f85149; }
+button.red:hover { background: #6d2020; }
+button.blue { background: #0d2040; border-color: #1a4080; color: #58a6ff; }
+button.blue:hover { background: #1a4080; }
+.ts-bar { display: flex; justify-content: space-between; align-items: center;
+          font-size: 0.72rem; color: #8b949e; margin-top: 8px; padding: 0 2px; }
+.motor-pad { display: grid; grid-template-columns: 1fr 1fr 1fr;
+             grid-template-rows: auto auto auto; gap: 6px; }
+.motor-pad button { min-height: 44px; font-size: 1.1rem; }
+.motor-pad .center { grid-column: 2; }
+.motor-stop { grid-column: 1 / -1; margin-top: 2px; }
+.bar-section { display: flex; align-items: center; gap: 6px; }
 </style>
 </head>
 <body>
-<h1><span class="dot" id="status-dot"></span> Cosmo</h1>
+<h1><span class="dot off" id="status-dot"></span> Cosmo
+  <span style="font-weight:400;font-size:0.8rem;color:#8b949e;margin-left:auto" id="mind-status"></span>
+</h1>
 
+<!-- Camera -->
 <section>
-  <h2>Personality</h2>
-  <div class="row"><span class="label">Mood</span>
-    <span><span class="val" id="mood">—</span>
-    <span class="bar-wrap"><div class="bar" id="mood-bar"></div></span></span></div>
-  <div class="row"><span class="label">Energy</span>
-    <span><span class="val" id="energy">—</span>
-    <span class="bar-wrap"><div class="bar" id="energy-bar"></div></span></span></div>
-  <div class="row"><span class="label">Arousal</span>
-    <span class="val" id="arousal">—</span></div>
-  <div class="row"><span class="label">Attachment</span>
-    <span class="val" id="attachment">—</span></div>
-  <div class="row"><span class="label">Description</span>
-    <span class="val" id="description">—</span></div>
-</section>
-
-<section>
-  <h2>Attention</h2>
-  <div class="row"><span class="label">Sees</span>
-    <span class="val" id="person">—</span></div>
-  <div class="row"><span class="label">Emotion</span>
-    <span class="val" id="emotion">—</span></div>
-  <div class="row"><span class="label">Distance</span>
-    <span class="val" id="distance">—</span></div>
-  <div class="row"><span class="label">Persons visible</span>
-    <span class="val" id="visible">—</span></div>
-</section>
-
-<section>
-  <h2>System</h2>
-  <div class="row"><span class="label">Uptime</span>
-    <span class="val" id="uptime">—</span></div>
-  <div class="row"><span class="label">CPU temp</span>
-    <span class="val" id="temp">—</span></div>
-  <div class="row"><span class="label">Free RAM</span>
-    <span class="val" id="ram">—</span></div>
-  <div class="row"><span class="label">Listen state</span>
-    <span class="val" id="listen">—</span></div>
-  <div class="row"><span class="label">Battery</span>
-    <span class="val" id="battery">—</span></div>
-</section>
-
-<section>
-  <h2>Hardware</h2>
-  <div id="hw-list" style="font-size:0.8rem;line-height:1.8"></div>
-</section>
-
-<section>
-  <h2>Controls</h2>
-  <div class="btn-row">
-    <button class="primary" onclick="postCmd('/mind/on')">Mind ON</button>
-    <button onclick="postCmd('/mind/off')">Mind OFF</button>
-    <button onclick="postCmd('/sound/mute?seconds=3600')">Mute 1h</button>
-    <button onclick="postCmd('/sound/unmute')">Unmute</button>
+  <h2>Camera</h2>
+  <div class="cam-wrap" id="cam-wrap">
+    <div class="cam-off" id="cam-off">Loading stream…</div>
+    <img id="cam-img" src="" alt="Live stream" style="display:none"
+         onerror="this.style.display='none';document.getElementById('cam-off').style.display='block'"
+         onload="this.style.display='block';document.getElementById('cam-off').style.display='none'">
   </div>
 </section>
 
+<!-- Personality -->
 <section>
-  <h2>Recent Memories <span class="badge" id="mem-count"></span></h2>
-  <div class="memories" id="memories">Loading…</div>
+  <h2>Personality State</h2>
+  <div class="row">
+    <span class="label">Mood</span>
+    <span class="bar-section">
+      <span class="val" id="mood">—</span>
+      <span class="bar-outer"><div class="bar-inner" id="mood-bar" style="width:50%"></div></span>
+    </span>
+  </div>
+  <div class="row">
+    <span class="label">Energy</span>
+    <span class="bar-section">
+      <span class="val" id="energy">—</span>
+      <span class="bar-outer"><div class="bar-inner" id="energy-bar" style="width:70%"></div></span>
+    </span>
+  </div>
+  <div class="row">
+    <span class="label">Arousal</span>
+    <span class="bar-section">
+      <span class="val" id="arousal">—</span>
+      <span class="bar-outer"><div class="bar-inner" id="arousal-bar" style="width:50%"></div></span>
+    </span>
+  </div>
+  <div class="row">
+    <span class="label">Attachment</span>
+    <span class="bar-section">
+      <span class="val" id="attachment">—</span>
+      <span class="bar-outer"><div class="bar-inner" id="attachment-bar" style="width:60%"></div></span>
+    </span>
+  </div>
+  <div class="row"><span class="label">Description</span>
+    <span class="val" id="description" style="text-align:right;max-width:200px;font-size:0.8rem"></span></div>
 </section>
 
-<div class="ts" id="refreshed"></div>
+<!-- Attention -->
+<section>
+  <h2>Current Attention</h2>
+  <div class="row"><span class="label">Sees</span><span class="val" id="person">—</span></div>
+  <div class="row"><span class="label">Emotion</span><span class="val" id="emotion">—</span></div>
+  <div class="row"><span class="label">Distance</span><span class="val" id="distance">—</span></div>
+  <div class="row"><span class="label">Gesture</span><span class="val" id="gesture">—</span></div>
+  <div class="row"><span class="label">Persons visible</span><span class="val" id="visible">—</span></div>
+</section>
+
+<!-- System Health -->
+<section>
+  <h2>System Health</h2>
+  <div class="row"><span class="label">Uptime</span><span class="val" id="uptime">—</span></div>
+  <div class="row"><span class="label">CPU Temp</span><span class="val" id="temp">—</span></div>
+  <div class="row">
+    <span class="label">RAM</span>
+    <span class="bar-section">
+      <span class="val" id="ram">—</span>
+      <span class="bar-outer"><div class="bar-inner" id="ram-bar" style="width:20%"></div></span>
+    </span>
+  </div>
+  <div class="row"><span class="label">Disk</span><span class="val" id="disk">—</span></div>
+  <div class="row"><span class="label">Battery</span><span class="val" id="battery">—</span></div>
+  <div class="row"><span class="label">Audio state</span><span class="val" id="listen">—</span></div>
+</section>
+
+<!-- Token Budget -->
+<section>
+  <h2>Token Budget (Today)</h2>
+  <div class="row">
+    <span class="label">Used</span>
+    <span class="bar-section">
+      <span class="val" id="budget-used">—</span>
+      <span class="bar-outer"><div class="bar-inner" id="budget-bar" style="width:0%"></div></span>
+    </span>
+  </div>
+  <div class="row"><span class="label">Remaining</span><span class="val" id="budget-rem">—</span></div>
+  <div class="row"><span class="label">Claude allowed</span><span class="val" id="budget-ok">—</span></div>
+</section>
+
+<!-- Hardware -->
+<section>
+  <h2>Hardware Components</h2>
+  <div id="hw-list"><span style="color:#8b949e;font-size:0.8rem">Loading…</span></div>
+</section>
+
+<!-- Motor Control -->
+<section>
+  <h2>Motor Control</h2>
+  <div style="margin-bottom:8px;font-size:0.78rem;color:#8b949e" id="motor-status">Status: —</div>
+  <div class="motor-pad">
+    <div></div>
+    <button onclick="motorCmd('forward')" class="blue">▲</button>
+    <div></div>
+    <button onclick="motorCmd('left')" class="blue">◀</button>
+    <button onclick="motorCmd('stop')" class="red center">■</button>
+    <button onclick="motorCmd('right')" class="blue">▶</button>
+    <div></div>
+    <button onclick="motorCmd('back')" class="blue">▼</button>
+    <div></div>
+  </div>
+</section>
+
+<!-- Brain Controls -->
+<section>
+  <h2>Brain Controls</h2>
+  <div class="btn-grid">
+    <button class="green" onclick="postCmd('/mind/on')">🧠 Mind ON</button>
+    <button class="red" onclick="postCmd('/mind/off')">Mind OFF</button>
+    <button onclick="postCmd('/sound/mute?seconds=3600')">🔇 Mute 1h</button>
+    <button onclick="postCmd('/sound/unmute')">🔊 Unmute</button>
+  </div>
+  <div style="margin-top:8px">
+    <div style="font-size:0.72rem;color:#8b949e;margin-bottom:6px">Test Triggers</div>
+    <div class="btn-grid">
+      <button onclick="postCmd('/trigger/face_seen')">👤 Face Seen</button>
+      <button onclick="postCmd('/trigger/touched')">👆 Touched</button>
+      <button onclick="postCmd('/trigger/emotion_happy')">😄 Happy</button>
+      <button onclick="postCmd('/trigger/describe')">📷 Describe</button>
+    </div>
+  </div>
+</section>
+
+<!-- Memories -->
+<section>
+  <h2>Recent Memories</h2>
+  <div class="memories" id="memories"><span style="color:#8b949e">Loading…</span></div>
+</section>
+
+<!-- Live Logs -->
+<section>
+  <h2>Live Log Tail</h2>
+  <div class="log-box" id="log-box">Loading…</div>
+</section>
+
+<div class="ts-bar">
+  <span id="refreshed">—</span>
+  <button onclick="doRefresh()" style="width:auto;padding:4px 12px;font-size:0.75rem">↺ Refresh</button>
+</div>
 
 <script>
 const BASE = '';
-let lastOk = false;
+let camHost = window.location.hostname;
 
-function fmt(v, decimals=2) {
-  return typeof v === 'number' ? v.toFixed(decimals) : (v ?? '—');
-}
+// Set camera stream src once
+(function() {
+  const img = document.getElementById('cam-img');
+  img.src = 'http://' + camHost + ':8080';
+})();
 
-function barWidth(v, lo=-1, hi=1) {
-  const pct = Math.max(0, Math.min(100, ((v - lo) / (hi - lo)) * 100));
-  return pct;
+function fmt(v, dp=2) {
+  return (typeof v === 'number') ? v.toFixed(dp) : (v ?? '—');
 }
 
 function setBar(id, pct) {
   const el = document.getElementById(id);
   if (!el) return;
-  el.style.width = pct + '%';
-  el.className = 'bar' + (pct < 20 ? ' crit' : pct < 40 ? ' warn' : '');
+  el.style.width = Math.max(0, Math.min(100, pct)) + '%';
+  el.className = 'bar-inner' + (pct > 80 ? ' crit' : pct > 60 ? ' warn' : '');
 }
+
+function moodPct(v) { return ((v + 1) / 2) * 100; }   // -1..1 → 0..100%
+function pct01(v) { return (v || 0) * 100; }            // 0..1 → 0..100%
 
 async function refresh() {
   try {
-    const [stateR, healthR, hwR, memR] = await Promise.all([
-      fetch(BASE+'/state'),
-      fetch(BASE+'/health'),
-      fetch(BASE+'/hardware'),
-      fetch(BASE+'/memory/recent'),
+    const [stR, hlR, hwR, memR, budR, logR] = await Promise.all([
+      fetch(BASE+'/state').then(r=>r.json()),
+      fetch(BASE+'/health').then(r=>r.json()),
+      fetch(BASE+'/hardware').then(r=>r.json()),
+      fetch(BASE+'/memory/recent').then(r=>r.json()),
+      fetch(BASE+'/budget').then(r=>r.json()),
+      fetch(BASE+'/logs/tail').then(r=>r.json()),
     ]);
 
-    const s = await stateR.json();
-    const h = await healthR.json();
-    const hw = await hwR.json();
-    const mems = await memR.json();
-
-    lastOk = true;
     document.getElementById('status-dot').className = 'dot';
 
+    // Mind status
+    const mindOn = (stR.behavior || {}).mind_enabled;
+    document.getElementById('mind-status').textContent =
+      mindOn === true ? '🧠 Mind ON' : (mindOn === false ? 'Mind OFF' : '');
+
     // Personality
-    const e = s.emotion || {};
+    const e = stR.emotion || {};
     document.getElementById('mood').textContent = fmt(e.mood);
-    setBar('mood-bar', barWidth(e.mood || 0, -1, 1));
+    setBar('mood-bar', moodPct(e.mood || 0));
     document.getElementById('energy').textContent = fmt(e.energy);
-    setBar('energy-bar', (e.energy || 0) * 100);
+    setBar('energy-bar', pct01(e.energy));
     document.getElementById('arousal').textContent = fmt(e.arousal);
+    setBar('arousal-bar', pct01(e.arousal));
     document.getElementById('attachment').textContent = fmt(e.attachment);
+    setBar('attachment-bar', pct01(e.attachment));
     document.getElementById('description').textContent = e.description || '—';
 
     // Attention
-    const a = s.attention || {};
+    const a = stR.attention || {};
     document.getElementById('person').textContent = a.person || '—';
     document.getElementById('emotion').textContent = a.emotion || '—';
-    document.getElementById('distance').textContent = a.distance_cm != null ? a.distance_cm+'cm' : '—';
+    document.getElementById('distance').textContent =
+      a.distance_cm != null ? a.distance_cm + ' cm' : '—';
+    document.getElementById('gesture').textContent = a.gesture || '—';
     document.getElementById('visible').textContent = a.persons_visible ?? '—';
 
     // System
-    const uptimeSec = h.uptime_s || 0;
-    const hh = Math.floor(uptimeSec/3600), mm = Math.floor((uptimeSec%3600)/60);
-    document.getElementById('uptime').textContent = hh+'h '+mm+'m';
-    document.getElementById('temp').textContent = h.cpu_temp_c != null ? h.cpu_temp_c+'°C' : '—';
-    document.getElementById('ram').textContent = h.free_ram_mb != null ? h.free_ram_mb+'MB' : '—';
-    document.getElementById('listen').textContent = (s.behavior||{}).listen_state || '—';
-    document.getElementById('battery').textContent = s.battery_pct != null ? s.battery_pct+'%' : '—';
+    const ut = hlR.uptime_s || 0;
+    document.getElementById('uptime').textContent =
+      Math.floor(ut/3600) + 'h ' + Math.floor((ut%3600)/60) + 'm';
+    document.getElementById('temp').textContent =
+      hlR.cpu_temp_c != null ? hlR.cpu_temp_c + '°C' : '—';
+    const freeMB = hlR.free_ram_mb || 0;
+    const totalMB = hlR.total_ram_mb || 8192;
+    document.getElementById('ram').textContent =
+      freeMB + 'MB free / ' + Math.round(totalMB/1024) + 'GB';
+    const usedPct = Math.round((1 - freeMB/totalMB)*100);
+    setBar('ram-bar', usedPct);
+    document.getElementById('disk').textContent =
+      hlR.disk_pct != null ? hlR.disk_pct + '% used' : '—';
+    document.getElementById('battery').textContent =
+      stR.battery_pct != null ? stR.battery_pct + '%' : '—';
+    document.getElementById('listen').textContent =
+      (stR.behavior || {}).listen_state || '—';
+
+    // Budget
+    if (budR.limit) {
+      document.getElementById('budget-used').textContent =
+        (budR.day_total||0).toLocaleString() + ' / ' + budR.limit.toLocaleString();
+      setBar('budget-bar', budR.pct_used || 0);
+      document.getElementById('budget-rem').textContent =
+        (budR.remaining||0).toLocaleString();
+      document.getElementById('budget-ok').textContent =
+        budR.claude_allowed ? '✅ Yes' : '❌ Budget exhausted';
+    }
 
     // Hardware
     const hwEl = document.getElementById('hw-list');
-    const items = Object.entries(hw.components || {});
-    hwEl.innerHTML = items.map(([name, info]) =>
-      `<div style="display:flex;justify-content:space-between;padding:2px 0">
-        <span style="color:#c9d1d9">${name}</span>
-        <span class="badge ${info.status}">${info.status}</span></div>`
-    ).join('') || '<span style="color:#8b949e">no components registered</span>';
+    const comps = hwR.components || {};
+    const entries = Object.entries(comps);
+    if (entries.length === 0) {
+      hwEl.innerHTML = '<span style="color:#8b949e;font-size:0.8rem">No components registered</span>';
+    } else {
+      hwEl.innerHTML = entries.map(([name, info]) => {
+        const s = info.status || 'unknown';
+        return `<div class="hw-row">
+          <span class="hw-name">${name}</span>
+          <span class="badge ${s}">${s}${info.mock ? ' (mock)' : ''}</span>
+        </div>`;
+      }).join('');
+    }
 
     // Memories
     const memEl = document.getElementById('memories');
-    document.getElementById('mem-count').textContent = mems.length;
+    const mems = Array.isArray(memR) ? memR : (memR.memories || []);
     if (mems.length === 0) {
-      memEl.innerHTML = '<span style="color:#8b949e">No memories yet</span>';
+      memEl.innerHTML = '<span style="color:#8b949e;font-size:0.8rem">No memories yet</span>';
     } else {
-      memEl.innerHTML = mems.slice(0,10).map(m =>
-        `<div class="mem-item">
-          <div>${m.summary}</div>
-          <div class="mem-meta">${m.ts} · ${m.type} · val=${m.valence}</div>
-        </div>`
-      ).join('');
+      memEl.innerHTML = mems.slice(0, 10).map(m => {
+        const v = m.valence || 0;
+        const vc = v > 0.2 ? 'valence-pos' : (v < -0.2 ? 'valence-neg' : 'valence-neu');
+        const vi = v > 0.2 ? '😊' : (v < -0.2 ? '😟' : '😐');
+        return `<div class="mem-item">
+          <div class="mem-summary">${vi} ${m.summary || '—'}</div>
+          <div class="mem-meta">${m.ts || ''} · ${m.type || ''} · <span class="${vc}">val=${v.toFixed(2)}</span></div>
+        </div>`;
+      }).join('');
     }
 
-    document.getElementById('refreshed').textContent = 'Updated ' + new Date().toLocaleTimeString();
+    // Logs
+    const logEl = document.getElementById('log-box');
+    const lines = logR.lines || [];
+    if (lines.length === 0) {
+      logEl.innerHTML = '<span style="color:#8b949e">No log lines found</span>';
+    } else {
+      logEl.innerHTML = lines.slice(-20).map(line => {
+        let cls = 'log-line';
+        const llow = line.toLowerCase();
+        if (llow.includes('[warn') || llow.includes('warning')) cls += ' warn';
+        else if (llow.includes('[error') || llow.includes('error') || llow.includes('critical')) cls += ' error';
+        else if (llow.includes('[info') || llow.includes('info')) cls += ' info';
+        return `<div class="${cls}">${escHtml(line)}</div>`;
+      }).join('');
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    document.getElementById('refreshed').textContent =
+      'Updated ' + new Date().toLocaleTimeString();
 
   } catch(err) {
-    lastOk = false;
     document.getElementById('status-dot').className = 'dot off';
-    document.getElementById('refreshed').textContent = 'Offline — retrying…';
+    document.getElementById('refreshed').textContent = 'Offline — ' + err.message;
   }
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
 async function postCmd(path) {
   try {
-    const r = await fetch(BASE+path, {method:'POST'});
+    const r = await fetch(BASE + path, {method:'POST'});
     const j = await r.json();
-    alert(JSON.stringify(j, null, 2));
-    refresh();
-  } catch(e) { alert('Error: '+e); }
+    const msg = j.ok ? '✅ ' + (j.action || 'done') : '❌ ' + JSON.stringify(j);
+    document.getElementById('motor-status').textContent = msg;
+    await doRefresh();
+  } catch(e) {
+    document.getElementById('motor-status').textContent = '❌ ' + e.message;
+  }
 }
 
+async function motorCmd(dir) {
+  document.getElementById('motor-status').textContent = 'Sending ' + dir + '…';
+  await postCmd('/motor/' + dir);
+}
+
+async function doRefresh() {
+  document.getElementById('refreshed').textContent = 'Refreshing…';
+  await refresh();
+}
+
+// Auto-refresh every 3 seconds
 refresh();
-setInterval(refresh, 5000);
+setInterval(refresh, 3000);
 </script>
 </body>
 </html>"""
@@ -499,6 +721,144 @@ async def sound_unmute():
         from expression.sounds import sounds
         sounds.mute(0)
         return {"muted": False}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ── Motor controls ───────────────────────────────────────────────────────────
+
+@app.post("/motor/forward")
+async def motor_forward(speed: float = 0.4, duration: float = 1.0):
+    try:
+        from hardware.motors import motor_controller
+        asyncio.create_task(motor_controller.forward(speed=speed, duration=duration))
+        return {"ok": True, "action": "forward"}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/motor/back")
+async def motor_back(speed: float = 0.3, duration: float = 1.0):
+    try:
+        from hardware.motors import motor_controller
+        asyncio.create_task(motor_controller.backward(speed=speed, duration=duration))
+        return {"ok": True, "action": "back"}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/motor/left")
+async def motor_left(speed: float = 0.35, duration: float = 0.6):
+    try:
+        from hardware.motors import motor_controller
+        asyncio.create_task(motor_controller.turn_left(speed=speed, duration=duration))
+        return {"ok": True, "action": "left"}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/motor/right")
+async def motor_right(speed: float = 0.35, duration: float = 0.6):
+    try:
+        from hardware.motors import motor_controller
+        asyncio.create_task(motor_controller.turn_right(speed=speed, duration=duration))
+        return {"ok": True, "action": "right"}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/motor/stop")
+async def motor_stop():
+    try:
+        from hardware.motors import motor_controller
+        await motor_controller.stop()
+        return {"ok": True, "action": "stop"}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ── Token budget status ───────────────────────────────────────────────────────
+
+@app.get("/budget")
+async def budget_status():
+    try:
+        from cognition.llm import token_budget
+        return {
+            "day_total": token_budget.day_total,
+            "limit": token_budget.limit,
+            "remaining": token_budget.remaining,
+            "claude_allowed": token_budget.claude_allowed(),
+            "pct_used": round(token_budget.day_total / max(1, token_budget.limit) * 100, 1),
+        }
+    except Exception as e:
+        return {"day_total": 0, "limit": 100000, "remaining": 100000,
+                "claude_allowed": True, "pct_used": 0.0}
+
+
+# ── Log tail ─────────────────────────────────────────────────────────────────
+
+@app.get("/logs/tail")
+async def logs_tail(lines: int = 20):
+    """Return last N lines from PM2 log or cosmo-out.log."""
+    log_paths = [
+        Path.home() / ".robot" / "logs" / "cosmo-out.log",
+        Path.home() / ".pm2" / "logs" / "cosmo_demo-out.log",
+        Path.home() / ".pm2" / "logs" / "cosmo-out.log",
+    ]
+    for lp in log_paths:
+        if lp.exists():
+            try:
+                with open(lp, "rb") as f:
+                    f.seek(0, 2)
+                    size = f.tell()
+                    # Read last ~8KB
+                    f.seek(max(0, size - 8192))
+                    data = f.read().decode("utf-8", errors="replace")
+                raw_lines = data.splitlines()
+                return {"lines": raw_lines[-lines:], "source": str(lp)}
+            except Exception:
+                pass
+    # Fallback: try pm2 logs command
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["pm2", "logs", "cosmo_demo", "--lines", str(lines), "--nostream", "--raw"],
+            capture_output=True, text=True, timeout=5
+        )
+        return {"lines": result.stdout.splitlines()[-lines:], "source": "pm2"}
+    except Exception:
+        pass
+    return {"lines": [], "source": "unavailable"}
+
+
+# ── Brain event triggers ──────────────────────────────────────────────────────
+
+@app.post("/trigger/face_seen")
+async def trigger_face_seen():
+    try:
+        from cognition.mind import cosmo_mind
+        asyncio.create_task(cosmo_mind._maybe_speak("face_seen", "Madhan"))
+        return {"ok": True, "trigger": "face_seen"}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/trigger/touched")
+async def trigger_touched():
+    try:
+        from cognition.mind import cosmo_mind
+        asyncio.create_task(cosmo_mind._maybe_speak("touched", None))
+        return {"ok": True, "trigger": "touched"}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/trigger/emotion_happy")
+async def trigger_emotion_happy():
+    try:
+        from cognition.mind import cosmo_mind
+        asyncio.create_task(cosmo_mind._maybe_speak("emotion_happy", "Madhan"))
+        return {"ok": True, "trigger": "emotion_happy"}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 

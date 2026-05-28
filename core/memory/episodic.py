@@ -379,6 +379,128 @@ class EpisodicMemory:
             "db_path": str(self._db_path),
         }
 
+    # ── Memory recall for LLM prompts (I5) ───────────────────────────────────
+
+    async def recall_for_prompt(
+        self,
+        person_id: Optional[str] = None,
+        keywords: Optional[List[str]] = None,
+        limit: int = 5,
+        max_chars: int = 800,
+    ) -> str:
+        """
+        Retrieve recent + relevant memories and summarize to a hard token cap.
+
+        Strategy:
+        1. Fetch recent high-importance episodes (recency + importance mix).
+        2. If keywords provided, also run LIKE-based keyword search and merge.
+        3. Deduplicate by episode ID.
+        4. Trim to max_chars (~200 tokens / 800 chars).
+
+        Returns a formatted string ready for LLM injection, or "" if no memories.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None, self._recall_sync, person_id, keywords, limit, max_chars
+        )
+
+    def _recall_sync(
+        self,
+        person_id: Optional[str],
+        keywords: Optional[List[str]],
+        limit: int,
+        max_chars: int,
+    ) -> str:
+        if not self._conn:
+            return ""
+        try:
+            # Base query: recency + importance weighted
+            base_clause = "importance >= 0.0"
+            base_params: List[Any] = []
+            if person_id:
+                base_clause += " AND person_id = ?"
+                base_params.append(person_id)
+
+            rows = self._conn.execute(
+                f"""SELECT id, summary, timestamp, emotional_valence, importance
+                    FROM episodes
+                    WHERE {base_clause}
+                    ORDER BY (importance * 0.4 + 0.6 * (timestamp / (SELECT MAX(timestamp) + 1 FROM episodes)))
+                    DESC LIMIT ?""",
+                base_params + [limit],
+            ).fetchall()
+
+            seen_ids: set = {r[0] for r in rows}
+
+            # Keyword search (LIKE) — union with above
+            if keywords:
+                for kw in keywords[:3]:   # limit to 3 keywords to avoid query bloat
+                    kw_rows = self._conn.execute(
+                        f"""SELECT id, summary, timestamp, emotional_valence, importance
+                            FROM episodes
+                            WHERE summary LIKE ? {'AND person_id = ?' if person_id else ''}
+                            ORDER BY timestamp DESC LIMIT ?""",
+                        ([f"%{kw}%", person_id, limit // 2] if person_id
+                         else [f"%{kw}%", limit // 2]),
+                    ).fetchall()
+                    for r in kw_rows:
+                        if r[0] not in seen_ids:
+                            rows.append(r)
+                            seen_ids.add(r[0])
+
+            if not rows:
+                return ""
+
+            # Sort by timestamp DESC for most-recent-first in prompt
+            rows.sort(key=lambda r: r[2], reverse=True)
+
+            # Format and apply hard char cap
+            lines: List[str] = []
+            total_chars = 0
+            for row_id, summary, ts, valence, importance in rows:
+                age_s = time.time() - ts
+                if age_s < 3600:
+                    when = "recently"
+                elif age_s < 86400:
+                    when = f"{int(age_s / 3600)}h ago"
+                elif age_s < 7 * 86400:
+                    when = f"{int(age_s / 86400)}d ago"
+                else:
+                    when = time.strftime("%b %d", time.localtime(ts))
+                mood = ("happy" if valence > 0.3 else "sad" if valence < -0.3 else "neutral")
+                line = f"[{when}, {mood}] {summary}"
+                if total_chars + len(line) + 1 > max_chars:
+                    break
+                lines.append(line)
+                total_chars += len(line) + 1
+
+            if not lines:
+                return ""
+            return "\n".join(lines)
+        except Exception as e:
+            log.warning("episodic.recall_failed", error=str(e)[:80])
+            return ""
+
+    async def store_fact(
+        self,
+        person_id: str,
+        fact: str,
+        importance: float = 0.7,
+        valence: float = 0.0,
+    ) -> str:
+        """
+        Convenience method to store a single salient fact about a person.
+        Used after conversation turns to write back key details.
+        """
+        ep = Episode(
+            episode_type="conversation_fact",
+            summary=fact,
+            person_id=person_id,
+            importance=importance,
+            emotional_valence=valence,
+        )
+        return await self.store(ep)
+
     def close(self) -> None:
         if self._conn:
             self._conn.close()

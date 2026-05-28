@@ -1,0 +1,20 @@
+{
+  "name": "emotion_angry",
+  "description": "Angry emotion detected → emotion_angry trigger → scared eyes",
+  "initial_state": {
+    "sensor_dist_cm": 80,
+    "sensor_lux": 300,
+    "personality": {"mood": 0.2, "energy": 0.6, "arousal": 0.7, "attachment": 0.5}
+  },
+  "events": [
+    {"t": 0.0, "type": "perception.face.recognized", "data": {"person_id": "stranger_01", "name": "Unknown", "confidence": 0.7}},
+    {"t": 0.5, "type": "perception.emotion", "data": {"emotion": "angry", "confidence": 0.80, "person_id": "stranger_01"}},
+    {"t": 0.6, "type": "TRIGGER", "trigger": "emotion_angry", "name": "Unknown"}
+  ],
+  "expected": {
+    "nonverbal_before_speech": true,
+    "llm_calls_in_tier1": 0,
+    "speech_triggered": true,
+    "eye_expression": "SCARED"
+  }
+}

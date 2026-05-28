@@ -1,0 +1,20 @@
+{
+  "name": "emotion_happy",
+  "description": "Happy emotion detected at high confidence → emotion_happy trigger",
+  "initial_state": {
+    "sensor_dist_cm": 100,
+    "sensor_lux": 400,
+    "personality": {"mood": 0.6, "energy": 0.8, "arousal": 0.5, "attachment": 0.7}
+  },
+  "events": [
+    {"t": 0.0, "type": "perception.face.recognized", "data": {"person_id": "madhan", "name": "Madhan", "confidence": 0.9}},
+    {"t": 0.5, "type": "perception.emotion", "data": {"emotion": "happy", "confidence": 0.82, "person_id": "madhan"}},
+    {"t": 0.6, "type": "TRIGGER", "trigger": "emotion_happy", "name": "Madhan"}
+  ],
+  "expected": {
+    "nonverbal_before_speech": true,
+    "llm_calls_in_tier1": 0,
+    "speech_triggered": true,
+    "eye_expression": "HAPPY"
+  }
+}

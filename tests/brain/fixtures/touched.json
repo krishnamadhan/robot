@@ -1,0 +1,20 @@
+{
+  "name": "touched",
+  "description": "Touch sensor triggered → touched speech path",
+  "initial_state": {
+    "sensor_dist_cm": 50,
+    "sensor_lux": 350,
+    "personality": {"mood": 0.6, "energy": 0.7, "arousal": 0.5, "attachment": 0.8}
+  },
+  "events": [
+    {"t": 0.0, "type": "hardware.touch", "data": {"sensor": "belly", "intensity": 0.9}},
+    {"t": 0.1, "type": "TRIGGER", "trigger": "touched", "name": "Madhan"}
+  ],
+  "expected": {
+    "nonverbal_before_speech": true,
+    "llm_calls_in_tier1": 0,
+    "speech_triggered": true,
+    "eye_expression": "LOVING",
+    "sound": "purr_content"
+  }
+}

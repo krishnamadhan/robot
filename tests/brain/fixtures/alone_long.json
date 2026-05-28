@@ -1,0 +1,22 @@
+{
+  "name": "alone_long",
+  "description": "700s with no person visible → alone_long speech trigger",
+  "initial_state": {
+    "sensor_dist_cm": 200,
+    "sensor_lux": 200,
+    "personality": {"mood": -0.2, "energy": 0.4, "arousal": 0.2, "attachment": 0.6},
+    "alone_seconds": 700,
+    "person_visible": false
+  },
+  "events": [
+    {"t": 700.0, "type": "TICK", "data": {"elapsed_s": 700, "person_visible": false}},
+    {"t": 700.1, "type": "TRIGGER", "trigger": "alone_long", "name": null}
+  ],
+  "expected": {
+    "llm_calls_in_tier1": 0,
+    "nonverbal_before_speech": true,
+    "speech_triggered": true,
+    "eye_expression": "SAD",
+    "sound": "whimper_sad"
+  }
+}

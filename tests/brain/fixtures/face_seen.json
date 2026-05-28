@@ -1,0 +1,19 @@
+{
+  "name": "face_seen",
+  "description": "Person appears, face recognized, triggers face_seen speech path",
+  "initial_state": {
+    "sensor_dist_cm": 120,
+    "sensor_lux": 300,
+    "personality": {"mood": 0.5, "energy": 0.7, "arousal": 0.4, "attachment": 0.6}
+  },
+  "events": [
+    {"t": 0.0, "type": "perception.person.detected", "data": {"person_id": "madhan", "distance_cm": 120}},
+    {"t": 0.5, "type": "perception.face.recognized", "data": {"person_id": "madhan", "name": "Madhan", "confidence": 0.92}},
+    {"t": 1.0, "type": "TRIGGER", "trigger": "face_seen", "name": "Madhan"}
+  ],
+  "expected": {
+    "nonverbal_before_speech": true,
+    "llm_calls_in_tier1": 0,
+    "speech_triggered": true
+  }
+}
