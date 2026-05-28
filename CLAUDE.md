@@ -5,8 +5,7 @@
 **Repo:** https://github.com/krishnamadhan/robot  
 **SSH (LAN):** `pi@192.168.1.200` · **SSH (Tailscale):** `pi@100.101.250.126`  
 
-> This file is the single source of truth for every Claude Code session.  
-> Read it completely before writing a single line of code.
+> Before doing anything, read `CLAUDE_SESSION_PROTOCOL.md` and `docs/PROJECT_STATE.md`.
 
 ---
 
@@ -162,10 +161,10 @@ pinctrl get | grep -E "GPIO(5|6|8|13|16|17|18|19|20|21|22|23|24|25|26|27)"
 
 ### GPIO Map (BCM numbering — always BCM, never physical pin)
 ```
-GPIO4  → TTP223 Touch LEFT
+GPIO4  → DEAD PIN — do not use (confirmed bad on this unit, 2026-05-28)
 GPIO5  → TTP223 Touch HEAD
 GPIO6  → TB6612FNG BIN2 (right motor backward) ← CONFLICT FIXED (see KNOWN_ISSUES)
-GPIO7  → TTP223 Touch RIGHT
+GPIO7  → DEAD PIN — do not use (confirmed bad on this unit, 2026-05-28)
 GPIO8  → HC-SR501 PIR OUT (3.3V direct)
 GPIO10 → TB6612FNG left_rear BIN2 (direction 2)
 GPIO11 → TB6612FNG left_front PWM (SW PWM — remapped from GPIO12, Pin 32 confirmed faulty on this unit)
@@ -173,10 +172,12 @@ GPIO12 → DEAD PIN — do not use (Pin 32 faulty on this Pi 5 unit, confirmed 2
 GPIO13 → TB6612FNG left_rear PWM (SW PWM — shares HW PWM1 with GPIO19, never use dtoverlay)
 GPIO16 → HC-SR04 TRIG — DISABLED: FIT0992 HAT uses GPIO16 for charge control
 GPIO17 → TB6612FNG left_front AIN1 (direction 1)
+GPIO5  → DEAD PIN — do not use (confirmed bad on this unit, 2026-05-28)
+GPIO24 → TB6612FNG right_front AIN2 (direction 2) — remapped: GPIO21 dead→GPIO14 UART→GPIO5 dead→GPIO24
 GPIO18 → TB6612FNG right_front PWM (SW PWM)
-GPIO19 → TB6612FNG right_rear PWM (SW PWM)
+GPIO19 → DEAD PIN — do not use (Pin 35 faulty on this Pi 5 unit, confirmed 2026-05-28)
 GPIO20 → TB6612FNG right_front AIN1 (direction 1)
-GPIO21 → TB6612FNG right_front AIN2 (direction 2)
+GPIO21 → DEAD PIN — do not use (Pin 40 faulty on this Pi 5 unit, confirmed 2026-05-28)
 GPIO22 → TB6612FNG left_front AIN2 (direction 2)
 GPIO23 → TB6612FNG left_rear BIN1 (direction 1)
 GPIO24 → HC-SR04 ECHO (via LLC ch1, 5V→3.3V)
