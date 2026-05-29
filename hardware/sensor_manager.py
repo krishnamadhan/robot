@@ -422,6 +422,7 @@ class UPSHATSensor:
         self._bus = None
         self._mock_start_pct = 85.0
         self._mock_start_time = time.monotonic()
+        self._next_reinit = time.monotonic() + 10  # first re-init attempt 10s after start
 
     def initialize(self) -> bool:
         if not _SMBUS_OK:
@@ -436,7 +437,23 @@ class UPSHATSensor:
             log.info("ups.mock", reason=str(e)[:60])
             return False
 
+    def _try_reinit(self) -> None:
+        """Re-attempt real init from inside the sensor loop (I2C lock already held)."""
+        try:
+            _i2c_bus().read_i2c_block_data(self.ADDR, self.SOC_REG, 2)
+            self._mock = False
+            self._mock_start_time = time.monotonic()  # reset mock decay timer
+            log.info("ups.real_recovered")
+        except Exception as e:
+            log.info("ups.reinit_failed", reason=str(e)[:60])
+            self._next_reinit = time.monotonic() + 30  # back off 30s
+
     def read(self) -> Dict[str, Any]:
+        # While in mock mode, periodically attempt real init — called with I2C lock held
+        if self._mock:
+            if time.monotonic() >= self._next_reinit:
+                self._next_reinit = time.monotonic() + 30
+                self._try_reinit()
         if self._mock:
             elapsed_min = (time.monotonic() - self._mock_start_time) / 60
             pct = max(0.0, self._mock_start_pct - elapsed_min * 0.1)
@@ -565,6 +582,8 @@ class SensorManager:
         self._pickup_count: int = 0
 
     def initialize_all(self) -> None:
+        # Short startup delay lets the RP1 I2C controller finish any boot-time activity
+        time.sleep(0.5)
         sensors = [
             (self.bh1750,     "sensor.bh1750",     "time-of-day lux curve"),
             (self.pir,        "sensor.pir",        "random trigger every 2-5 min"),
@@ -579,6 +598,7 @@ class SensorManager:
         ]
         for sensor, name, mock_behavior in sensors:
             sensor.initialize()
+            time.sleep(0.05)  # 50ms between probes — RP1 I2C needs breathing room
             if sensor._mock:
                 hw_registry.report_mock(name, reason="hardware not detected",
                                         mock_behavior=mock_behavior)
