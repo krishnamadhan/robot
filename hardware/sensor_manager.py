@@ -39,6 +39,26 @@ try:
 except ImportError:
     _SMBUS_OK = False
 
+# ── Shared I2C bus singleton ──────────────────────────────────────────────────
+# Pi 5 RP1 driver returns EAGAIN on concurrent ioctl from different FDs.
+# All sensors share ONE open handle; an asyncio.Lock serializes access.
+_i2c_bus_1: Optional["smbus.SMBus"] = None
+_i2c_lock_1: Optional[asyncio.Lock] = None
+
+
+def _i2c_bus() -> "smbus.SMBus":
+    global _i2c_bus_1
+    if _i2c_bus_1 is None:
+        _i2c_bus_1 = smbus.SMBus(1)
+    return _i2c_bus_1
+
+
+def _i2c_lock() -> asyncio.Lock:
+    global _i2c_lock_1
+    if _i2c_lock_1 is None:
+        _i2c_lock_1 = asyncio.Lock()
+    return _i2c_lock_1
+
 try:
     from gpiozero import DigitalInputDevice
     _GPIO_OK = True
@@ -74,22 +94,20 @@ class BH1750Sensor:
             log.info("bh1750.mock", reason="smbus2 not installed")
             return False
         try:
-            self._bus = smbus.SMBus(1)
-            self._bus.write_byte(self.ADDR, self.CMD_CONT_HIGH)
+            _i2c_bus().write_byte(self.ADDR, self.CMD_CONT_HIGH)
             time.sleep(0.18)
             self._mock = False
             log.info("bh1750.real")
             return True
         except Exception as e:
             log.info("bh1750.mock", reason=str(e)[:60])
-            self._bus = None
             return False
 
     def read_lux(self) -> float:
         if self._mock:
             return self._mock_lux()
         try:
-            data = self._bus.read_i2c_block_data(self.ADDR, self.CMD_CONT_HIGH, 2)
+            data = _i2c_bus().read_i2c_block_data(self.ADDR, self.CMD_CONT_HIGH, 2)
             raw = (data[0] << 8) | data[1]
             return raw / 1.2
         except Exception:
@@ -209,8 +227,7 @@ class APDS9960Sensor:
             log.info("apds9960.mock", reason="smbus2 not installed")
             return False
         try:
-            b = smbus.SMBus(1)
-            b.read_byte_data(self.ADDR, 0x92)  # WHO_AM_I check
+            _i2c_bus().read_byte_data(self.ADDR, 0x92)  # WHO_AM_I check
             self._mock = False
             log.info("apds9960.real")
             return True
@@ -247,21 +264,19 @@ class MPU6050Sensor:
             log.info("mpu6050.mock", reason="smbus2 not installed")
             return False
         try:
-            self._bus = smbus.SMBus(1)
-            self._bus.write_byte_data(self.ADDR, self.PWR_MGMT, 0)
+            _i2c_bus().write_byte_data(self.ADDR, self.PWR_MGMT, 0)
             self._mock = False
             log.info("mpu6050.real")
             return True
         except Exception as e:
             log.info("mpu6050.mock", reason=str(e)[:60])
-            self._bus = None
             return False
 
     def read(self) -> Dict[str, Any]:
         if self._mock:
             return self._mock_imu()
         try:
-            raw = self._bus.read_i2c_block_data(self.ADDR, self.ACCEL_XOUT, 14)
+            raw = _i2c_bus().read_i2c_block_data(self.ADDR, self.ACCEL_XOUT, 14)
             def s(hi, lo): return ((hi << 8) | lo) - (65536 if ((hi << 8) | lo) > 32767 else 0)
             ax, ay, az = s(raw[0], raw[1]) / 16384, s(raw[2], raw[3]) / 16384, s(raw[4], raw[5]) / 16384
             gx, gy, gz = s(raw[8], raw[9]) / 131, s(raw[10], raw[11]) / 131, s(raw[12], raw[13]) / 131
@@ -413,14 +428,12 @@ class UPSHATSensor:
             log.info("ups.mock", reason="smbus2 not installed")
             return False
         try:
-            self._bus = smbus.SMBus(1)
-            self._bus.read_i2c_block_data(self.ADDR, self.SOC_REG, 2)
+            _i2c_bus().read_i2c_block_data(self.ADDR, self.SOC_REG, 2)
             self._mock = False
             log.info("ups.real")
             return True
         except Exception as e:
             log.info("ups.mock", reason=str(e)[:60])
-            self._bus = None
             return False
 
     def read(self) -> Dict[str, Any]:
@@ -429,13 +442,17 @@ class UPSHATSensor:
             pct = max(0.0, self._mock_start_pct - elapsed_min * 0.1)
             return {"percent": pct, "voltage": 7.4 + (pct / 100) * 1.0, "charging": False}
         try:
-            raw_soc = self._bus.read_i2c_block_data(self.ADDR, self.SOC_REG, 2)
-            raw_volt = self._bus.read_i2c_block_data(self.ADDR, self.VOLTAGE_REG, 2)
-            pct = min(100.0, ((raw_soc[0] << 8) | raw_soc[1]) / 256.0)
-            volt = ((raw_volt[0] << 8) | raw_volt[1]) * 0.00125
-            return {"percent": pct, "voltage": volt, "charging": volt > 8.2}
+            raw_soc  = _i2c_bus().read_i2c_block_data(self.ADDR, self.SOC_REG,     2)
+            raw_volt = _i2c_bus().read_i2c_block_data(self.ADDR, self.VOLTAGE_REG, 2)
+            # MAX17040: big-endian 16-bit words
+            # VCELL (0x02): bits[15:4] * 1.25mV → divide by 16 then * 0.00125
+            raw_v = (raw_volt[0] << 8) | raw_volt[1]
+            volt  = (raw_v >> 4) * 1.25 / 1000
+            # SOC (0x04): byte[0] = integer %, byte[1] = 1/256 fraction
+            pct   = min(100.0, raw_soc[0] + raw_soc[1] / 256.0)
+            return {"percent": round(pct, 1), "voltage": round(volt, 3), "charging": volt > 4.1}
         except Exception:
-            return {"percent": 50.0, "voltage": 7.4, "charging": False}
+            return {"percent": None, "voltage": None, "charging": False}
 
 
 # ── Sound Sensor ─────────────────────────────────────────────────────────────

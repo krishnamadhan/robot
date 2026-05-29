@@ -78,6 +78,23 @@ async def hardware_status():
     }
 
 
+# ── /battery ──────────────────────────────────────────────────────────────────
+
+@app.get("/battery")
+async def battery():
+    try:
+        from hardware.sensor_manager import sensor_manager
+        data = sensor_manager.get_battery()
+        return {
+            "percent":  data.get("percent"),
+            "voltage":  data.get("voltage"),
+            "charging": data.get("charging", False),
+            "source":   "sensor_manager",
+        }
+    except Exception as e:
+        return JSONResponse(status_code=503, content={"error": str(e)})
+
+
 def _read_cpu_temp() -> float:
     try:
         import subprocess

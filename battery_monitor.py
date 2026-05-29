@@ -47,9 +47,29 @@ log = logging.getLogger()
 
 # ── Hardware reads ────────────────────────────────────────────────────────────
 
+COSMO_BATTERY_URL = "http://localhost:8000/battery"
+
+
 def read_battery():
     """Return (voltage_v, soc_pct) or raise OSError/ValueError.
-    Retries 3x with 1s delay for intermittent pogo pin contact drops."""
+
+    Primary: read from cosmo's HTTP API (avoids I2C EAGAIN on Pi 5 RP1).
+    Fallback: direct smbus2 read with 3 retries if API is unavailable.
+    """
+    # Primary path — cosmo holds the shared I2C bus singleton
+    try:
+        with urllib.request.urlopen(COSMO_BATTERY_URL, timeout=3) as resp:
+            data = json.loads(resp.read())
+        pct = data.get("percent")
+        volt = data.get("voltage")
+        if pct is not None and volt is not None:
+            if not (2.5 <= volt <= 4.5):
+                raise ValueError(f"API out-of-range: v={volt:.3f} soc={pct:.1f}")
+            return round(float(volt), 3), round(float(pct), 1)
+    except Exception as api_err:
+        log.debug(f"Battery API unavailable ({api_err}), falling back to direct I2C")
+
+    # Fallback path — direct smbus2 (may get EAGAIN if cosmo is running)
     last_err = None
     for attempt in range(3):
         try:

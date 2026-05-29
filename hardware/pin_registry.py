@@ -96,6 +96,13 @@ def register_from_config() -> None:
     """
     try:
         from utils.config import cfg
+
+        # FIT0992 UPS HAT owns these pins at the board level — never reassign.
+        # GPIO6  = AC-fail detect (board-driven input; driving LOW burns the HAT converter).
+        # GPIO16 = charging control (HIGH disables the charging circuit).
+        pin_registry.claim(6,  "ups_hat.ac_detect")
+        pin_registry.claim(16, "ups_hat.charge_ctrl")
+
         mc = cfg.hardware.motors
 
         stby = mc.stby
