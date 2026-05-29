@@ -62,9 +62,7 @@ def read_battery():
             data = json.loads(resp.read())
         pct = data.get("percent")
         volt = data.get("voltage")
-        if pct is not None and volt is not None:
-            if not (2.5 <= volt <= 4.5):
-                raise ValueError(f"API out-of-range: v={volt:.3f} soc={pct:.1f}")
+        if pct is not None and volt is not None and float(volt) > 0:
             return round(float(volt), 3), round(float(pct), 1)
     except Exception as api_err:
         log.debug(f"Battery API unavailable ({api_err}), falling back to direct I2C")
