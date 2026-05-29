@@ -10,6 +10,8 @@ Endpoints:
 """
 
 import asyncio
+import json
+import subprocess
 import time
 from pathlib import Path
 
@@ -291,6 +293,77 @@ async def mind_off():
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+# ── /session ─────────────────────────────────────────────────────────────────
+
+@app.get("/session")
+async def session_state():
+    path = Path.home() / ".claude/session-state.md"
+    try:
+        content = path.read_text()
+        lines = content.splitlines()
+        # Extract key fields for quick display
+        updated = next((l.replace("**Updated:**", "").strip() for l in lines if "**Updated:**" in l), "unknown")
+        focus   = next((l.replace("**Session focus:**", "").strip() for l in lines if "**Session focus:**" in l), "")
+        # Find "Next Priority" section
+        next_p = ""
+        in_next = False
+        for l in lines:
+            if l.startswith("## Next Priority"):
+                in_next = True
+                continue
+            if in_next:
+                if l.startswith("## "):
+                    break
+                if l.strip():
+                    next_p = l.strip()
+                    break
+        return {"content": content, "updated": updated, "focus": focus, "next": next_p, "exists": True}
+    except FileNotFoundError:
+        return {"content": "", "updated": "never", "focus": "", "next": "No session-state.md found", "exists": False}
+
+
+# ── /pm2 ──────────────────────────────────────────────────────────────────────
+
+@app.get("/pm2")
+async def pm2_status():
+    try:
+        r = subprocess.run(["pm2", "jlist"], capture_output=True, text=True, timeout=5)
+        procs = json.loads(r.stdout)
+        result = []
+        for p in procs:
+            env = p.get("pm2_env", {})
+            monit = p.get("monit", {})
+            uptime_s = int((time.time() * 1000 - env.get("pm_uptime", time.time() * 1000)) / 1000)
+            result.append({
+                "name":      p.get("name"),
+                "status":    env.get("status"),
+                "pid":       p.get("pid"),
+                "uptime_s":  max(0, uptime_s),
+                "memory_mb": round(monit.get("memory", 0) / 1024 / 1024, 1),
+                "cpu_pct":   monit.get("cpu", 0),
+                "restarts":  env.get("restart_time", 0),
+            })
+        return result
+    except Exception as e:
+        return JSONResponse(status_code=503, content={"error": str(e)})
+
+
+# ── /git/log ──────────────────────────────────────────────────────────────────
+
+@app.get("/git/log")
+async def git_log():
+    try:
+        r = subprocess.run(
+            ["git", "log", "--oneline", "-8"],
+            capture_output=True, text=True,
+            cwd=str(Path(__file__).parent.parent.parent),
+            timeout=5,
+        )
+        return {"commits": [l.strip() for l in r.stdout.strip().splitlines() if l.strip()]}
+    except Exception as e:
+        return {"commits": [], "error": str(e)}
+
+
 # ── /dashboard ────────────────────────────────────────────────────────────────
 
 @app.get("/dashboard", response_class=HTMLResponse)
@@ -384,6 +457,28 @@ button.blue:hover { background: #1a4080; }
 <h1><span class="dot off" id="status-dot"></span> Cosmo
   <span style="font-weight:400;font-size:0.8rem;color:#8b949e;margin-left:auto" id="mind-status"></span>
 </h1>
+
+<!-- Session Context -->
+<section>
+  <h2>Session Context</h2>
+  <div id="sess-next" style="font-size:0.85rem;color:#3fb950;font-weight:600;margin-bottom:6px;line-height:1.4"></div>
+  <div class="row"><span class="label">Last updated</span><span class="val" id="sess-ts">—</span></div>
+  <div class="row"><span class="label">Focus</span><span class="val" id="sess-focus" style="text-align:right;max-width:220px;font-size:0.8rem">—</span></div>
+  <details style="margin-top:8px">
+    <summary style="font-size:0.72rem;color:#8b949e;cursor:pointer">Full session notes ▸</summary>
+    <pre id="sess-full" style="margin-top:6px;font-size:0.7rem;color:#8b949e;white-space:pre-wrap;word-break:break-word;line-height:1.5"></pre>
+  </details>
+</section>
+
+<!-- Pi Services -->
+<section>
+  <h2>Pi Services</h2>
+  <div id="pm2-list"><span style="color:#8b949e;font-size:0.8rem">Loading…</span></div>
+  <div style="margin-top:10px">
+    <div style="font-size:0.72rem;color:#8b949e;margin-bottom:4px">Recent commits (robot)</div>
+    <div id="git-log" class="log-box" style="max-height:90px"></div>
+  </div>
+</section>
 
 <!-- Camera -->
 <section>
@@ -558,14 +653,54 @@ function pct01(v) { return (v || 0) * 100; }            // 0..1 → 0..100%
 
 async function refresh() {
   try {
-    const [stR, hlR, hwR, memR, budR, logR] = await Promise.all([
+    const [stR, hlR, hwR, memR, budR, logR, sessR, pm2R, gitR] = await Promise.all([
       fetch(BASE+'/state').then(r=>r.json()),
       fetch(BASE+'/health').then(r=>r.json()),
       fetch(BASE+'/hardware').then(r=>r.json()),
       fetch(BASE+'/memory/recent').then(r=>r.json()),
       fetch(BASE+'/budget').then(r=>r.json()),
       fetch(BASE+'/logs/tail').then(r=>r.json()),
+      fetch(BASE+'/session').then(r=>r.json()).catch(()=>({})),
+      fetch(BASE+'/pm2').then(r=>r.json()).catch(()=>[]),
+      fetch(BASE+'/git/log').then(r=>r.json()).catch(()=>({commits:[]})),
     ]);
+
+    // Session Context
+    if (sessR && sessR.exists !== false) {
+      document.getElementById('sess-next').textContent = sessR.next || '—';
+      document.getElementById('sess-ts').textContent   = sessR.updated || '—';
+      document.getElementById('sess-focus').textContent = sessR.focus || '—';
+      document.getElementById('sess-full').textContent  = sessR.content || '';
+    }
+
+    // PM2 Services
+    const pm2El = document.getElementById('pm2-list');
+    const statusColor = s => s === 'online' ? '#3fb950' : (s === 'stopping' ? '#d29922' : '#f85149');
+    if (Array.isArray(pm2R) && pm2R.length > 0) {
+      pm2El.innerHTML = pm2R.map(p => {
+        const ut = p.uptime_s || 0;
+        const utStr = ut > 3600 ? Math.floor(ut/3600)+'h' : Math.floor(ut/60)+'m';
+        const sc = statusColor(p.status);
+        return `<div class="hw-row">
+          <span class="hw-name">${p.name}</span>
+          <span style="display:flex;gap:6px;align-items:center;font-size:0.75rem">
+            <span style="color:${sc};font-weight:600">${p.status}</span>
+            <span style="color:#8b949e">${p.memory_mb}MB</span>
+            <span style="color:#8b949e">${utStr}</span>
+            ${p.restarts > 0 ? `<span style="color:#d29922">↺${p.restarts}</span>` : ''}
+          </span>
+        </div>`;
+      }).join('');
+    } else {
+      pm2El.innerHTML = '<span style="color:#8b949e;font-size:0.8rem">PM2 unavailable</span>';
+    }
+
+    // Git log
+    const gitEl = document.getElementById('git-log');
+    const commits = (gitR && gitR.commits) || [];
+    gitEl.innerHTML = commits.length
+      ? commits.map(c => `<div class="log-line">${escHtml(c)}</div>`).join('')
+      : '<span style="color:#8b949e">No commits</span>';
 
     document.getElementById('status-dot').className = 'dot';
 
