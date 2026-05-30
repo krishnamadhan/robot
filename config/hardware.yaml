@@ -87,11 +87,11 @@ sensors:
     available: false       # set true when wired
 
   ultrasonic:
-    trigger_pin: 16        # GPIO16 (Pin 36) — DISABLED: FIT0992 HAT uses GPIO16 for charging-disable (HIGH=stop charging)
-    echo_pin: 24           # GPIO24 — ECHO via LLC ch1 (Pin 18)
+    trigger_pin: 15        # GPIO15 (Pin 22) — remapped from GPIO16 (FIT0992 HAT charges-disable, never touch)
+    echo_pin: 14           # GPIO14 (Pin 8) — remapped from GPIO24 (GPIO24 taken by right_front AIN2)
     timeout_s: 0.03
     max_distance_cm: 400
-    available: false       # MUST stay false until TRIG moves off GPIO16
+    available: false       # set true when HC-SR04 wired with LLC voltage divider on ECHO
 
   pir:
     pin: 8                 # GPIO8  — CORRECTED from 16 (was conflicting with HC-SR04 TRIG)
@@ -100,25 +100,26 @@ sensors:
 
   apds9960:
     i2c_address: 0x39
-    int_pin: 9             # GPIO9 — interrupt (moved from 12; GPIO12 now used by motor PWMA)
+    int_pin: null          # GPIO9 conflicts with right_rear motor PWM; GPIO12/19/21 all dead on this unit — use I2C polling
     available: false       # set true when pin headers soldered and wired
 
   touch:
-    # GPIO25 (belly) taken by right_rear BIN1 — reassign belly when wiring sensors
-    pins: [5, 4, 7]       # head=GPIO5, left=GPIO4, right=GPIO7 (belly TBD)
+    # GPIO4 and GPIO7 confirmed DEAD on this Pi unit (2026-05-28)
+    # GPIO25 (belly) taken by right_rear BIN1 — no free pin for belly
+    pins: [5]              # head=GPIO5 only — left/right/belly have no usable GPIOs
     available: false       # set true when wired
 
   cliff:
-    pins: [14, 15]         # GPIO14 LEFT, GPIO15 RIGHT (TCRT5000 via LLC — moved from 20,21 to free I2S)
-    available: false       # set true when LLC soldered and wired
+    pins: []               # GPIO14/15 reassigned to ultrasonic TRIG/ECHO; GPIO20/21 dead; no free GPIOs left
+    available: false       # cannot wire on this unit without I2C GPIO expander (MCP23017)
 
   vibration:
     pin: null              # GPIO26 taken by right_rear BIN2 — reassign when wiring sensors
     available: false
 
   sound:
-    pin: 11                # GPIO11 — KY-038 via 10kΩ+10kΩ divider (moved from 19 to free I2S)
-    available: false       # set true when wired
+    pin: null              # GPIO11 conflicts with left_front motor PWM; GPIO12/19/21 all dead on this unit — no free GPIO
+    available: false       # cannot wire on this unit without I2C GPIO expander
 
 battery:
   ups_hat:

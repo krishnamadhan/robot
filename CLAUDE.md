@@ -161,26 +161,27 @@ pinctrl get | grep -E "GPIO(5|6|8|13|16|17|18|19|20|21|22|23|24|25|26|27)"
 
 ### GPIO Map (BCM numbering — always BCM, never physical pin)
 ```
-GPIO4  → DEAD PIN — do not use (confirmed bad on this unit, 2026-05-28)
+GPIO4  → DEAD PIN — stuck LOW, confirmed by pin_test.py 2026-05-30
 GPIO5  → TTP223 Touch HEAD
-GPIO6  → TB6612FNG BIN2 (right motor backward) ← CONFLICT FIXED (see KNOWN_ISSUES)
-GPIO7  → DEAD PIN — do not use (confirmed bad on this unit, 2026-05-28)
+GPIO6  → RESERVED — FIT0992 HAT adapter-fail detect (HAT drives this; never set as output)
+GPIO7  → DEAD PIN — stuck LOW, confirmed by pin_test.py 2026-05-30
 GPIO8  → HC-SR501 PIR OUT (3.3V direct)
+GPIO9  → TB6612FNG right_rear PWM (SW PWM)
 GPIO10 → TB6612FNG left_rear BIN2 (direction 2)
-GPIO11 → TB6612FNG left_front PWM (SW PWM — remapped from GPIO12, Pin 32 confirmed faulty on this unit)
-GPIO12 → DEAD PIN — do not use (Pin 32 faulty on this Pi 5 unit, confirmed 2026-05-28)
-GPIO13 → TB6612FNG left_rear PWM (SW PWM — shares HW PWM1 with GPIO19, never use dtoverlay)
-GPIO16 → HC-SR04 TRIG — DISABLED: FIT0992 HAT uses GPIO16 for charge control
+GPIO11 → TB6612FNG left_front PWM (SW PWM — remapped from GPIO12, dead on this unit)
+GPIO12 → DEAD PIN — stuck LOW, confirmed by pin_test.py 2026-05-30
+GPIO13 → TB6612FNG left_rear PWM (SW PWM)
+GPIO14 → HC-SR04 ECHO (via LLC voltage divider — remapped from GPIO24)
+GPIO15 → HC-SR04 TRIG (remapped from GPIO16 — FIT0992 HAT uses GPIO16)
+GPIO16 → RESERVED — FIT0992 HAT charging-disable (HIGH=stops charging; never touch)
 GPIO17 → TB6612FNG left_front AIN1 (direction 1)
-GPIO5  → DEAD PIN — do not use (confirmed bad on this unit, 2026-05-28)
-GPIO24 → TB6612FNG right_front AIN2 (direction 2) — remapped: GPIO21 dead→GPIO14 UART→GPIO5 dead→GPIO24
 GPIO18 → TB6612FNG right_front PWM (SW PWM)
-GPIO19 → DEAD PIN — do not use (Pin 35 faulty on this Pi 5 unit, confirmed 2026-05-28)
+GPIO19 → DEAD PIN — stuck LOW, confirmed by pin_test.py 2026-05-30
 GPIO20 → TB6612FNG right_front AIN1 (direction 1)
-GPIO21 → DEAD PIN — do not use (Pin 40 faulty on this Pi 5 unit, confirmed 2026-05-28)
+GPIO21 → DEAD PIN — stuck HIGH, confirmed by pin_test.py 2026-05-30
 GPIO22 → TB6612FNG left_front AIN2 (direction 2)
 GPIO23 → TB6612FNG left_rear BIN1 (direction 1)
-GPIO24 → HC-SR04 ECHO (via LLC ch1, 5V→3.3V)
+GPIO24 → TB6612FNG right_front AIN2 (direction 2)
 GPIO25 → TB6612FNG right_rear BIN1 (direction 1)
 GPIO26 → TB6612FNG right_rear BIN2 (direction 2)
 GPIO27 → TB6612FNG STBY (LOW at boot always — HIGH only after self-test)
@@ -512,8 +513,8 @@ Sleep:   00:00 → 07:00 — minimal movement, silent, low power, emergency only
 | PCA9685 16-ch servo driver | Pan-tilt camera + ultrasonic servo | Phase 3 kick-off |
 | MG90S × 3 | Camera pan, tilt, ultrasonic rotate | Phase 3 |
 | Pan-tilt bracket | Camera mounting | Phase 3 |
-| TCRT5000 cliff sensors × 2 | Cliff detection | Enable GPIO20/21 after XT60 pigtail |
-| KY-038 sound sensor | Sound detection | Enable GPIO19 after voltage divider check |
+| TCRT5000 cliff sensors × 2 | Cliff detection | No free GPIOs — needs MCP23017 I2C expander |
+| KY-038 sound sensor | Sound detection | No free GPIOs — needs MCP23017 I2C expander |
 | 470µF caps + 220µF caps | Motor noise protection | Install before first LiPo motor test |
 | PAM8403 amp + 3W 4Ω speaker | Replace JBL BT dependency | Phase 5 |
 | 5-channel IR line sensor | Line following mode | Phase 4 fun feature |

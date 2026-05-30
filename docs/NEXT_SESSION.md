@@ -1,117 +1,109 @@
 # NEXT_SESSION.md — Task Handoff
-
-> This file contains the focused task for the next Claude Code session.
-> Replace entirely at end of each session with the new top priority.
-> Last updated: 2026-05-28 (Codex collaboration session)
+> Last updated: 2026-05-30
 
 ---
 
-## Current Hardware State (as of 2026-05-22)
-
-**Connected and working:**
-- Camera: Logitech C920 (USB, /dev/video0) — YOLO11n @ 10.1 FPS confirmed
-- Speaker: JBL Flip 5 Bluetooth (28:FA:19:C1:73:F8) — paired and working via PipeWire
-- Mic: C920 USB mic — `HD Pro Webcam C920: USB Audio (hw:3,0)` confirmed in logs
-- UPS HAT: battery ~94%, I2C 0x36 active
-- Wake word: OpenWakeWord "hey_jarvis" — confirmed working
-- Full audio pipeline: STT → Claude Haiku → Piper TTS → JBL — confirmed working
-- Ollama fallback: llama3.2:1b-instruct-q4_K_M (807MB, smoke-tested)
-
-**Not yet wired:**
-- OLED eyes (0x3C + 0x3D) — hardware on desk, highest priority
-- PIR, touch ×3, MPU-6050, BH1750 — wired but not enabled in hardware.yaml
-- XT60 pigtail for LiPo → motors — on order
-
-**Pending reboot (KI-024):**
-- `/boot/firmware/config.txt` i2c-gpio overlay already commented out (2026-05-22)
-- Reboot will: (1) apply KI-024 fix, (2) clear stale GPIO27 pin claim → motors.real_4wd will persist
-- Safe to reboot — banteragent will auto-restart via PM2
+## Context
+Pi was rebooted. All hardware disconnected (no UPS HAT, no motors, nothing on GPIO header).
+Cosmo was DELETED from PM2 (not just stopped) — nothing holds any GPIO pin.
+Goal this session: get a definitive, clean GPIO alive/dead map, then reconnect hardware one by one.
 
 ---
 
-## Session start: Test Pet Brain + Wire OLED Eyes
-
-### First: Test PetBrain (5 min, no hardware needed)
-```bash
-cd ~/robot && python3 tools/pet_brain_test.py
-```
-Test all state transitions: toggle person (p), change energy (+/-), toggle dark (l), close obstacle (o).
-Verify FLEE immediately overrides other states.
-Verify wander weight increases when curiosity boosted (c key).
-
-### Then: Wire OLED Eyes (biggest visual impact — hardware on desk)
-
-**Before starting:** `sudo i2cdetect -y 1` — verify baseline, should see 0x36 (UPS)
-
-**Wiring (both SSD1306s to I2C bus 1):**
-```
-VCC → Pi 3.3V (Pin 1)
-GND → Pi GND (Pin 6)
-SDA → GPIO2 / Pin 3
-SCL → GPIO3 / Pin 5
-Left eye  addr 0x3C — A0 pad floating (default)
-Right eye addr 0x3D — bridge A0 pad to VCC (solder blob or 10kΩ to 3.3V)
-```
-
-**After wiring:**
-```bash
-sudo i2cdetect -y 1   # Must show 0x3C AND 0x3D
-```
-
-**Software (fix KI-019 I2C mutex FIRST, then switch render target):**
-
-KI-019 is the I2C bus contention issue — multiple drivers hitting the bus simultaneously
-without locking. Read `hardware/sensor_manager.py` and `expression/eyes.py` to understand
-current I2C access patterns, then add an asyncio.Lock() at the hardware layer before enabling
-both OLED + sensors simultaneously.
-
-After KI-019 fix:
-```python
-# In expression/eyes.py — change:
-eye_engine.set_render_target("terminal")
-# to:
-eye_engine.set_render_target("oled")
-```
+## Step 1 — Clean pin test (first thing, before connecting anything)
 
 ```bash
-pm2 restart cosmo && pm2 logs cosmo --lines 30 --nostream | grep eyes
+# Confirm cosmo is gone
+pm2 status   # cosmo should NOT appear
+
+# Run full pin test — nothing connected
+python3 /home/pi/robot/tools/pin_test.py --all
 ```
 
-Expected: eyes render on hardware, expressions visible (happy/sleepy/alert etc.)
+This tests all 22 non-reserved GPIOs using `pinctrl` (Pi 5 native, reliable).
+Expected result: most alive, some stuck LOW (truly dead), compare with pre-reboot.
 
 ---
 
-## After OLED: Enable sensors (one at a time)
+## Step 2 — Manual multimeter check for any uncertain pins
 
-**Order:** BH1750 → touch × 3 → MPU-6050 → PIR (PIR requires reboot first for KI-024)
-
-For each sensor:
-1. Set `available: true` in `config/hardware.yaml`
-2. `pm2 restart cosmo`
-3. Watch logs: `pm2 logs cosmo --lines 20 --nostream | grep sensor`
-4. Verify event fires on hardware trigger
-5. Only then move to next sensor
-
----
-
-## Stack status (all upgrades complete or deferred)
-
-| Component | Status |
-|---|---|
-| YOLO11n person detection | ✅ Complete (ADR-012) |
-| SFace face recognition | ✅ Locked (ADR-013) |
-| Ollama Q4_K_M | ✅ Complete (ADR-017, 2026-05-22) |
-| Prompt caching | ❌ Deferred — 281 tokens < 2048 minimum (ADR-018) |
-| Custom wake word | 📅 Phase 4 (ADR-015) |
-| TTS swap (Kitten) | 📅 Quality test first (ADR-016) |
-
----
-
-## Disk warning
-
-Check before starting:
+For any pin you want to physically verify — drive it HIGH/LOW and measure:
 ```bash
-df -h / | tail -1
-ls -lh /home/pi/.robot/logs/
+pinctrl set <gpio> op dh   # drive HIGH → measure ~3.3V on header pin
+# measure with multimeter: black GND (Pin 6/9/14/20/25/30/34/39), red on target pin
+pinctrl set <gpio> op dl   # drive LOW → measure ~0V
+pinctrl set <gpio> ip pn   # restore to input
 ```
-Was at 90% on 2026-05-20. If >93%, check cosmo-err.log size.
+
+Physical pin mapping for suspects:
+| GPIO | Physical Pin | Pre-reboot pinctrl result |
+|------|-------------|--------------------------|
+| GPIO4  | Pin 7  | stuck LOW (0,0) |
+| GPIO5  | Pin 29 | stuck LOW — was touch HEAD |
+| GPIO7  | Pin 26 | stuck LOW |
+| GPIO8  | Pin 24 | stuck HIGH — was PIR pin |
+| GPIO9  | Pin 21 | stuck HIGH — motor right_rear PWM |
+| GPIO12 | Pin 32 | stuck LOW |
+| GPIO13 | Pin 33 | stuck HIGH — motor left_rear PWM |
+| GPIO14 | Pin 8  | stuck LOW — UART TX (console=serial0 in cmdline.txt) |
+| GPIO19 | Pin 35 | stuck LOW |
+| GPIO21 | Pin 40 | stuck HIGH |
+
+---
+
+## Step 3 — If GPIO14 is still stuck LOW (UART conflict)
+
+GPIO14 is needed for ultrasonic ECHO. Fix by removing serial console:
+```bash
+# Check current cmdline
+cat /boot/firmware/cmdline.txt
+# Should contain: console=serial0,115200
+
+# Remove it (Pi accessed via Tailscale SSH — serial console not needed)
+sudo sed -i 's/console=serial0,115200 //' /boot/firmware/cmdline.txt
+sudo reboot
+# After reboot: rerun pin test, GPIO14 should now respond
+```
+
+---
+
+## Step 4 — Update configs based on confirmed results
+
+After multimeter + software test gives final truth:
+1. Update `config/hardware.yaml` — mark confirmed dead pins as null
+2. Update `CLAUDE.md` GPIO map — mark with confirmed date
+3. Add cosmo back to PM2: `pm2 start ecosystem.config.js && pm2 save`
+
+---
+
+## Step 5 — Connect hardware one by one
+
+Order: UPS HAT → motors → PCA9685 (servos)
+
+```bash
+# After UPS HAT:
+sudo i2cdetect -y 1   # expect 0x36
+
+# After PCA9685:
+sudo i2cdetect -y 1   # expect 0x36 + 0x40
+python3 tools/servo_test_camera.py
+
+# After motors:
+python3 tools/motor_test_2wd.py
+```
+
+---
+
+## Key files to know about
+- `tools/pin_test.py` — GPIO test tool, uses pinctrl
+- `config/hardware.yaml` — GPIO assignments (already cleaned up this session)
+- `CLAUDE.md` — GPIO map section (updated this session)
+- `/boot/firmware/cmdline.txt` — UART console (may be blocking GPIO14)
+- `/boot/firmware/config.txt` — I2C at 100kHz (already correct, don't touch)
+
+## System state going into reboot
+- cosmo: DELETED from PM2
+- banteragent: online (will auto-restart after reboot)
+- battery-monitor, pi-monitor, pi-scheduler: online (will auto-restart)
+- I2C: 100kHz configured, working
+- hardware.yaml: all GPIO conflicts resolved
