@@ -159,33 +159,39 @@ pinctrl get | grep -E "GPIO(5|6|8|13|16|17|18|19|20|21|22|23|24|25|26|27)"
 | Pi Power | DFRobot FIT0992 UPS HAT (pogo pins, 4× 18650 cells, I2C 0x36) |
 | UPS Charger | FEDUS 12V 3A DC adapter (5.5×2.1mm barrel) |
 
-### GPIO Map (BCM numbering — always BCM, never physical pin)
+### GPIO Map (BCM — 2WD confirmed 2026-05-30, pin_test.py + multimeter)
 ```
-GPIO4  → DEAD PIN — stuck LOW, confirmed by pin_test.py 2026-05-30
-GPIO5  → TTP223 Touch HEAD
-GPIO6  → RESERVED — FIT0992 HAT adapter-fail detect (HAT drives this; never set as output)
-GPIO7  → DEAD PIN — stuck LOW, confirmed by pin_test.py 2026-05-30
-GPIO8  → HC-SR501 PIR OUT (3.3V direct)
-GPIO9  → TB6612FNG right_rear PWM (SW PWM)
-GPIO10 → TB6612FNG left_rear BIN2 (direction 2)
-GPIO11 → TB6612FNG left_front PWM (SW PWM — remapped from GPIO12, dead on this unit)
-GPIO12 → DEAD PIN — stuck LOW, confirmed by pin_test.py 2026-05-30
-GPIO13 → TB6612FNG left_rear PWM (SW PWM)
-GPIO14 → HC-SR04 ECHO (via LLC voltage divider — remapped from GPIO24)
-GPIO15 → HC-SR04 TRIG (remapped from GPIO16 — FIT0992 HAT uses GPIO16)
-GPIO16 → RESERVED — FIT0992 HAT charging-disable (HIGH=stops charging; never touch)
-GPIO17 → TB6612FNG left_front AIN1 (direction 1)
-GPIO18 → TB6612FNG right_front PWM (SW PWM)
-GPIO19 → DEAD PIN — stuck LOW, confirmed by pin_test.py 2026-05-30
-GPIO20 → TB6612FNG right_front AIN1 (direction 1)
-GPIO21 → DEAD PIN — stuck HIGH, confirmed by pin_test.py 2026-05-30
-GPIO22 → TB6612FNG left_front AIN2 (direction 2)
-GPIO23 → TB6612FNG left_rear BIN1 (direction 1)
-GPIO24 → TB6612FNG right_front AIN2 (direction 2)
-GPIO25 → TB6612FNG right_rear BIN1 (direction 1)
-GPIO26 → TB6612FNG right_rear BIN2 (direction 2)
-GPIO27 → TB6612FNG STBY (LOW at boot always — HIGH only after self-test)
+GPIO0  → RESERVED — HAT EEPROM I2C0
+GPIO1  → RESERVED — HAT EEPROM I2C0
+GPIO2  → I2C1 SDA (all sensors)
+GPIO3  → I2C1 SCL (all sensors)
+GPIO4  → DEAD — stuck LOW (do not use)
+GPIO5  → DEAD — stuck LOW (do not use)
+GPIO6  → RESERVED — FIT0992 adapter-fail (HAT drives — NEVER touch, burned 5 chips)
+GPIO7  → DEAD — stuck LOW (do not use)
+GPIO8  → DEAD — stuck HIGH (SPI CE0, SPI module loaded by HAT EEPROM)
+GPIO9  → DEAD — stuck HIGH (SPI MISO, same cause)
+GPIO10 → FREE — available for sensors (Pin 19)
+GPIO11 → TB6612FNG PWMA — Left motor PWM ✅
+GPIO12 → DEAD — stuck LOW (do not use)
+GPIO13 → DEAD — stuck HIGH (pwm_fan — Pi 5 CPU fan controller, cannot disable)
+GPIO14 → DEAD — stuck LOW (UART TX — console=serial0,115200 in cmdline.txt)
+GPIO15 → FREE — available for sensors (Pin 22)
+GPIO16 → RESERVED — FIT0992 charging-disable (HAT drives — never touch)
+GPIO17 → TB6612FNG AIN1 — Left direction 1 ✅
+GPIO18 → TB6612FNG PWMB — Right motor PWM ✅
+GPIO19 → DEAD — stuck LOW (do not use)
+GPIO20 → TB6612FNG BIN1 — Right direction 1 ✅
+GPIO21 → DEAD — stuck HIGH (do not use)
+GPIO22 → TB6612FNG AIN2 — Left direction 2 ✅
+GPIO23 → FREE — available for sensors (Pin 16)
+GPIO24 → TB6612FNG BIN2 — Right direction 2 ✅
+GPIO25 → FREE — available for sensors (Pin 22)
+GPIO26 → FREE — available for sensors (Pin 37)
+GPIO27 → TB6612FNG STBY — HIGH = motors enabled ✅
 ```
+**2WD wiring summary:** AIN1=17, AIN2=22, PWMA=11 (Left) | BIN1=20, BIN2=24, PWMB=18 (Right) | STBY=27
+**left_rear / right_rear in code are phantom duplicates — not wired.**
 
 ### I2C Bus (GPIO2 SDA / GPIO3 SCL — shared)
 ```
