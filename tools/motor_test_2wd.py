@@ -220,12 +220,12 @@ def _handle_key(ch: str, left: Motor, right: Motor, enable_stby, timed_test):
     spd = _set_speed
     if ch == "w":
         enable_stby()
-        left.drive(spd);   right.drive(spd)
-        _log_event(f"FWD {spd:.0%}")
-    elif ch == "s":
-        enable_stby()
         left.drive(-spd);  right.drive(-spd)
         _log_event(f"BWD {spd:.0%}")
+    elif ch == "s":
+        enable_stby()
+        left.drive(spd);   right.drive(spd)
+        _log_event(f"FWD {spd:.0%}")
     elif ch == "a":                                # tank left: left bwd, right fwd
         enable_stby()
         left.drive(-spd);  right.drive(spd)

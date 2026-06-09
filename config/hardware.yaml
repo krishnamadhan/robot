@@ -13,6 +13,7 @@ i2c:
 
 motors:
   driver: TB6612FNG
+  controller: ESP32            # GPIO pins on ESP32, not Pi — see esp32.motors above
   boards: 1               # single TB6612FNG (right board) — left board disconnected, caster wheel at rear
   stby: 27                # GPIO27 — shared STBY, active HIGH = enabled (Pin 13)
   max_speed: 100          # % 0-100
@@ -76,50 +77,75 @@ displays:
     height: 64
     driver: SSD1306
 
+# ── ESP32-S3 co-processor — controls all GPIO sensors + motors ────────────────
+# All sensors below are read by ESP32 and sent to Pi over USB serial JSON.
+# Pi GPIO is no longer used for sensors or motors.
+esp32:
+  port: /dev/ttyUSB0
+  baud: 115200
+  chip: ESP32-S3
+  firmware: MicroPython v1.24.1
+  mac: 14:c1:9f:2e:da:20
+
+  # Motor pins on ESP32 (TB6612FNG wired here — not Pi GPIO)
+  motors:
+    ain1: 15              # Left dir 1
+    ain2: 16              # Left dir 2
+    pwma: 17              # Left PWM
+    bin1: 18              # Right dir 1
+    bin2: 19              # Right dir 2
+    pwmb: 20              # Right PWM
+    stby: 21              # Shared STBY
+
+  # Sensor pins on ESP32
+  sensors:
+    i2c_sda: 8
+    i2c_scl: 9
+    ultrasonic_trig: 10
+    ultrasonic_echo: 11   # via 2kΩ/1kΩ divider (HC-SR04 ECHO is 5V → 3.3V)
+    pir: 12
+    cliff_l: 13
+    cliff_r: 14
+    touch_0: 1            # head
+    touch_1: 2            # back
+    touch_2: 3            # belly
+    touch_3: 4            # tail
+    sound_adc: 5          # KY-038 analog → ADC1
+    vibration: 6
+
+# ── Pi-local sensors (I2C bus 1 — GPIO2/GPIO3) ───────────────────────────────
 sensors:
   bh1750:
     i2c_address: 0x23
     mode: continuous_high_res
-    available: true        # wired and tested
+    available: true        # wired and tested, stays on Pi I2C
 
+  # All sensors below are now on ESP32 — available flags kept for reference
   mpu6050:
-    i2c_address: 0x68
-    available: false       # set true when wired
-
-  ultrasonic:
-    trigger_pin: 15        # GPIO15 (Pin 22) — remapped from GPIO16 (FIT0992 HAT charges-disable, never touch)
-    echo_pin: 14           # GPIO14 (Pin 8) — remapped from GPIO24 (GPIO24 taken by right_front AIN2)
-    timeout_s: 0.03
-    max_distance_cm: 400
-    available: false       # set true when HC-SR04 wired with LLC voltage divider on ECHO
-
-  pir:
-    pin: 8                 # GPIO8  — CORRECTED from 16 (was conflicting with HC-SR04 TRIG)
-    warmup_s: 30
-    available: false       # set true when wired
-
-  apds9960:
-    i2c_address: 0x39
-    int_pin: null          # GPIO9 conflicts with right_rear motor PWM; GPIO12/19/21 all dead on this unit — use I2C polling
-    available: false       # set true when pin headers soldered and wired
-
-  touch:
-    # GPIO4 and GPIO7 confirmed DEAD on this Pi unit (2026-05-28)
-    # GPIO25 (belly) taken by right_rear BIN1 — no free pin for belly
-    pins: [5]              # head=GPIO5 only — left/right/belly have no usable GPIOs
-    available: false       # set true when wired
-
-  cliff:
-    pins: []               # GPIO14/15 reassigned to ultrasonic TRIG/ECHO; GPIO20/21 dead; no free GPIOs left
-    available: false       # cannot wire on this unit without I2C GPIO expander (MCP23017)
-
-  vibration:
-    pin: null              # GPIO26 taken by right_rear BIN2 — reassign when wiring sensors
+    i2c_address: 0x68     # on ESP32 I2C (GPIO8/9), not Pi
     available: false
 
+  ultrasonic:
+    available: false       # on ESP32 GPIO10/11
+
+  pir:
+    available: false       # on ESP32 GPIO12
+
+  apds9960:
+    i2c_address: 0x39     # on ESP32 I2C (GPIO8/9) when soldered
+    available: false
+
+  touch:
+    available: false       # on ESP32 GPIO1-4
+
+  cliff:
+    available: false       # on ESP32 GPIO13/14
+
+  vibration:
+    available: false       # on ESP32 GPIO6
+
   sound:
-    pin: null              # GPIO11 conflicts with left_front motor PWM; GPIO12/19/21 all dead on this unit — no free GPIO
-    available: false       # cannot wire on this unit without I2C GPIO expander
+    available: false       # on ESP32 GPIO5 ADC
 
 battery:
   ups_hat:
