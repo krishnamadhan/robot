@@ -1,12 +1,12 @@
 """
 Person detection and tracking.
 
-Primary: YOLOv8n via ultralytics (best accuracy/speed balance on Pi 5).
+Primary: yolo11n.pt via ultralytics (models/yolo11n.pt, 5.4MB).
 Fallback: OpenCV HOG detector (no torch needed, lower accuracy).
 
 Why not MediaPipe: no Python 3.13 wheels as of build date.
-Why YOLOv8n over MobileNet SSD: YOLOv8n has better Pi 5 benchmarks
-and ultralytics handles model download + inference in one package.
+Why yolo11n over MobileNet SSD: better Pi 5 benchmarks;
+ultralytics handles model download + inference in one package.
 
 Detection runs at 8 FPS target; tracking runs at 30 FPS using
 lightweight centroid assignment between detection frames.

@@ -6,30 +6,34 @@
 
 ---
 
-## P0 — Blocked / Must do before anything else
+## P0 — Architecture gaps (fix before Phase 2 motors go live)
 
-- [ ] Reboot Pi — KI-024 config.txt overlay was commented out 2026-05-22; GPIO8/I2C bus 4 conflict + GPIO27 stale pin claim both clear on reboot
+- [ ] **ESP32 local cliff reflex**: add `Pin.irq` on cliff GPIO13/14 in `esp32/main.py` — local motor stop without Pi round-trip. Currently cliff→Pi→motor has unbounded latency if Pi is busy.
+- [ ] **Bounded `_outq`**: replace plain list in `esp32/main.py` with a bounded deque (max 20 items, drop oldest) — prevents unbounded memory growth at 10 Hz polling.
+- [ ] **Event bus `create_task` dispatch**: `core/event_bus.py` currently awaits handlers inline. Switch to `asyncio.create_task` so a slow CLIFF_DETECTED handler cannot block the loop.
+- [ ] **Kill HSM or define ownership**: both `state_machine.py` (HSM) and py_trees behavior tree run simultaneously in `tools/cosmo_demo.py` with no boundary. Either remove the HSM and route everything through py_trees, or document the split clearly in `docs/DECISIONS.md`.
+- [ ] **Unify LLM call paths**: `cognition/llm.py:LLMInterface` (Ollama→Claude) and `cognition/mind.py` (direct `anthropic.Anthropic` client) are two separate paths. Route everything through `LLMInterface`.
+- [ ] **Unify + persist token budget**: `cognition/llm.py:TokenBudget` and `cognition/mind.py:_DailyBudget` are separate, neither persists to disk. Merge into one class; persist to `~/.robot/memory_meta/budget.json` so a crash doesn't reset the counter.
 
 ---
 
-## P1 — Wire hardware (waiting on parcels or reboot)
+## P1 — Wire hardware (waiting on parcels or XT60)
 
 - [ ] Wire OLED eyes (0x3C + 0x3D) → verify with `i2cdetect` → fix KI-019 I2C mutex → switch eyes.py to oled mode
-- [ ] Enable BH1750 light sensor: `available: false → true` in hardware.yaml (already wired, just needs config flip)
-- [ ] Enable TTP223 touch × 3 (belly removed): `available: false → true` in hardware.yaml
-- [ ] Enable MPU-6050 gyro: `available: false → true` in hardware.yaml
-- [ ] Enable PIR HC-SR501: `available: false → true` — ONLY AFTER reboot (KI-024)
-- [ ] Enable HC-SR04 ultrasonic — BLOCKED on XT60 pigtail + capacitors arriving; also TRIG currently mapped to GPIO16 (FIT0992 HAT conflict) — remap TRIG to a free pin in hardware.yaml first
-- [ ] Enable motors (TB6612FNG real mode) — BLOCKED on XT60 pigtail + capacitors arriving
-- [ ] Enable TCRT5000 cliff sensors × 2 — BLOCKED on parcel arriving
+- [ ] Wire motors: rewire TB6612FNG from Pi GPIO → ESP32 GPIO 15–21 — **BLOCKED on XT60 pigtail + capacitors arriving**
+- [ ] Wire PIR HC-SR501 → ESP32 GPIO12, set `SENSORS["pir"] = True` in esp32/main.py
+- [ ] Wire TTP223 touch ×4 → ESP32 GPIO1–4 (head/back/belly/tail), set `SENSORS["touch"] = True`
+- [ ] Wire MPU-6050 → ESP32 I2C (GPIO8/9), set `SENSORS["imu"] = True`
+- [ ] Wire HC-SR04 ultrasonic → ESP32 GPIO10 (TRIG) / GPIO11 (ECHO via 2kΩ/1kΩ divider) — **BLOCKED on XT60 pigtail**
+- [ ] Wire TCRT5000 cliff sensors ×2 → ESP32 GPIO13/14 — **BLOCKED on parcel arriving**
+- [ ] Wire KY-038 sound → ESP32 GPIO5 ADC1 — **BLOCKED on parcel arriving**
 
 ---
 
 ## P2 — Code improvements
 
-- [ ] KI-016: migrate episodic memory to aiosqlite (currently blocking async loop)
-- [ ] Re-enroll Indhu face: 20 samples, good light (currently 75% — target 90%+) → run `tools/enroll_face.py`
-- [ ] Fix person.py docstring: still says "YOLOv8n" — model is yolo11n.pt
+- [ ] KI-016: migrate episodic memory to aiosqlite (currently blocking async loop with smbus2 reads)
+- [ ] Re-enroll Indhu face: 20 samples, good light (currently ~75% — target 90%+) → `python3 tools/enroll_face.py`
 - [ ] Prompt caching (ADR-018): add ephemeral cache headers to Claude calls — after OLED + face tests
 - [ ] Test Piper Kitten Micro 25MB vs current lessac-medium 61MB (ADR-016)
 - [ ] Test FER 5-class vs current DeepFace 7-class emotion detection (ADR-014)
@@ -46,33 +50,33 @@
 
 ## P4 — Phase 4
 
-- [ ] Train custom "hey_cosmo" OWW model → save to ~/.robot/models/hey_cosmo.tflite (COSMO_WAKE_LABEL env var now controls active label — no code change needed)
-- [ ] Test custom model: COSMO_WAKE_LABEL=hey_cosmo pm2 restart cosmo
+- [ ] Train custom "hey_cosmo" OWW model → save to `~/.robot/models/hey_cosmo.tflite` (COSMO_WAKE_LABEL env var controls active label — no code change needed once model is there)
 
 ---
 
-## Done (recent — 2026-05-29 session)
+## Done
 
-- [x] CLAUDE_SESSION_PROTOCOL.md + COSMO_BACKLOG.md + docs/CHANGELOG.md created
-- [x] CLAUDE.md updated with protocol reference
-- [x] CONTEXT_Part*.md archived to docs/archive/
+- [x] ESP32-S3 architecture rework (2026-06-09) — sensors+motors offloaded to ESP32; Pi owns brain/camera/audio
+- [x] ESP32 bridge + motors.py + sensor_manager.py rewritten for ESP32 architecture
+- [x] 21 ESP32 bridge mock tests passing
+- [x] tools/esp32_test.py — Rich UI live dashboard
+- [x] Ollama llama3.2:1b-q4_K_M benchmarked — warm TTFT ~1s streaming; use for ambient reactions
+- [x] Memory system restructured (2026-06-09) — STATE.md, reduced CLAUDE.md files, secrets migrated to ~/secrets/
+- [x] BH1750 light sensor: available: true in hardware.yaml, BH1750Sensor in sensor_manager.py ✅ (was listed as P1 but already done)
+- [x] CLAUDE_SESSION_PROTOCOL.md created (2026-05-29 — now folded into CLAUDE.md and deleted)
+- [x] COSMO_BACKLOG.md + docs/CHANGELOG.md created (2026-05-29)
 - [x] tools/cosmo_doctor.sh — one-shot health snapshot
-- [x] hardware/pin_registry.py — boot-time GPIO conflict detection; wired into cosmo_demo.py
-- [x] tests/unit/test_token_budget.py — 9 tests, all passing
-- [x] tests/unit/test_safety_paths.py — 10 tests, all passing (obstacle/cliff/STBY/budget gate)
-- [x] mind.py: memory injection capped at 800 chars (~200 tokens) to keep cost predictable
-- [x] wake_word.py: OWW label now config-driven via COSMO_WAKE_LABEL env var; custom .tflite model auto-loaded from ~/.robot/models/hey_cosmo.tflite
-- [x] services/api/service.py: /dashboard (phone-friendly live UI), /mind/on, /mind/off endpoints
-
-## Done (older sessions)
-
-- [x] Pet brain (cognition/pet_brain.py) — movement decision states wired
-- [x] Camera auto-detect + degraded mode (no more crash loop)
-- [x] mind.py: sound-first before Claude API call
-- [x] mind.py: _speech_in_flight race condition fixed
-- [x] behavior/engine.py: personality-aware wander
-- [x] robot_control.py: deprecated with sys.exit(1)
+- [x] hardware/pin_registry.py — boot-time GPIO conflict detection
+- [x] tests/unit/test_token_budget.py — 9 tests
+- [x] tests/unit/test_safety_paths.py — 10 tests
+- [x] Brain test harness (tests/brain/) — 89 tests, all 7 invariants green
+- [x] LLM routing (cognition/llm.py) — Ollama-first, Claude fallback, TokenBudget
+- [x] PersonalityPromptBuilder (cognition/personality_prompt.py)
+- [x] recall_for_prompt / store_fact (core/memory/episodic.py)
+- [x] Dashboard rebuilt (services/api/service.py — B6 spec)
 - [x] Upgrade person detection to YOLO11n (ADR-012)
-- [x] Local LLM: Ollama llama3.2:1b Q4_K_M 807MB (ADR-017)
-- [x] Full P0-P4 code audit + safety fixes (2026-05-21)
-- [x] Disk cleanup: removed CUDA/nvidia packages, freed 3.4GB
+- [x] Local LLM: Ollama llama3.2:1b Q4_K_M (ADR-017)
+- [x] Full P0–P4 code audit + safety fixes (2026-05-21)
+- [x] Pet brain (cognition/pet_brain.py)
+- [x] Camera auto-detect + degraded mode
+- [x] robot_control.py deprecated with sys.exit(1)
