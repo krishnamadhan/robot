@@ -107,14 +107,27 @@ _FRAMES: Dict[EyeExpression, Tuple[List[str], List[str]]] = {
     ),
 }
 
-# Event → expression mapping
-_EVENT_EXPR: Dict[EventType, EyeExpression] = {
-    EventType.FACE_RECOGNIZED:   EyeExpression.HAPPY,
-    EventType.TOUCH_DETECTED:    EyeExpression.LOVING,
-    EventType.PICKUP_DETECTED:   EyeExpression.SURPRISED,
-    EventType.GESTURE_DETECTED:  EyeExpression.CURIOUS,
-    EventType.BATTERY_CRITICAL:  EyeExpression.SCARED,
-    EventType.OBSTACLE_CRITICAL: EyeExpression.SCARED,
+# Expression priority levels — lower number = higher priority, wins over current
+PRIORITY_SAFETY  = 0   # obstacle, battery critical
+PRIORITY_TOUCH   = 1   # touch, wake word
+PRIORITY_EMOTION = 2   # detected emotion
+PRIORITY_IDLE    = 3   # idle behaviors, proactive speech reactions
+
+# Event → (expression, duration_s, priority) — reactive expressions (2.4)
+_EVENT_EXPR: Dict[EventType, Tuple[EyeExpression, float, int]] = {
+    EventType.FACE_RECOGNIZED:    (EyeExpression.HAPPY,     3.0, PRIORITY_EMOTION),
+    EventType.FACE_UNKNOWN:       (EyeExpression.CURIOUS,   3.0, PRIORITY_EMOTION),
+    EventType.TOUCH_DETECTED:     (EyeExpression.LOVING,    3.0, PRIORITY_TOUCH),
+    EventType.PICKUP_DETECTED:    (EyeExpression.SURPRISED, 3.0, PRIORITY_TOUCH),
+    EventType.GESTURE_DETECTED:   (EyeExpression.CURIOUS,   3.0, PRIORITY_EMOTION),
+    EventType.BATTERY_CRITICAL:   (EyeExpression.SCARED,    3.0, PRIORITY_SAFETY),
+    EventType.BATTERY_LOW:        (EyeExpression.SLEEPY,    3.0, PRIORITY_EMOTION),
+    EventType.OBSTACLE_CRITICAL:  (EyeExpression.SCARED,    3.0, PRIORITY_SAFETY),
+    EventType.OBSTACLE_WARNING:   (EyeExpression.SURPRISED, 1.5, PRIORITY_EMOTION),
+    EventType.CLIFF_DETECTED:     (EyeExpression.SCARED,    3.0, PRIORITY_SAFETY),
+    EventType.WAKE_WORD:          (EyeExpression.SURPRISED, 2.0, PRIORITY_TOUCH),
+    EventType.PERSON_LOST:        (EyeExpression.SAD,       2.5, PRIORITY_IDLE),
+    EventType.CONVERSATION_START: (EyeExpression.HAPPY,     2.0, PRIORITY_EMOTION),
 }
 
 _EMOTION_EXPR: Dict[str, EyeExpression] = {
@@ -127,13 +140,6 @@ _EMOTION_EXPR: Dict[str, EyeExpression] = {
     "disgust":   EyeExpression.ANGRY,
     "neutral":   EyeExpression.NEUTRAL,
 }
-
-
-# Expression priority levels — lower number = higher priority, wins over current
-PRIORITY_SAFETY  = 0   # obstacle, battery critical
-PRIORITY_TOUCH   = 1   # touch, wake word
-PRIORITY_EMOTION = 2   # detected emotion
-PRIORITY_IDLE    = 3   # idle behaviors, proactive speech reactions
 
 
 def baseline_expression(mood: float, energy: float, arousal: float,
@@ -200,18 +206,9 @@ class EyeEngine:
             if expr:
                 self.set_expression(expr, duration=4.0, priority=PRIORITY_EMOTION)
 
-        _EVT_PRIORITY = {
-            EventType.BATTERY_CRITICAL:  PRIORITY_SAFETY,
-            EventType.OBSTACLE_CRITICAL: PRIORITY_SAFETY,
-            EventType.TOUCH_DETECTED:    PRIORITY_TOUCH,
-            EventType.PICKUP_DETECTED:   PRIORITY_TOUCH,
-            EventType.FACE_RECOGNIZED:   PRIORITY_EMOTION,
-            EventType.GESTURE_DETECTED:  PRIORITY_EMOTION,
-        }
-        for evt_type, expr in _EVENT_EXPR.items():
-            p = _EVT_PRIORITY.get(evt_type, PRIORITY_IDLE)
-            async def _handler(event: Event, _expr=expr, _p=p) -> None:
-                self.set_expression(_expr, duration=3.0, priority=_p)
+        for evt_type, (expr, dur, prio) in _EVENT_EXPR.items():
+            async def _handler(event: Event, _expr=expr, _d=dur, _p=prio) -> None:
+                self.set_expression(_expr, duration=_d, priority=_p)
             bus.on(evt_type)(_handler)
 
         asyncio.create_task(self._animation_loop())

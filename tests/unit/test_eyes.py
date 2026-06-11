@@ -97,3 +97,52 @@ class TestBaselineDrift:
             p.state = _FakeState(arousal=1.0)
             _tick_engine(eng, time.monotonic())
         assert eng._transition_speed < EyeEngine.TRANSITION_SPEED
+
+
+# ── Reactive expressions off existing events (Phase 2.4) ─────────────────────
+
+import asyncio
+
+from core.event_bus import Event, EventType, bus
+from expression.eyes import (_EVENT_EXPR, PRIORITY_SAFETY, PRIORITY_TOUCH,
+                             PRIORITY_IDLE)
+
+
+class TestReactiveExpressions:
+
+    def test_mapping_covers_live_events(self):
+        for evt in (EventType.WAKE_WORD, EventType.FACE_UNKNOWN,
+                    EventType.PERSON_LOST, EventType.CONVERSATION_START,
+                    EventType.CLIFF_DETECTED, EventType.BATTERY_LOW,
+                    EventType.OBSTACLE_WARNING):
+            assert evt in _EVENT_EXPR
+
+    def test_safety_events_have_safety_priority(self):
+        for evt in (EventType.CLIFF_DETECTED, EventType.OBSTACLE_CRITICAL,
+                    EventType.BATTERY_CRITICAL):
+            assert _EVENT_EXPR[evt][2] == PRIORITY_SAFETY
+
+    def test_wake_word_pops_attention_via_bus(self):
+        async def run():
+            engine = EyeEngine()
+            engine._running = True
+            b = bus
+            await b.start()
+            try:
+                await engine.start()
+                await b.publish(Event(type=EventType.WAKE_WORD))
+                await asyncio.sleep(0.1)
+            finally:
+                await engine.stop()
+                await b.stop()
+            return engine._state.target_expression
+
+        assert asyncio.run(run()) == EyeExpression.SURPRISED
+
+    def test_safety_expression_blocks_idle_request(self):
+        engine = EyeEngine()
+        engine.set_expression(EyeExpression.SCARED, duration=5.0,
+                              priority=PRIORITY_SAFETY)
+        engine.set_expression(EyeExpression.SAD, duration=2.0,
+                              priority=PRIORITY_IDLE)
+        assert engine._state.target_expression == EyeExpression.SCARED
