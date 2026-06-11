@@ -20,6 +20,7 @@ from enum import Enum
 from typing import Callable, Dict, List, Optional, Tuple
 
 from core.event_bus import Event, EventPriority, EventType, bus
+from core.personality import personality
 from utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -135,6 +136,28 @@ PRIORITY_EMOTION = 2   # detected emotion
 PRIORITY_IDLE    = 3   # idle behaviors, proactive speech reactions
 
 
+def baseline_expression(mood: float, energy: float, arousal: float,
+                        attachment: float) -> EyeExpression:
+    """Resting expression from the personality vector — what the eyes drift
+    back to when nothing event-driven is showing. Ordered by salience:
+    exhaustion reads first, then distress, then joy."""
+    if energy < 0.2:
+        return EyeExpression.SLEEPY
+    if mood < -0.4 and arousal > 0.7:
+        return EyeExpression.SCARED
+    if mood < -0.3:
+        return EyeExpression.SAD
+    if mood > 0.55 and arousal > 0.7:
+        return EyeExpression.EXCITED
+    if mood > 0.45 and attachment > 0.8:
+        return EyeExpression.LOVING
+    if mood > 0.45:
+        return EyeExpression.HAPPY
+    if arousal > 0.75:
+        return EyeExpression.CURIOUS
+    return EyeExpression.NEUTRAL
+
+
 class EyeEngine:
     """
     30 FPS eye animation loop with expressions, blinking, and pupil tracking.
@@ -145,6 +168,7 @@ class EyeEngine:
     BLINK_INTERVAL_MAX = 7.0
     BLINK_SPEED        = 0.15    # seconds for full blink cycle
     TRANSITION_SPEED   = 0.3     # seconds for expression transition
+    BASELINE_PERIOD    = 2.0     # personality→baseline re-check cadence
     FPS                = 30
 
     def __init__(self) -> None:
@@ -162,6 +186,9 @@ class EyeEngine:
         self._frame_callbacks: List[Callable] = []
         self._oled_left  = None
         self._oled_right = None
+        self._next_baseline = 0.0
+        self._blink_scale = 1.0          # energy: tired → sparse slow blinks
+        self._transition_speed = self.TRANSITION_SPEED  # arousal: excited → snappy
 
     async def start(self) -> None:
         self._running = True
@@ -261,16 +288,31 @@ class EyeEngine:
     def _tick(self, now: float) -> None:
         s = self._state
 
-        # Timed expression revert
+        # Timed expression revert — fall back to the personality baseline,
+        # not the literal previous frame (which may itself be stale)
         if self._timed_expr_end and now >= self._timed_expr_end:
-            prev = self._timed_expr_prev or EyeExpression.NEUTRAL
             self._timed_expr_end = None
-            self.set_expression(prev)
+            ps = personality.state
+            self.set_expression(baseline_expression(
+                ps.mood, ps.energy, ps.arousal, ps.attachment))
+
+        # Personality baseline drift: when nothing event-driven is showing,
+        # the resting face tracks the personality vector (Phase 2.1)
+        if now >= self._next_baseline:
+            self._next_baseline = now + self.BASELINE_PERIOD
+            ps = personality.state
+            self._blink_scale = 1.6 - 0.9 * ps.energy
+            self._transition_speed = max(0.15, 0.45 - 0.25 * ps.arousal)
+            if not self._timed_expr_end:
+                base = baseline_expression(ps.mood, ps.energy,
+                                           ps.arousal, ps.attachment)
+                if s.target_expression != base:
+                    self.set_expression(base)
 
         # Transition progress
         if s.transition_progress < 1.0:
             elapsed = now - self._transition_start
-            s.transition_progress = min(1.0, elapsed / self.TRANSITION_SPEED)
+            s.transition_progress = min(1.0, elapsed / self._transition_speed)
             if s.transition_progress >= 1.0:
                 s.expression = s.target_expression
 
@@ -290,7 +332,7 @@ class EyeEngine:
                 self._blinking   = False
                 self._next_blink = now + random.uniform(
                     self.BLINK_INTERVAL_MIN, self.BLINK_INTERVAL_MAX
-                )
+                ) * self._blink_scale
 
         # Scared tremor
         if s.expression == EyeExpression.SCARED:

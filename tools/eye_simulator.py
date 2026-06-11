@@ -111,8 +111,18 @@ async def run_simulator() -> None:
             if key == "q":
                 break
             elif key in EXPR_KEYS:
-                eye_engine.set_expression(EXPR_KEYS[key])
+                # duration holds the pose against personality-baseline drift
+                eye_engine.set_expression(EXPR_KEYS[key], duration=10.0)
                 last_cycle = now + 10
+            elif key in ("j", "k"):
+                personality.state.mood += 0.1 if key == "k" else -0.1
+                personality.state.clamp()
+            elif key in ("u", "i"):
+                personality.state.energy += 0.1 if key == "i" else -0.1
+                personality.state.clamp()
+            elif key in ("g", "t"):
+                personality.state.arousal += 0.1 if key == "t" else -0.1
+                personality.state.clamp()
             elif key == "b":
                 eye_engine._blinking = True
                 eye_engine._blink_start = now
@@ -126,7 +136,8 @@ async def run_simulator() -> None:
             if now - last_cycle >= CYCLE_INTERVAL:
                 last_cycle = now
                 cycle_idx = (cycle_idx + 1) % len(AUTO_CYCLE)
-                eye_engine.set_expression(AUTO_CYCLE[cycle_idx])
+                eye_engine.set_expression(AUTO_CYCLE[cycle_idx],
+                                          duration=CYCLE_INTERVAL)
 
             state  = eye_engine.get_state()
             art    = eye_engine.render_terminal()
@@ -156,6 +167,8 @@ async def run_simulator() -> None:
                 "\033[90m  [N]eutral [H]appy [E]xcited [S]ad [A]ngry [V]surprised\033[0m",
                 "\033[90m  [L]sleepy [O]loving [C]curious [F]scared [X]confused [P]layful\033[0m",
                 "\033[90m  [B]link  [1-9]pupil  [Q]uit  (auto-cycles every 3s)\033[0m",
+                "\033[90m  personality: [j/k]mood-+ [u/i]energy-+ [g/t]arousal-+\033[0m",
+                "\033[90m  (idle eyes drift to the personality baseline)\033[0m",
             ]
 
             print("\n".join(lines), end="", flush=True)

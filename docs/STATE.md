@@ -23,7 +23,7 @@
 | Audio pipeline | ✅ | ✅ Active | hey_jarvis → STT → Claude → TTS → JBL Flip 5 |
 | Token budget | ✅ Unified | N/A | Single TokenBudget (cognition/llm.py); persists to memory_meta SQLite, survives restarts (OQ-5 ✅) |
 | LLM routing | ✅ Unified | N/A | LLMInterface only; D4 two-tier (ambient→Ollama-first, person→Claude direct); LLMRouter + mind direct client deleted (OQ-6 ✅) |
-| OLED eyes | ⚠️ Terminal | ⚠️ Not wired | Hardware arrived — wire now (0x3C left, 0x3D right with A0 bridged) |
+| OLED eyes | ⚠️ Terminal | ⚠️ Not wired | Hardware arrived — wire now (0x3C left, 0x3D right with A0 bridged). Eye engine personality-baseline drift live (2.1) |
 | BH1750 light | ✅ Enabled | ✅ Wired | available: true in hardware.yaml; BH1750Sensor in sensor_manager.py |
 | ESP32-S3 bridge | ✅ Code done | ⚠️ Not connected | hardware/esp32_bridge.py; all SENSORS flags False (mock mode) |
 | Motors (TB6612FNG) | ✅ Code done | ⚠️ Not rewired | motors.py → bridge → ESP32 GPIO 15–21; **physically still on Pi GPIO** — rewire before enabling |
@@ -41,7 +41,7 @@
 
 ## Next Priority
 
-**Phase 1 APPROVED & COMMITTED (2026-06-11, fe52382). Phase 2 entry prerequisite DONE: perception/audio deep-dive complete (62b62a0).** Critical findings fixed: emotion smoothing history cleared on PERSON_LOST; mic capture-thread shutdown race tolerated; stale VAD `_partial` dropped per session; STT model unloaded on pipeline stop. Non-critical findings deferred to Phase 2 work: dual PERSON_DETECTED publishers (person.py vs vision_loop — pick one owner), wake_word.py import-time detector load, emotion events with person_id=None applied globally, silent stale-frame drops (add telemetry counter). **Next: start Phase 2 (aliveness on current hardware) per docs/COSMO_MASTER_PLAN.md**, incl. OQ-9 test-debt cleanup. Pre-existing test debt (26 failures, OQ-9): test_new_systems / test_phase1 / test_safety_paths MotorStby / test_esp32_bridge `_mock` drift. Wiring deferred to Phase 4 doc.
+**Phase 1 APPROVED & COMMITTED (2026-06-11, fe52382). Phase 2 entry prerequisite DONE: perception/audio deep-dive complete (62b62a0).** Critical findings fixed: emotion smoothing history cleared on PERSON_LOST; mic capture-thread shutdown race tolerated; stale VAD `_partial` dropped per session; STT model unloaded on pipeline stop. Non-critical findings deferred to Phase 2 work: dual PERSON_DETECTED publishers (person.py vs vision_loop — pick one owner), wake_word.py import-time detector load, emotion events with person_id=None applied globally, silent stale-frame drops (add telemetry counter). **Phase 2 GO received; 2.1 done (eye baseline drift from personality vector; tests in tests/unit/test_eyes.py; eye_simulator gained j/k u/i g/t personality nudge keys). Next: 2.2 idle personality loop**, plus OQ-9 test-debt cleanup along the way. Pre-existing test debt (26 failures, OQ-9): test_new_systems / test_phase1 / test_safety_paths MotorStby / test_esp32_bridge `_mock` drift. Wiring deferred to Phase 4 doc.
 
 <details><summary>Wiring sequence (deferred — reference for Phase 4 doc)</summary>
 

@@ -81,7 +81,7 @@ Before Phase 1 reports done:
 
 **Entry prerequisite:** perception/audio deep-dive review (vision pipeline, wake-word/STT/VAD internals) — only spot-checked during the 2026-06-10 stability review; do this before any Phase 2 work so eye-engine/idle-loop changes build on verified foundations.
 
-- [ ] 2.1 Eye engine: expression state machine driven by personality vector (extend existing EyeEngine; reg.simulate(EXPRESSION))
+- [x] 2.1 Eye engine: expression state machine driven by personality vector (extend existing EyeEngine; reg.simulate(EXPRESSION))
 - [ ] 2.2 Idle personality loop: curiosity glances, boredom fidgets, settling, micro-reactions
 - [ ] 2.3 Circadian energy modulation
 - [ ] 2.4 Reactive expressions off existing events
