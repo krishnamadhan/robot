@@ -210,6 +210,11 @@ class EmotionDetector:
         self._smooth_history.pop(track_id, None)
         self._last_emit.pop(track_id, None)
 
+    def clear_all(self) -> None:
+        """Drop all smoothing/emit history (frame is empty)."""
+        self._smooth_history.clear()
+        self._last_emit.clear()
+
     @property
     def is_available(self) -> bool:
         return self._available

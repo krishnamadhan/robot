@@ -178,6 +178,7 @@ class VisionLoop:
                     self._confirmed_person_name = None
                     self._consec.clear()
                     self._last_fired.clear()
+                    self._emotion_detector.clear_all()
                     personality.process_event("person_left")
                     await bus.publish(Event(
                         type=EventType.PERSON_LOST,

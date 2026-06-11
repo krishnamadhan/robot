@@ -75,7 +75,7 @@ Before Phase 1 reports done:
 - [x] 1.11 Unify TokenBudget (one class), persist to memory_meta SQLite (D5) — **after 1.8a**; update STATE.md OQ-5
 - [x] 1.12 Episodic memory READ: recall step in conversation path
 - [x] 1.13 Migration-completeness check (exit criterion above)
-- [ ] **STOP — report**
+- [x] **STOP — report** (2026-06-11, gate approved; committed fe52382)
 
 ## PHASE 2 — Aliveness on current hardware
 

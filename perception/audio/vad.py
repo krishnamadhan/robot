@@ -60,6 +60,7 @@ class VoiceActivityDetector:
         silence_count = 0
         in_speech = False
         frame_count = 0
+        self._partial = b""   # drop stale audio from an abandoned session
 
         while True:
             chunk = await audio_source.read_chunk()

@@ -126,10 +126,15 @@ class MicrophoneInput:
                         exception_on_overflow=False,
                     )
                     mono = self._to_mono(raw)
-                    if self._loop and self._loop.is_running():
-                        asyncio.run_coroutine_threadsafe(
-                            self._enqueue(mono), self._loop
-                        )
+                    # Loop may close between the is_running() check and the
+                    # call during shutdown — tolerate the race.
+                    try:
+                        if self._loop and self._loop.is_running():
+                            asyncio.run_coroutine_threadsafe(
+                                self._enqueue(mono), self._loop
+                            )
+                    except RuntimeError:
+                        pass
                 except Exception as e:
                     if self._running:
                         log.error("mic.read_error", error=str(e))

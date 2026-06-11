@@ -92,6 +92,7 @@ class ListeningPipeline:
             except asyncio.CancelledError:
                 pass
         await mic.stop_stream()
+        stt.unload()
 
     # ── Main loop ─────────────────────────────────────────────────────────────
 

@@ -48,6 +48,11 @@ class SpeechToText:
             log.warning("stt.load_failed", error=str(e)[:80])
             return False
 
+    def unload(self) -> None:
+        self._model = None
+        self._available = False
+        log.info("stt.unloaded")
+
     async def transcribe(self, audio_bytes: bytes, vad_filter: bool = False) -> Optional[STTResult]:
         if not self._available or not audio_bytes:
             return None
