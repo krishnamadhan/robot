@@ -39,7 +39,9 @@
 
 ## Next Priority
 
-**Wire ESP32 sensors and rewire motors from Pi GPIO → ESP32.**
+**Phase 1 of docs/COSMO_MASTER_PLAN.md — brain foundation (software only).** Archive HSM + pet_brain + behavior_engine via port-before-archive checklist; land capability registry + intent model + action router; unify LLM paths and token budget. Wiring is deferred — the soldering plan becomes a Phase 4 doc (docs/HARDWARE_PLAN.md).
+
+<details><summary>Wiring sequence (deferred — reference for Phase 4 doc)</summary>
 
 1. Rewire TB6612FNG from Pi GPIO to ESP32 GPIO 15–21 (AIN1=15, AIN2=16, PWMA=17, BIN1=18, BIN2=19, PWMB=20, STBY=21). **Do not power motors until XT60 pigtail arrives.**
 2. Wire sensors in order (PIR first — safest): PIR→GPIO12, Touch×4→GPIO1–4, IMU I2C→GPIO8/9, Cliff→GPIO13/14, Sound→GPIO5.
@@ -47,6 +49,8 @@
 4. Wire OLED eyes (0x3C left, 0x3D right) — run `sudo i2cdetect -y 1` to confirm both visible, then switch eyes.py render target to "oled".
 
 **Blocked on:** XT60 female pigtail (Robocraze) for motor power; APDS-9960 replacement; cliff/sound sensors in parcel.
+
+</details>
 
 ---
 
@@ -58,5 +62,7 @@
 | OQ-2 | `_outq` in esp32/main.py is an unbounded plain list. At 10 Hz polling with Pi busy, it grows without bound. Add bounded deque with drop-oldest policy. | Reliability |
 | OQ-3 | event_bus.py awaits handlers inline (not `create_task`). A slow CLIFF_DETECTED handler blocks the entire event loop. Switch to `asyncio.create_task` dispatch. | Latency |
 | OQ-4 | Both py_trees behavior tree and 30-state HSM run simultaneously in cosmo_demo.py with no documented ownership boundary. Define split or kill one. | Architecture |
-| OQ-5 | TokenBudget in cognition/llm.py and _DailyBudget in cognition/mind.py are separate and neither persists to disk. Unify into one class; persist to `~/.robot/memory_meta/budget.json`. | Reliability |
-| OQ-6 | Two LLM call paths: cognition/llm.py:LLMInterface (Ollama→Claude) and cognition/mind.py (direct `anthropic.Anthropic` client). Unify — everything should go through LLMInterface. | Maintainability |
+| OQ-5 | TokenBudget in cognition/llm.py and _DailyBudget in cognition/mind.py are separate and neither persists to disk. Unify into one class; persist to the **memory_meta SQLite table** (decided 2026-06-10 — atomic RMW, no JSON races). | Reliability |
+| OQ-6 | THREE LLM call paths, not two: LLMInterface (prod, conversation.py), LLMRouter (tests only — dead in prod, delete), mind.py direct client. Unify on LLMInterface (decided 2026-06-10). | Maintainability |
+| OQ-7 | Two sub-items in cognition/llm.py: **(a)** `generate_streaming` logs usage but never calls `token_budget.record()` — the main conversation path is UNCOUNTED against the 100K daily limit. **Phase-1 prerequisite for budget persistence (OQ-5)** — fix recording before unifying/persisting, otherwise we persist a lie. **(b)** No prompt caching (`cache_control`) on the repeated system prompt — independent savings, can land any time. | Cost |
+| OQ-8 | `navigation._follow_loop` registers `@bus.on(PERSON_DETECTED)` inside the loop body (navigation.py:254) — one leaked subscription per follow command, dispatched forever. | Reliability |
