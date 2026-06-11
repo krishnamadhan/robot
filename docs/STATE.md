@@ -41,7 +41,7 @@
 
 ## Next Priority
 
-**Phase 1 COMPLETE (2026-06-11) — STOPPED at gate, awaiting Madhan's review.** All 14 items done (see docs/COSMO_MASTER_PLAN.md Phase 1 + docs/PHASE1_MIGRATION.md, 30/30 boxes). Migration-completeness check passed: no prod imports of archived modules; all 16 Intents router-reachable; brain + safety + budget suites green (102 brain/budget tests pass). **Phase 2 entry prerequisite: perception/audio deep-dive.** Pre-existing test debt (predates Phase 1, 26 failures): tests/unit/test_new_systems.py + test_phase1.py + test_safety_paths MotorStby reference classes that never existed (PIRSensor, MotorSafetyError); tests/hardware/test_esp32_bridge.py hits `_mock` attr drift. Wiring deferred to Phase 4 doc.
+**Phase 1 APPROVED & COMMITTED (2026-06-11, fe52382). Phase 2 entry prerequisite DONE: perception/audio deep-dive complete (62b62a0).** Critical findings fixed: emotion smoothing history cleared on PERSON_LOST; mic capture-thread shutdown race tolerated; stale VAD `_partial` dropped per session; STT model unloaded on pipeline stop. Non-critical findings deferred to Phase 2 work: dual PERSON_DETECTED publishers (person.py vs vision_loop — pick one owner), wake_word.py import-time detector load, emotion events with person_id=None applied globally, silent stale-frame drops (add telemetry counter). **Next: start Phase 2 (aliveness on current hardware) per docs/COSMO_MASTER_PLAN.md**, incl. OQ-9 test-debt cleanup. Pre-existing test debt (26 failures, OQ-9): test_new_systems / test_phase1 / test_safety_paths MotorStby / test_esp32_bridge `_mock` drift. Wiring deferred to Phase 4 doc.
 
 <details><summary>Wiring sequence (deferred — reference for Phase 4 doc)</summary>
 
