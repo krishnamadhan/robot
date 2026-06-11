@@ -85,160 +85,136 @@ class TestMalformedLLMOutput:
     @pytest.mark.asyncio
     async def test_empty_string_response_not_spoken(self):
         """Empty LLM response → TTS.speak() not called."""
+        import cognition.llm as llm_mod
+        from cognition.llm import TokenBudget
+        from cognition.mind import CosmoMind
+
         mock_tts = MagicMock()
         mock_tts.is_speaking = False
         mock_tts.speak = AsyncMock()
 
-        from cognition.mind import CosmoMind
-
         mind = CosmoMind.__new__(CosmoMind)
         mind._running = False
         mind._task = None
-        mind._client = MagicMock()
         mind._enabled = True
         mind._last_spoke = 0.0
-        mind._last_action = time.monotonic() - 200
-        mind._budget = MagicMock()
-        mind._budget.over_limit.return_value = False
         mind._budget_lock = asyncio.Lock()
         mind._speech_in_flight = asyncio.Event()
         mind._trigger_last = {}
-        mind._was_dark = False
-        mind._obstacle_warn = False
+        mind._memory_context = AsyncMock(return_value="")
+        mind._build_rich_system_prompt = AsyncMock(return_value="system")
 
         # LLM returns empty string
-        fake_response = MagicMock()
-        fake_response.content = [MagicMock(text="")]
-        fake_response.usage = MagicMock(input_tokens=10, output_tokens=0)
+        empty_result = {"text": "", "backend": "ollama/test",
+                        "latency_ms": 1, "tokens": 0}
 
-        mock_eye = MagicMock()
-        mock_sounds = MagicMock()
-        mock_sounds.play = AsyncMock()
-
-        mock_attention = MagicMock()
-        mock_attention.state.focused = False
-
-        async def fake_executor(executor, func):
-            return fake_response
-
-        loop = asyncio.get_event_loop()
         with (
             patch("cognition.mind.tts", mock_tts),
-            patch("cognition.mind.sounds", mock_sounds),
-            patch("cognition.mind.eye_engine", mock_eye),
-            patch("cognition.mind.attention", mock_attention),
+            patch("cognition.mind.router", MagicMock()),
+            patch.object(CosmoMind, "_hour", staticmethod(lambda: 12)),
+            patch.object(llm_mod, "token_budget", TokenBudget(100_000)),
+            patch.object(llm_mod.llm, "generate_once",
+                         AsyncMock(return_value=empty_result)),
         ):
-            with patch.object(loop, "run_in_executor", side_effect=fake_executor):
-                with patch("core.memory.episodic.episodic") as mock_ep:
-                    mock_ep.get_context_for_person = AsyncMock(return_value={
-                        "familiarity": 0.0, "total_interactions": 0, "memories": []
-                    })
-                    mock_ep.retrieve = AsyncMock(return_value=[])
-                    await mind._maybe_speak("face_seen", "Test")
+            await mind._maybe_speak("face_seen", "Test")
 
         await asyncio.sleep(0.05)
         # TTS should NOT be called with empty string
         for call in mock_tts.speak.call_args_list:
             text = call[0][0] if call[0] else ""
             assert text.strip() != "", f"TTS called with empty/whitespace: {text!r}"
+        assert not mind._speech_in_flight.is_set()
 
     @pytest.mark.asyncio
-    async def test_json_response_handled(self):
+    async def test_json_response_handled(self, monkeypatch):
         """LLM returning JSON-like text is passed through (Cosmo just says it)."""
-        from cognition.llm import LLMRouter, OllamaProvider, ClaudeProvider, TokenBudget
+        import cognition.llm as llm_mod
+        from cognition.llm import LLMInterface, TokenBudget
 
-        budget = TokenBudget(100_000)
-        ollama = OllamaProvider()
-        claude = ClaudeProvider(budget=budget)
+        monkeypatch.setattr(llm_mod, "token_budget", TokenBudget(100_000))
 
+        iface = LLMInterface()
         # Ollama returns JSON-like text
-        ollama.generate = AsyncMock(return_value={
+        iface._call_ollama = AsyncMock(return_value={
             "text": '{"response": "Hello there"}',
             "backend": "ollama/test",
             "tokens": 5,
         })
+        iface._call_claude = AsyncMock()
 
-        router = LLMRouter(ollama=ollama, claude=claude, budget=budget)
-        result = await router.generate("hello", "system")
+        result = await iface.generate_once("hello", "system")
 
-        # Router just returns what Ollama gives — no crash
+        # Interface just returns what Ollama gives — no crash
         assert result["text"] == '{"response": "Hello there"}'
 
     @pytest.mark.asyncio
-    async def test_gibberish_response_passed_through(self):
+    async def test_gibberish_response_passed_through(self, monkeypatch):
         """Gibberish LLM output is passed through without crash."""
-        from cognition.llm import LLMRouter, OllamaProvider, ClaudeProvider, TokenBudget
+        import cognition.llm as llm_mod
+        from cognition.llm import LLMInterface, TokenBudget
 
-        budget = TokenBudget(100_000)
-        ollama = OllamaProvider()
-        claude = ClaudeProvider(budget=budget)
+        monkeypatch.setattr(llm_mod, "token_budget", TokenBudget(100_000))
 
-        ollama.generate = AsyncMock(return_value={
+        iface = LLMInterface()
+        iface._call_ollama = AsyncMock(return_value={
             "text": "xkcd 1234 bloop fuzzywumpus ##!!",
             "backend": "ollama/test",
             "tokens": 5,
         })
+        iface._call_claude = AsyncMock()
 
-        router = LLMRouter(ollama=ollama, claude=claude, budget=budget)
-        result = await router.generate("hello", "system")
+        result = await iface.generate_once("hello", "system")
 
         assert result is not None
         assert result["text"]  # non-empty, whatever it is
 
     @pytest.mark.asyncio
     async def test_api_timeout_no_crash(self):
-        """API timeout → _maybe_speak returns without crashing."""
+        """API timeout → _maybe_speak returns without crashing.
+
+        Timeouts are now absorbed inside LLMInterface.generate_once, which
+        returns backend='unavailable' — _maybe_speak must stay silent and
+        clear the in-flight flag.
+        """
+        import cognition.llm as llm_mod
+        from cognition.llm import TokenBudget
         from cognition.mind import CosmoMind
 
         mind = CosmoMind.__new__(CosmoMind)
         mind._running = False
         mind._task = None
-        mind._client = MagicMock()
         mind._enabled = True
         mind._last_spoke = 0.0
-        mind._last_action = time.monotonic() - 200
-        mind._budget = MagicMock()
-        mind._budget.over_limit.return_value = False
         mind._budget_lock = asyncio.Lock()
         mind._speech_in_flight = asyncio.Event()
         mind._trigger_last = {}
-        mind._was_dark = False
-        mind._obstacle_warn = False
+        mind._memory_context = AsyncMock(return_value="")
+        mind._build_rich_system_prompt = AsyncMock(return_value="system")
 
         mock_tts = MagicMock()
         mock_tts.is_speaking = False
         mock_tts.speak = AsyncMock()
-        mock_eye = MagicMock()
-        mock_sounds = MagicMock()
-        mock_sounds.play = AsyncMock()
-        mock_attention = MagicMock()
-        mock_attention.state.focused = False
 
-        # Simulate timeout
-        async def timeout_executor(executor, func):
-            raise asyncio.TimeoutError()
+        timeout_result = {"text": "", "backend": "unavailable",
+                          "latency_ms": 0, "tokens": 0}
 
-        loop = asyncio.get_event_loop()
         with (
             patch("cognition.mind.tts", mock_tts),
-            patch("cognition.mind.sounds", mock_sounds),
-            patch("cognition.mind.eye_engine", mock_eye),
-            patch("cognition.mind.attention", mock_attention),
+            patch("cognition.mind.router", MagicMock()),
+            patch.object(CosmoMind, "_hour", staticmethod(lambda: 12)),
+            patch.object(llm_mod, "token_budget", TokenBudget(100_000)),
+            patch.object(llm_mod.llm, "generate_once",
+                         AsyncMock(return_value=timeout_result)),
         ):
-            with patch.object(loop, "run_in_executor", side_effect=timeout_executor):
-                with patch("core.memory.episodic.episodic") as mock_ep:
-                    mock_ep.get_context_for_person = AsyncMock(return_value={
-                        "familiarity": 0.0, "total_interactions": 0, "memories": []
-                    })
-                    mock_ep.retrieve = AsyncMock(return_value=[])
-                    # Must not raise
-                    try:
-                        await mind._maybe_speak("face_seen", "Test")
-                    except Exception as e:
-                        pytest.fail(f"_maybe_speak raised on timeout: {e}")
+            # Must not raise
+            try:
+                await mind._maybe_speak("face_seen", "Test")
+            except Exception as e:
+                pytest.fail(f"_maybe_speak raised on timeout: {e}")
 
         # speech_in_flight should be cleared after timeout
         assert not mind._speech_in_flight.is_set()
+        mock_tts.speak.assert_not_called()
 
 
 # ── Mid-conversation budget exhaustion ───────────────────────────────────────
@@ -246,26 +222,26 @@ class TestMalformedLLMOutput:
 class TestMidConversationBudgetExhaustion:
 
     @pytest.mark.asyncio
-    async def test_budget_exhausted_mid_conversation(self):
+    async def test_budget_exhausted_mid_conversation(self, monkeypatch):
         """Budget exhausts mid-conversation → next turn returns empty, no crash."""
-        from cognition.llm import TokenBudget, LLMRouter, OllamaProvider, ClaudeProvider
+        import cognition.llm as llm_mod
+        from cognition.llm import LLMInterface, TokenBudget
 
         budget = TokenBudget(50)
+        monkeypatch.setattr(llm_mod, "token_budget", budget)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
 
-        ollama = OllamaProvider()
-        claude = ClaudeProvider(budget=budget)
-        ollama.generate = AsyncMock(return_value=None)  # Ollama down
+        iface = LLMInterface()
+        iface._call_ollama = AsyncMock(return_value=None)  # Ollama down
 
-        # First mock call: records tokens via budget
-        async def first_call(prompt, system, max_tokens=150):
+        # First mock call: records tokens via budget (as _call_claude does)
+        async def first_call(system, messages, max_tokens=None):
             budget.record(30)  # simulate actual token usage
             return {"text": "First response", "backend": "claude/test", "tokens": 30}
-        claude.generate = first_call
-
-        router = LLMRouter(ollama=ollama, claude=claude, budget=budget)
+        iface._call_claude = first_call
 
         # First call: Claude works, uses 30 tokens
-        r1 = await router.generate("hello", "system")
+        r1 = await iface.generate_once("hello", "system")
         assert r1["text"] == "First response"
         assert budget.day_total == 30
 
@@ -273,47 +249,52 @@ class TestMidConversationBudgetExhaustion:
         budget.record(25)  # total now 55 >= 50
         assert budget.over_limit()
 
-        # Second call: Claude should be silenced by LLMRouter budget check
-        claude_second_calls = {"n": 0}
-        async def second_call(prompt, system, max_tokens=150):
-            claude_second_calls["n"] += 1
-            return {"text": "Should not appear", "backend": "claude/test", "tokens": 10}
-        claude.generate = second_call
+        # Second call: Claude should be silenced by the budget check
+        second_call = AsyncMock(return_value={
+            "text": "Should not appear", "backend": "claude/test", "tokens": 10})
+        iface._call_claude = second_call
 
-        r2 = await router.generate("more", "system")
+        r2 = await iface.generate_once("more", "system")
         assert r2["text"] == "", f"Expected empty, got: {r2['text']!r}"
-        assert claude_second_calls["n"] == 0, "Claude should not be called when budget exhausted"
+        assert r2["backend"] == "budget_exhausted"
+        second_call.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_budget_exhausted_mind_silences_cleanly(self):
-        """CosmoMind respects budget — _maybe_speak early-returns when over limit."""
-        from cognition.mind import CosmoMind, _DailyBudget
+        """CosmoMind respects budget — _maybe_speak early-returns when over limit
+        for Claude-direct triggers (token_budget singleton is the sole ledger)."""
+        import cognition.llm as llm_mod
+        from cognition.llm import TokenBudget
+        from cognition.mind import CosmoMind
 
         mind = CosmoMind.__new__(CosmoMind)
         mind._enabled = True
-        mind._client = MagicMock()
         mind._last_spoke = 0.0
         mind._trigger_last = {}
-
-        budget = _DailyBudget(100)
-        class U:
-            input_tokens = 101
-            output_tokens = 0
-        budget.record(U())
-        assert budget.over_limit()
-
-        mind._budget = budget
         mind._budget_lock = asyncio.Lock()
         mind._speech_in_flight = asyncio.Event()
+
+        budget = TokenBudget(100)
+        budget.record(101)
+        assert budget.over_limit()
 
         mock_tts = MagicMock()
         mock_tts.is_speaking = False
         mock_tts.speak = AsyncMock()
 
-        with patch("cognition.mind.tts", mock_tts):
+        mock_generate = AsyncMock()
+
+        with (
+            patch("cognition.mind.tts", mock_tts),
+            patch.object(CosmoMind, "_hour", staticmethod(lambda: 12)),
+            patch.object(llm_mod, "token_budget", budget),
+            patch.object(llm_mod.llm, "generate_once", mock_generate),
+        ):
+            # "face_seen" is a Claude-direct trigger → must be silenced
             await mind._maybe_speak("face_seen", "Test")
 
         mock_tts.speak.assert_not_called()
+        mock_generate.assert_not_awaited()
 
 
 # ── Personality prompt builder edge cases ─────────────────────────────────────

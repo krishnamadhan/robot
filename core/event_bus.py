@@ -84,6 +84,7 @@ class EventType(str, Enum):
     I2C_ERROR = "hardware.i2c.error"
     SENSOR_TIMEOUT = "hardware.sensor.timeout"
     CAMERA_FRAME = "hardware.camera.frame"
+    CAPABILITY_CHANGED = "hardware.capability.changed"
 
     # ── Attention ─────────────────────────────────────────────────────────────
     ATTENTION_SHIFTED = "attention.shifted"   # new target acquired
@@ -175,6 +176,7 @@ class EventBus:
         self._dead_letter: Deque[Event] = deque(maxlen=self.DEAD_LETTER_MAX)
         self._running = False
         self._task: Optional[asyncio.Task] = None
+        self._handler_tasks: set = set()
         self._stats = {"published": 0, "dispatched": 0, "dead_letter": 0}
 
     # ── Subscription API ─────────────────────────────────────────────────────
@@ -263,6 +265,8 @@ class EventBus:
                 await self._task
             except asyncio.CancelledError:
                 pass
+        if self._handler_tasks:
+            await asyncio.gather(*self._handler_tasks, return_exceptions=True)
         log.info("event_bus.stopped", **self._stats)
 
     async def _dispatch_loop(self) -> None:
@@ -290,14 +294,23 @@ class EventBus:
                 continue
 
             matched = True
+            # Dispatch concurrently — a slow handler must not block safety
+            # events (OQ-3). Errors surface in _handler_done.
             try:
-                await sub.handler(event)
+                result = sub.handler(event)
             except Exception as e:
                 log.error("event_bus.handler_error",
                            event_type=event.type,
-                           handler=sub.handler.__name__,
-                           error=str(e),
-                           exc_info=True)
+                           handler=getattr(sub.handler, "__name__", "?"),
+                           error=str(e), exc_info=True)
+                result = None
+            if asyncio.iscoroutine(result):
+                task = asyncio.create_task(
+                    result,
+                    name=f"evt:{event.type}:{getattr(sub.handler, '__name__', '?')}",
+                )
+                self._handler_tasks.add(task)
+                task.add_done_callback(self._handler_done)
 
             if sub.once:
                 to_remove.append(sub)
@@ -312,6 +325,17 @@ class EventBus:
 
         self._stats["dispatched"] += 1
         telemetry.gauge("event_bus.queue_depth", self._queue.qsize())
+
+    def _handler_done(self, task: "asyncio.Task") -> None:
+        self._handler_tasks.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc:
+            log.error("event_bus.handler_error",
+                       handler=task.get_name(),
+                       error=str(exc),
+                       exc_info=exc)
 
     def stats(self) -> Dict[str, Any]:
         return {

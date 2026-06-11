@@ -1,6 +1,6 @@
 # Cosmo — STATE.md
 > Single source of truth for session continuity. Updated at end of every session; read at start.
-> Last updated: 2026-06-09
+> Last updated: 2026-06-11
 
 ---
 
@@ -8,10 +8,12 @@
 
 | Component | Code | Hardware | Notes |
 |-----------|------|----------|-------|
-| Event bus | ✅ | N/A | 4 priority levels; handlers awaited inline — see OQ-3 |
+| Event bus | ✅ | N/A | 4 priority levels; concurrent `create_task` dispatch (OQ-3 ✅); sync handlers tolerated |
 | Personality engine | ✅ | N/A | mood/energy/arousal/attachment decay |
-| State machine (HSM) | ✅ | N/A | 30-state; ownership boundary with behavior tree undefined — see OQ-4 |
-| Behavior tree | ✅ | N/A | py_trees; both HSM and BT running simultaneously — see OQ-4 |
+| Capability registry | ✅ | N/A | core/capabilities.py; BT gates on `has_all`; snapshot in sensor_monitor |
+| Action router | ✅ | N/A | core/action_router.py — sole actuator authority; all 16 Intents have executors |
+| State machine (HSM) | 📦 Archived | N/A | archive/state_machine.py — BT is sole decision authority (OQ-4 ✅) |
+| Behavior tree | ✅ | N/A | py_trees, 56 nodes; capability-gated social branches; owns wander/idle |
 | Episodic memory | ✅ | N/A | SQLite; blocking reads — KI-016 aiosqlite migration pending |
 | Working memory | ✅ | N/A | 5-min TTL RAM |
 | Spatial memory | ✅ | N/A | Room fingerprints JSON |
@@ -19,8 +21,8 @@
 | Face recognition | ✅ | ✅ Active | SFace — Madhan ~95%, Indhu ~75% (re-enroll needed) |
 | Emotion detection | ✅ | ✅ Active | DeepFace 7-emotion |
 | Audio pipeline | ✅ | ✅ Active | hey_jarvis → STT → Claude → TTS → JBL Flip 5 |
-| Token budget | ⚠️ Duplicate | N/A | Two separate trackers (cognition/llm.py + cognition/mind.py); neither persists to disk — see OQ-5 |
-| LLM routing | ⚠️ Duplicate | N/A | Two call paths (LLMInterface + direct anthropic client in mind.py) — see OQ-6 |
+| Token budget | ✅ Unified | N/A | Single TokenBudget (cognition/llm.py); persists to memory_meta SQLite, survives restarts (OQ-5 ✅) |
+| LLM routing | ✅ Unified | N/A | LLMInterface only; D4 two-tier (ambient→Ollama-first, person→Claude direct); LLMRouter + mind direct client deleted (OQ-6 ✅) |
 | OLED eyes | ⚠️ Terminal | ⚠️ Not wired | Hardware arrived — wire now (0x3C left, 0x3D right with A0 bridged) |
 | BH1750 light | ✅ Enabled | ✅ Wired | available: true in hardware.yaml; BH1750Sensor in sensor_manager.py |
 | ESP32-S3 bridge | ✅ Code done | ⚠️ Not connected | hardware/esp32_bridge.py; all SENSORS flags False (mock mode) |
@@ -39,7 +41,7 @@
 
 ## Next Priority
 
-**Phase 1 of docs/COSMO_MASTER_PLAN.md — brain foundation (software only).** Archive HSM + pet_brain + behavior_engine via port-before-archive checklist; land capability registry + intent model + action router; unify LLM paths and token budget. Wiring is deferred — the soldering plan becomes a Phase 4 doc (docs/HARDWARE_PLAN.md).
+**Phase 1 COMPLETE (2026-06-11) — STOPPED at gate, awaiting Madhan's review.** All 14 items done (see docs/COSMO_MASTER_PLAN.md Phase 1 + docs/PHASE1_MIGRATION.md, 30/30 boxes). Migration-completeness check passed: no prod imports of archived modules; all 16 Intents router-reachable; brain + safety + budget suites green (102 brain/budget tests pass). **Phase 2 entry prerequisite: perception/audio deep-dive.** Pre-existing test debt (predates Phase 1, 26 failures): tests/unit/test_new_systems.py + test_phase1.py + test_safety_paths MotorStby reference classes that never existed (PIRSensor, MotorSafetyError); tests/hardware/test_esp32_bridge.py hits `_mock` attr drift. Wiring deferred to Phase 4 doc.
 
 <details><summary>Wiring sequence (deferred — reference for Phase 4 doc)</summary>
 
@@ -60,9 +62,10 @@
 |---|----------|--------|
 | OQ-1 | ESP32 has no local cliff reflex — all sensor→action round-trips through Pi. If Pi is busy, cliff-stop latency is unbounded. Implement `Pin.irq` on cliff pins in esp32/main.py for immediate local stop. | Safety |
 | OQ-2 | `_outq` in esp32/main.py is an unbounded plain list. At 10 Hz polling with Pi busy, it grows without bound. Add bounded deque with drop-oldest policy. | Reliability |
-| OQ-3 | event_bus.py awaits handlers inline (not `create_task`). A slow CLIFF_DETECTED handler blocks the entire event loop. Switch to `asyncio.create_task` dispatch. | Latency |
-| OQ-4 | Both py_trees behavior tree and 30-state HSM run simultaneously in cosmo_demo.py with no documented ownership boundary. Define split or kill one. | Architecture |
-| OQ-5 | TokenBudget in cognition/llm.py and _DailyBudget in cognition/mind.py are separate and neither persists to disk. Unify into one class; persist to the **memory_meta SQLite table** (decided 2026-06-10 — atomic RMW, no JSON races). | Reliability |
-| OQ-6 | THREE LLM call paths, not two: LLMInterface (prod, conversation.py), LLMRouter (tests only — dead in prod, delete), mind.py direct client. Unify on LLMInterface (decided 2026-06-10). | Maintainability |
-| OQ-7 | Two sub-items in cognition/llm.py: **(a)** `generate_streaming` logs usage but never calls `token_budget.record()` — the main conversation path is UNCOUNTED against the 100K daily limit. **Phase-1 prerequisite for budget persistence (OQ-5)** — fix recording before unifying/persisting, otherwise we persist a lie. **(b)** No prompt caching (`cache_control`) on the repeated system prompt — independent savings, can land any time. | Cost |
-| OQ-8 | `navigation._follow_loop` registers `@bus.on(PERSON_DETECTED)` inside the loop body (navigation.py:254) — one leaked subscription per follow command, dispatched forever. | Reliability |
+| ~~OQ-3~~ | ✅ Resolved 2026-06-11 — event_bus dispatches via `create_task` (strong refs + done-callback error logging; sync handlers tolerated; drained on stop). | Latency |
+| ~~OQ-4~~ | ✅ Resolved 2026-06-11 — HSM archived (archive/state_machine.py); BT is sole decision authority, router sole actuator. | Architecture |
+| ~~OQ-5~~ | ✅ Resolved 2026-06-11 — single TokenBudget; persists per-day total to memory_meta via atomic increment UPSERT; resumes on restart. Tests isolated via tests/conftest.py. | Reliability |
+| ~~OQ-6~~ | ✅ Resolved 2026-06-11 — LLMRouter deleted; mind.py routes through `LLMInterface.generate_once` (D4 two-tier). | Maintainability |
+| ~~OQ-7~~ | ✅ Resolved 2026-06-11 — (a) generate_streaming budget-gated + records usage. (b) cache_control added, but static prefix ≈300 tokens < Haiku's 2048-token cache minimum → currently a no-op; becomes live when the prompt grows. | Cost |
+| ~~OQ-8~~ | ✅ Resolved 2026-06-11 — `_follow_loop` unsubscribes its PERSON_DETECTED handler in `finally`. | Reliability |
+| OQ-9 | Pre-existing test debt: 26 failures across test_new_systems / test_phase1 / test_esp32_bridge / MotorStby reference APIs that never existed (PIRSensor, MotorSafetyError) or drifted (`_mock` vs `is_mock` in esp32_bridge). Rewrite or delete during Phase 2 perception/audio deep-dive. | Hygiene |

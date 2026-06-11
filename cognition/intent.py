@@ -1,5 +1,5 @@
 """
-Intent parser — offline, Tamil+English command matching.
+Voice command parser — offline, Tamil+English command matching.
 
 Fast pattern matching without LLM. Returns None if no match → let LLM handle.
 Patterns cover Tanglish phrases used in the Banter Squad friend group style.
@@ -17,7 +17,7 @@ log = get_logger(__name__)
 
 
 @dataclass
-class Intent:
+class VoiceCommand:
     name:       str
     action:     str
     confidence: float
@@ -25,10 +25,10 @@ class Intent:
     params:     Dict = field(default_factory=dict)
 
     def __str__(self) -> str:
-        return f"Intent({self.name}, conf={self.confidence:.2f}, action={self.action})"
+        return f"VoiceCommand({self.name}, conf={self.confidence:.2f}, action={self.action})"
 
 
-# ── Intent definitions ────────────────────────────────────────────────────────
+# ── Voice command definitions ────────────────────────────────────────────────────────
 
 _INTENTS: Dict[str, Dict] = {
     "come_here": {
@@ -168,9 +168,9 @@ def _word_match(pattern: str, text: str) -> bool:
 
 class IntentParser:
 
-    def parse(self, text: str) -> Optional[Intent]:
+    def parse(self, text: str) -> Optional[VoiceCommand]:
         norm = _normalise(text)
-        best_match: Optional[Intent] = None
+        best_match: Optional[VoiceCommand] = None
         best_pattern_len = 0
 
         for name, data in _INTENTS.items():
@@ -179,7 +179,7 @@ class IntentParser:
                     # Prefer longer pattern matches (more specific)
                     if len(pattern) > best_pattern_len:
                         best_pattern_len = len(pattern)
-                        best_match = Intent(
+                        best_match = VoiceCommand(
                             name=name,
                             action=data["action"],
                             confidence=min(1.0, len(pattern) / max(len(norm), 1) + 0.6),
@@ -193,7 +193,7 @@ class IntentParser:
                      text=text[:50])
         return best_match
 
-    async def parse_and_publish(self, text: str) -> Optional[Intent]:
+    async def parse_and_publish(self, text: str) -> Optional[VoiceCommand]:
         intent = self.parse(text)
         if intent:
             await bus.publish(Event(

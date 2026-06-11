@@ -93,63 +93,63 @@ class TestNavigationSafety:
 
 # ── Mind rule engine safety ────────────────────────────────────────────────────
 
+def _make_safety_mind():
+    from cognition.mind import CosmoMind
+    mind = CosmoMind.__new__(CosmoMind)
+    mind._running = True
+    mind._was_dark = False
+    mind._obstacle_warn = False
+    mind._enabled = False
+    mind._last_spoke = 0.0
+    mind._trigger_last = {}
+    mind._morning_day = -1
+    mind._wound_down = False
+    mind._budget_lock = asyncio.Lock()
+    mind._speech_in_flight = asyncio.Event()
+    mind._is_busy = lambda: False
+    return mind
+
+
 class TestMindRuleEngineSafety:
     """
-    Obstacle detected by rule engine → motor stop + surprised eyes.
-    Uses mock sensor_manager and motor_controller.
+    Obstacle detected by rule engine → Intent.STOP emitted via action router.
     """
 
     def test_obstacle_stop_fires_when_dist_below_25cm(self):
         from cognition.mind import CosmoMind
-        mind = CosmoMind.__new__(CosmoMind)
-        mind._running = True
-        mind._was_dark = False
-        mind._obstacle_warn = False
-        mind._last_action = 0.0
-        mind._enabled = False
-        mind._client = None
-
-        stop_called = []
+        from core.intents import Intent
+        mind = _make_safety_mind()
+        mock_router = MagicMock()
 
         async def _tick():
             with patch("cognition.mind.sensor_manager") as sm, \
-                 patch("cognition.mind.motor_controller") as mc, \
-                 patch("cognition.mind.eye_engine"), \
-                 patch("cognition.mind.sounds"):
+                 patch("cognition.mind.router", mock_router), \
+                 patch.object(CosmoMind, "_hour", staticmethod(lambda: 12)):
                 sm.get_distance_cm.return_value = 10.0
                 sm.get_lux.return_value = 300.0
-                mc.is_moving = False
-                mc.stop = AsyncMock(side_effect=lambda: stop_called.append(True))
                 await mind._rule_tick()
 
         asyncio.run(_tick())
-        assert stop_called, "motor_controller.stop() was not called on obstacle < 25cm"
+        emitted = [c.args[0] for c in mock_router.emit.call_args_list]
+        assert Intent.STOP in emitted, "Intent.STOP not emitted on obstacle < 25cm"
 
     def test_no_stop_when_dist_above_25cm(self):
         from cognition.mind import CosmoMind
-        mind = CosmoMind.__new__(CosmoMind)
-        mind._running = True
-        mind._was_dark = False
-        mind._obstacle_warn = False
-        mind._last_action = 0.0
-        mind._enabled = False
-        mind._client = None
-
-        stop_called = []
+        from core.intents import Intent
+        mind = _make_safety_mind()
+        mock_router = MagicMock()
 
         async def _tick():
             with patch("cognition.mind.sensor_manager") as sm, \
-                 patch("cognition.mind.motor_controller") as mc, \
-                 patch("cognition.mind.eye_engine"), \
-                 patch("cognition.mind.sounds"):
+                 patch("cognition.mind.router", mock_router), \
+                 patch.object(CosmoMind, "_hour", staticmethod(lambda: 12)):
                 sm.get_distance_cm.return_value = 80.0
                 sm.get_lux.return_value = 300.0
-                mc.is_moving = False
-                mc.stop = AsyncMock(side_effect=lambda: stop_called.append(True))
                 await mind._rule_tick()
 
         asyncio.run(_tick())
-        assert not stop_called, "motor_controller.stop() should NOT fire at dist=80cm"
+        emitted = [c.args[0] for c in mock_router.emit.call_args_list]
+        assert Intent.STOP not in emitted, "Intent.STOP should NOT fire at dist=80cm"
 
 
 # ── Motor driver STBY e-stop ──────────────────────────────────────────────────
@@ -178,28 +178,21 @@ class TestMotorStby:
         asyncio.run(_run())
 
     def test_obstacle_warn_flag_prevents_duplicate_stops(self):
-        """_obstacle_warn flag prevents hammering stop() every rule tick."""
+        """_obstacle_warn flag prevents hammering STOP every rule tick."""
         from cognition.mind import CosmoMind
-        mind = CosmoMind.__new__(CosmoMind)
-        mind._running = True
-        mind._was_dark = False
+        from core.intents import Intent
+        mind = _make_safety_mind()
         mind._obstacle_warn = True  # already warned
-        mind._last_action = 0.0
-        mind._enabled = False
-        mind._client = None
-
-        stop_called = []
+        mock_router = MagicMock()
 
         async def _tick():
             with patch("cognition.mind.sensor_manager") as sm, \
-                 patch("cognition.mind.motor_controller") as mc, \
-                 patch("cognition.mind.eye_engine"), \
-                 patch("cognition.mind.sounds"):
+                 patch("cognition.mind.router", mock_router), \
+                 patch.object(CosmoMind, "_hour", staticmethod(lambda: 12)):
                 sm.get_distance_cm.return_value = 10.0
                 sm.get_lux.return_value = 300.0
-                mc.is_moving = False
-                mc.stop = AsyncMock(side_effect=lambda: stop_called.append(True))
                 await mind._rule_tick()
 
         asyncio.run(_tick())
-        assert not stop_called, "_obstacle_warn already set — stop should not fire again"
+        emitted = [c.args[0] for c in mock_router.emit.call_args_list]
+        assert Intent.STOP not in emitted, "_obstacle_warn set — STOP should not fire again"

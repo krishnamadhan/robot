@@ -1,28 +1,29 @@
 """
-B2 — LLM routing + budget guard tests (I3, I4, I6).
+B2 — LLM routing + budget guard tests (I3, I4, I6) — D3: LLMInterface is the
+single LLM call path (LLMRouter/OllamaProvider/ClaudeProvider deleted).
 
 Tests:
   - TokenBudget: limit enforcement, daily reset, per-call tracking
-  - OllamaProvider: happy path, failure path
-  - ClaudeProvider: budget gate, happy path
-  - LLMRouter: Ollama-first, Claude fallback, both-down degradation
-  - I3: budget exhausted → Claude silenced, Ollama continues
-  - I4: Ollama succeeds → Claude never called
-  - I6: Ollama down → Claude fallback; both down → empty (no crash)
+  - LLMInterface.generate_once: Ollama-first, Claude fallback, claude_direct,
+    budget gating ("budget_exhausted"), both-down degradation ("unavailable")
+  - _system_to_blocks: static block carries cache_control, dynamic tail does not
 """
 
-import asyncio
 import sys
-import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from cognition.llm import TokenBudget, OllamaProvider, ClaudeProvider, LLMRouter
+from cognition.llm import (
+    LLMInterface,
+    TokenBudget,
+    _PROMPT_STATIC,
+    _system_to_blocks,
+)
+import cognition.llm as llm_mod
 
 
 # ── TokenBudget ───────────────────────────────────────────────────────────────
@@ -71,7 +72,6 @@ class TestTokenBudget:
         assert b.remaining == 0
 
     def test_day_reset(self):
-        import datetime
         b = TokenBudget(100)
         b.record(90)
         assert b.day_total == 90
@@ -83,269 +83,174 @@ class TestTokenBudget:
         assert b.claude_allowed()
 
 
-# ── OllamaProvider ────────────────────────────────────────────────────────────
+# ── Fixtures ──────────────────────────────────────────────────────────────────
 
-class TestOllamaProvider:
-
-    @pytest.mark.asyncio
-    async def test_health_check_success(self):
-        provider = OllamaProvider()
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-
-        with patch("httpx.AsyncClient") as mock_client_cls:
-            mock_cm = AsyncMock()
-            mock_cm.__aenter__ = AsyncMock(return_value=MagicMock(get=AsyncMock(return_value=mock_response)))
-            mock_cm.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_cm
-            result = await provider.health_check()
-
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_health_check_failure(self):
-        provider = OllamaProvider()
-        with patch("httpx.AsyncClient") as mock_client_cls:
-            mock_cm = AsyncMock()
-            cm_instance = MagicMock()
-            cm_instance.get = AsyncMock(side_effect=ConnectionError("refused"))
-            mock_cm.__aenter__ = AsyncMock(return_value=cm_instance)
-            mock_cm.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_cm
-            result = await provider.health_check()
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_generate_success(self):
-        provider = OllamaProvider()
-        fake_data = {"message": {"content": "Hello I am Cosmo"}, "eval_count": 5}
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.raise_for_status = MagicMock()
-        mock_response.json.return_value = fake_data
-
-        with patch("httpx.AsyncClient") as mock_client_cls:
-            mock_cm = AsyncMock()
-            cm_instance = MagicMock()
-            cm_instance.post = AsyncMock(return_value=mock_response)
-            mock_cm.__aenter__ = AsyncMock(return_value=cm_instance)
-            mock_cm.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_cm
-
-            result = await provider.generate("hi", "you are cosmo")
-
-        assert result is not None
-        assert result["text"] == "Hello I am Cosmo"
-        assert result["backend"].startswith("ollama/")
-
-    @pytest.mark.asyncio
-    async def test_generate_returns_none_on_failure(self):
-        provider = OllamaProvider()
-        with patch("httpx.AsyncClient") as mock_client_cls:
-            mock_cm = AsyncMock()
-            cm_instance = MagicMock()
-            cm_instance.post = AsyncMock(side_effect=ConnectionError("no ollama"))
-            mock_cm.__aenter__ = AsyncMock(return_value=cm_instance)
-            mock_cm.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_cm
-
-            result = await provider.generate("hi", "system")
-
-        assert result is None
-        assert provider._healthy is False
+OLLAMA_RESULT = {"text": "Hi from Ollama!", "backend": "ollama/llama3.2:1b", "tokens": 5}
+CLAUDE_RESULT = {"text": "Hi from Claude!", "backend": "claude/test", "tokens": 20}
 
 
-# ── ClaudeProvider ────────────────────────────────────────────────────────────
-
-class TestClaudeProvider:
-
-    @pytest.mark.asyncio
-    async def test_returns_none_when_budget_exhausted(self):
-        budget = TokenBudget(100)
-        budget.record(100)  # exhaust
-        provider = ClaudeProvider(budget=budget)
-
-        result = await provider.generate("hi", "system")
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_no_api_call_when_no_key(self):
-        budget = TokenBudget(100_000)
-        provider = ClaudeProvider(budget=budget)
-        api_calls = {"n": 0}
-
-        # Patch _get_client to raise
-        def _fail_client():
-            raise RuntimeError("ANTHROPIC_API_KEY not set")
-        provider._get_client = _fail_client
-
-        result = await provider.generate("hi", "system")
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_records_tokens_to_budget(self):
-        budget = TokenBudget(100_000)
-        provider = ClaudeProvider(budget=budget)
-
-        # Mock the Anthropic client
-        mock_response = MagicMock()
-        mock_response.content = [MagicMock(text="Hello")]
-        mock_response.usage.input_tokens = 50
-        mock_response.usage.output_tokens = 10
-
-        mock_client = AsyncMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_response)
-        provider._client = mock_client
-
-        result = await provider.generate("hi", "system")
-
-        assert result is not None
-        assert result["text"] == "Hello"
-        assert budget.day_total == 60  # 50 + 10
+@pytest.fixture
+def iface(monkeypatch):
+    """Fresh LLMInterface with a fresh module-level token_budget and an API key
+    set, so the Claude path is reachable (mocked — never hits the network)."""
+    monkeypatch.setattr(llm_mod, "token_budget", TokenBudget(100_000))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    return LLMInterface()
 
 
-# ── LLMRouter ─────────────────────────────────────────────────────────────────
+def exhaust_budget(monkeypatch, limit: int = 100) -> TokenBudget:
+    b = TokenBudget(limit)
+    b.record(limit)
+    assert b.over_limit()
+    monkeypatch.setattr(llm_mod, "token_budget", b)
+    return b
 
-class TestLLMRouter:
 
-    @pytest.mark.asyncio
-    async def test_i4_ollama_first_when_available(self):
-        """I4: Ollama available → uses Ollama, never calls Claude."""
-        budget = TokenBudget(100_000)
-        ollama = OllamaProvider()
-        claude = ClaudeProvider(budget=budget)
+# ── LLMInterface.generate_once routing ────────────────────────────────────────
 
-        claude_calls = {"n": 0}
-        original_generate = claude.generate
-        async def spy_claude(*args, **kwargs):
-            claude_calls["n"] += 1
-            return await original_generate(*args, **kwargs)
-        claude.generate = spy_claude
+class TestGenerateOnceRouting:
 
-        # Mock Ollama to succeed
-        ollama.generate = AsyncMock(return_value={
-            "text": "Hi from Ollama!",
-            "backend": "ollama/llama3.2:1b",
-            "tokens": 5,
-        })
+    async def test_i4_ollama_first_when_available(self, iface):
+        """I4: Ollama succeeds → result is Ollama's, Claude never called."""
+        iface._call_ollama = AsyncMock(return_value=dict(OLLAMA_RESULT))
+        iface._call_claude = AsyncMock(return_value=dict(CLAUDE_RESULT))
 
-        router = LLMRouter(ollama=ollama, claude=claude, budget=budget)
-        result = await router.generate("hello", "system prompt")
+        result = await iface.generate_once("hello", "system prompt")
 
         assert result["text"] == "Hi from Ollama!"
         assert "ollama" in result["backend"]
-        assert claude_calls["n"] == 0, "Claude should not be called when Ollama succeeds"
+        assert "latency_ms" in result
+        iface._call_ollama.assert_awaited_once()
+        iface._call_claude.assert_not_awaited()
 
-    @pytest.mark.asyncio
-    async def test_i4_i6_claude_fallback_when_ollama_down(self):
-        """I4+I6: Ollama fails → Claude is called as fallback."""
-        budget = TokenBudget(100_000)
-        ollama = OllamaProvider()
-        claude = ClaudeProvider(budget=budget)
+    async def test_i4_i6_claude_fallback_when_ollama_returns_none(self, iface):
+        """I4+I6: Ollama returns None → Claude fallback used."""
+        iface._call_ollama = AsyncMock(return_value=None)
+        iface._call_claude = AsyncMock(return_value=dict(CLAUDE_RESULT))
 
-        # Ollama fails
-        ollama.generate = AsyncMock(return_value=None)
-
-        # Claude succeeds
-        mock_response_data = {
-            "text": "Hi from Claude!",
-            "backend": "claude/claude-haiku-4-5-20251001",
-            "tokens": 20,
-        }
-        claude.generate = AsyncMock(return_value=mock_response_data)
-
-        router = LLMRouter(ollama=ollama, claude=claude, budget=budget)
-        result = await router.generate("hello", "system prompt")
+        result = await iface.generate_once("hello", "system prompt")
 
         assert result["text"] == "Hi from Claude!"
         assert "claude" in result["backend"]
-        claude.generate.assert_awaited_once()
+        iface._call_claude.assert_awaited_once()
 
-    @pytest.mark.asyncio
-    async def test_i6_both_down_returns_empty_no_crash(self):
-        """I6: Both Ollama and Claude fail → returns empty dict, no exception."""
-        budget = TokenBudget(100_000)
-        ollama = OllamaProvider()
-        claude = ClaudeProvider(budget=budget)
+    async def test_i6_claude_fallback_when_ollama_raises(self, iface):
+        """I6: Ollama raises → marked unavailable, Claude fallback used."""
+        iface._call_ollama = AsyncMock(side_effect=ConnectionError("no ollama"))
+        iface._call_claude = AsyncMock(return_value=dict(CLAUDE_RESULT))
 
-        ollama.generate = AsyncMock(return_value=None)
-        claude.generate = AsyncMock(return_value=None)
+        result = await iface.generate_once("hello", "system prompt")
 
-        router = LLMRouter(ollama=ollama, claude=claude, budget=budget)
-        result = await router.generate("hello", "system prompt")
+        assert result["text"] == "Hi from Claude!"
+        assert iface._ollama_available is False
+
+    async def test_ollama_skipped_when_known_down(self, iface):
+        """_ollama_available=False → Ollama not retried, straight to Claude."""
+        iface._ollama_available = False
+        iface._call_ollama = AsyncMock(return_value=dict(OLLAMA_RESULT))
+        iface._call_claude = AsyncMock(return_value=dict(CLAUDE_RESULT))
+
+        result = await iface.generate_once("hello", "system prompt")
+
+        assert "claude" in result["backend"]
+        iface._call_ollama.assert_not_awaited()
+
+    async def test_claude_direct_never_calls_ollama(self, iface):
+        """D4: claude_direct=True skips Ollama entirely."""
+        iface._call_ollama = AsyncMock(return_value=dict(OLLAMA_RESULT))
+        iface._call_claude = AsyncMock(return_value=dict(CLAUDE_RESULT))
+
+        result = await iface.generate_once(
+            "hello", "system prompt", claude_direct=True)
+
+        assert "claude" in result["backend"]
+        iface._call_ollama.assert_not_awaited()
+        iface._call_claude.assert_awaited_once()
+
+    async def test_i3_budget_exhausted_silences_claude(self, monkeypatch):
+        """I3: budget exhausted → backend 'budget_exhausted', Claude not called."""
+        exhaust_budget(monkeypatch)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+        iface = LLMInterface()
+        iface._call_ollama = AsyncMock(return_value=None)  # Ollama down too
+        iface._call_claude = AsyncMock(return_value=dict(CLAUDE_RESULT))
+
+        result = await iface.generate_once("hello", "system prompt")
+
+        assert result["text"] == ""
+        assert result["backend"] == "budget_exhausted"
+        iface._call_claude.assert_not_awaited()
+
+    async def test_i3_budget_exhausted_ollama_still_answers(self, monkeypatch):
+        """I3: budget exhausted but Ollama up → Ollama answers, Claude silent."""
+        exhaust_budget(monkeypatch)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+        iface = LLMInterface()
+        iface._call_ollama = AsyncMock(return_value=dict(OLLAMA_RESULT))
+        iface._call_claude = AsyncMock(return_value=dict(CLAUDE_RESULT))
+
+        result = await iface.generate_once("hello", "system prompt")
+
+        assert result["text"] == "Hi from Ollama!"
+        iface._call_claude.assert_not_awaited()
+
+    async def test_i6_both_down_returns_unavailable_no_crash(self, iface):
+        """I6: Ollama None + Claude raises → backend 'unavailable', no exception."""
+        iface._call_ollama = AsyncMock(return_value=None)
+        iface._call_claude = AsyncMock(side_effect=RuntimeError("Claude crashed"))
+
+        result = await iface.generate_once("hello", "system prompt")
 
         assert result["text"] == ""
         assert result["backend"] == "unavailable"
 
-    @pytest.mark.asyncio
-    async def test_i3_budget_exhausted_silences_claude_not_ollama(self):
-        """I3: Budget exhausted → Claude silenced, but Ollama still tried."""
-        budget = TokenBudget(100)
-        budget.record(100)  # exhaust Claude
-        assert not budget.claude_allowed()
+    async def test_no_api_key_returns_unavailable(self, monkeypatch):
+        """No ANTHROPIC_API_KEY → Claude path skipped, backend 'unavailable'."""
+        monkeypatch.setattr(llm_mod, "token_budget", TokenBudget(100_000))
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        iface = LLMInterface()
+        iface._call_ollama = AsyncMock(return_value=None)
+        iface._call_claude = AsyncMock(return_value=dict(CLAUDE_RESULT))
 
-        ollama = OllamaProvider()
-        claude = ClaudeProvider(budget=budget)
+        result = await iface.generate_once("hello", "system prompt")
 
-        claude_calls = {"n": 0}
-        async def spy_claude(*args, **kwargs):
-            claude_calls["n"] += 1
-            return {"text": "Claude!", "backend": "claude/test", "tokens": 10}
-        claude.generate = spy_claude
+        assert result["backend"] == "unavailable"
+        iface._call_claude.assert_not_awaited()
 
-        # Ollama succeeds
-        ollama.generate = AsyncMock(return_value={
-            "text": "Ollama still works!",
-            "backend": "ollama/llama",
-            "tokens": 5,
-        })
+    async def test_no_exception_on_all_failures(self, iface):
+        """generate_once must never raise regardless of backend failures."""
+        iface._call_ollama = AsyncMock(side_effect=RuntimeError("Ollama crashed"))
+        iface._call_claude = AsyncMock(side_effect=RuntimeError("Claude crashed"))
 
-        router = LLMRouter(ollama=ollama, claude=claude, budget=budget)
-        result = await router.generate("hello", "system")
-
-        assert result["text"] == "Ollama still works!"
-        assert claude_calls["n"] == 0, "Claude must be silenced when budget exhausted"
-
-    @pytest.mark.asyncio
-    async def test_i3_budget_exhausted_both_down_is_non_verbal(self):
-        """I3+I6: Budget exhausted AND Ollama down → non-verbal only (empty text, no crash)."""
-        budget = TokenBudget(100)
-        budget.record(100)  # exhaust
-
-        ollama = OllamaProvider()
-        claude = ClaudeProvider(budget=budget)
-
-        ollama.generate = AsyncMock(return_value=None)
-        # Claude would fail anyway due to budget, but shouldn't even be called
-        claude_calls = {"n": 0}
-        async def spy_claude(*a, **kw):
-            claude_calls["n"] += 1
-            return None
-        claude.generate = spy_claude
-
-        router = LLMRouter(ollama=ollama, claude=claude, budget=budget)
-        result = await router.generate("hello", "system")
-
-        assert result["text"] == ""
-        assert claude_calls["n"] == 0, "Budget-exhausted Claude should never be called"
-
-    @pytest.mark.asyncio
-    async def test_router_no_exception_on_all_failures(self):
-        """Router must never raise exceptions regardless of backend failures."""
-        budget = TokenBudget(100_000)
-        ollama = OllamaProvider()
-        claude = ClaudeProvider(budget=budget)
-
-        # Both raise unexpected exceptions
-        ollama.generate = AsyncMock(side_effect=RuntimeError("Ollama crashed"))
-        claude.generate = AsyncMock(side_effect=RuntimeError("Claude crashed"))
-
-        router = LLMRouter(ollama=ollama, claude=claude, budget=budget)
-
-        # Should not raise
         try:
-            result = await router.generate("hello", "system")
-            # If exceptions propagate, the router is broken
+            result = await iface.generate_once("hello", "system prompt")
         except RuntimeError as e:
-            pytest.fail(f"Router raised RuntimeError: {e}")
+            pytest.fail(f"generate_once raised RuntimeError: {e}")
+        assert result["text"] == ""
+
+
+# ── _system_to_blocks (prompt caching) ────────────────────────────────────────
+
+class TestSystemToBlocks:
+
+    def test_static_block_cached_dynamic_tail_not(self):
+        system = _PROMPT_STATIC + "\n\nCurrent state: happy\nTime: evening"
+        blocks = _system_to_blocks(system)
+
+        assert len(blocks) == 2
+        assert blocks[0]["text"] == _PROMPT_STATIC
+        assert blocks[0]["cache_control"] == {"type": "ephemeral"}
+        assert "Current state: happy" in blocks[1]["text"]
+        assert "cache_control" not in blocks[1]
+
+    def test_no_dynamic_tail_single_block(self):
+        blocks = _system_to_blocks(_PROMPT_STATIC)
+        assert len(blocks) == 1
+        assert blocks[0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_custom_system_prompt_whole_block_cached(self):
+        """Non-Cosmo system prompt → one block, still cacheable."""
+        blocks = _system_to_blocks("You are a one-shot commentary generator.")
+        assert len(blocks) == 1
+        assert blocks[0]["text"] == "You are a one-shot commentary generator."
+        assert blocks[0]["cache_control"] == {"type": "ephemeral"}

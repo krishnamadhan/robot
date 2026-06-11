@@ -66,15 +66,15 @@ Before Phase 1 reports done:
 - [x] 1.3 Feed registry: esp32_bridge `mark_seen` per reading (simulate in mock mode); vision_loop marks VISION/FACE_ID/EMOTION_READ; ESP32 hb → LOCOMOTION; bridge disconnect → FAILED; BH1750 poll → AMBIENT_LIGHT
 - [x] 1.4 `core/intents.py` Intent enum + `core/action_router.py` (sole actuator authority; D7 policies; drift guard 3 verified: APPROACH w/o LOCOMOTION → leaning eyes + chirp)
 - [x] 1.5 Port behavior_engine routines + phrases into router (dance/happy/love/look_around + all 5 trigger phrase banks + sound gate + approach steering + obstacle gate + learning outcomes); cosmo_demo USER_INTENT handler + on_emotion physical reactions now emit Intents. Trigger *conditions* (morning/curiosity/memory/wind-down) re-home in mind rule engine (1.8b); idle variety re-homes in BT (1.9)
-- [ ] 1.6 Archive HSM + pet_brain + behavior_engine; strip imports (cosmo_demo, sensor_manager, behavior/engine refs)
-- [ ] 1.7 Rename `cognition/intent.py` Intent → VoiceCommand; wire to emit Intents (D2)
-- [ ] 1.8a Fix cost leak FIRST (OQ-7a): `generate_streaming` (cognition/llm.py) never calls `token_budget.record()` — main conversation path is uncounted. **Prerequisite for 1.8b and 1.11** — record before unifying, unify before persisting, or we persist a lie. Add prompt caching (`cache_control` on system prompt, OQ-7b) while in there.
-- [ ] 1.8b mind.py: rule engine + LLM path emit Intents only; route LLM through LLMInterface; two-tier speech routing (D4); delete LLMRouter
-- [ ] 1.9 BT nodes gate on `reg.has_all(...)`; unusable behaviors pruned, not errored
-- [ ] 1.10 event_bus dispatch via `asyncio.create_task`; in the same pass fix the subscription leak: `navigation._follow_loop` registers `@bus.on(PERSON_DETECTED)` per call, never unsubscribes (behavior/navigation.py:254, OQ-8)
-- [ ] 1.11 Unify TokenBudget (one class), persist to memory_meta SQLite (D5) — **after 1.8a**; update STATE.md OQ-5
-- [ ] 1.12 Episodic memory READ: recall step in conversation path
-- [ ] 1.13 Migration-completeness check (exit criterion above)
+- [x] 1.6 Archive HSM + pet_brain + behavior_engine; strip imports (cosmo_demo, sensor_manager, behavior/engine refs)
+- [x] 1.7 Rename `cognition/intent.py` Intent → VoiceCommand; wire to emit Intents (D2)
+- [x] 1.8a Fix cost leak FIRST (OQ-7a): `generate_streaming` (cognition/llm.py) never calls `token_budget.record()` — main conversation path is uncounted. **Prerequisite for 1.8b and 1.11** — record before unifying, unify before persisting, or we persist a lie. Add prompt caching (`cache_control` on system prompt, OQ-7b) while in there.
+- [x] 1.8b mind.py: rule engine + LLM path emit Intents only; route LLM through LLMInterface; two-tier speech routing (D4); delete LLMRouter
+- [x] 1.9 BT nodes gate on `reg.has_all(...)`; unusable behaviors pruned, not errored
+- [x] 1.10 event_bus dispatch via `asyncio.create_task`; in the same pass fix the subscription leak: `navigation._follow_loop` registers `@bus.on(PERSON_DETECTED)` per call, never unsubscribes (behavior/navigation.py:254, OQ-8)
+- [x] 1.11 Unify TokenBudget (one class), persist to memory_meta SQLite (D5) — **after 1.8a**; update STATE.md OQ-5
+- [x] 1.12 Episodic memory READ: recall step in conversation path
+- [x] 1.13 Migration-completeness check (exit criterion above)
 - [ ] **STOP — report**
 
 ## PHASE 2 — Aliveness on current hardware

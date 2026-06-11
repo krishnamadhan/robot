@@ -38,17 +38,20 @@ from rich.panel import Panel
 from utils.logger import get_logger
 log = get_logger(__name__)
 
-from behavior.engine import behavior_engine
 from behavior.navigation import navigation
 from cognition.conversation import conversation
 from cognition.intent import intent_parser
 from cognition.mind import cosmo_mind
-from cognition.pet_brain import pet_brain
 from core.attention import attention
+from core.capabilities import (
+    CapState, Capability, bootstrap_current_hardware,
+    registry as cap_registry, sweep_loop as cap_sweep_loop,
+)
 from core.event_bus import bus, Event, EventType
+from core.intents import Intent
+from core.action_router import router as action_router
 from core.memory.episodic import episodic
 from core.personality import personality
-from core.state_machine import sm, RobotState
 from expression.eyes import EyeExpression, eye_engine
 from expression.speech import tts
 from core.behavior_tree import behavior_tree, bb as cosmo_bb
@@ -163,32 +166,6 @@ def _load_person_config() -> dict:
 
 _KNOWN_PERSONS = _load_person_config()
 
-_approaching = False   # guard against concurrent face-and-approach tasks
-
-
-async def _face_and_approach(person_x: float) -> None:
-    """Turn to face person then nudge forward — feels alive."""
-    global _approaching
-    if _approaching:
-        return
-    _approaching = True
-    try:
-        DEAD = 0.2
-        tasks = []
-        if person_x < -DEAD:
-            tasks.append(navigation.turn_left(speed=0.35, duration=abs(person_x) * 0.5))
-        elif person_x > DEAD:
-            tasks.append(navigation.turn_right(speed=0.35, duration=person_x * 0.5))
-        eye_engine.set_expression(EyeExpression.CURIOUS, duration=2.0)
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        await asyncio.sleep(0.3)
-        if _state["distance_cm"] > 80:
-            await navigation.forward(speed=0.25, duration=0.6)
-    finally:
-        _approaching = False
-
-
 async def setup_event_handlers() -> None:
     from utils.action_log import action_log
 
@@ -200,15 +177,11 @@ async def setup_event_handlers() -> None:
         person_x = event.data.get("bbox_center_x", 0.0)
 
         action_log.set_context("person_detected", f"x={person_x:.2f}")
-        # Stop any wandering immediately
+        # Stop any wandering immediately, then orient/approach via router
         if navigation.state.value == "wandering":
-            await navigation.stop()
-            await sounds.play("chirp_curious")
+            action_router.emit(Intent.STOP, source="person_detected")
+        action_router.emit(Intent.APPROACH, source="person_detected", person_x=person_x)
 
-        # Turn to face + approach (_approaching flag prevents concurrent tasks)
-        asyncio.create_task(_face_and_approach(person_x))
-
-        await sm.transition_to(RobotState.ALERT_PERSON, trigger="person_detected")
         _state["events"].append(f"Person @ x={person_x:.2f}")
 
     @bus.on(EventType.FACE_RECOGNIZED)
@@ -228,21 +201,15 @@ async def setup_event_handlers() -> None:
         action_log.set_context("face_recognized", f"{name} {conf:.0%}")
         audio_pipeline.update_person(person_id, _state.get("last_emotion") or None)
         tts.set_voice_profile(name)
-        await sm.transition_to(RobotState.INTERACTIVE, trigger="face_recognized")
 
         if name not in _state["greeted"]:
             _state["greeted"].add(name)
             if not conversation.in_conversation:
                 await conversation.start_session(person_id, name)
             conversation.set_person(person_id, name)
-
-            # Face them + play greeting chime
-            await asyncio.gather(
-                _face_and_approach(person_x),
-                sounds.play("chime_greeting"),
-                return_exceptions=True,
-            )
-            _state["events"].append(f"Greeted {name}")
+            # Greeting itself is owned by BT DoGreet → router (D6);
+            # orient toward them so the greet lands facing the person.
+            action_router.emit(Intent.APPROACH, source="face_recognized", person_x=person_x)
 
     @bus.on(EventType.FACE_UNKNOWN)
     async def on_unknown(event: Event) -> None:
@@ -251,8 +218,7 @@ async def setup_event_handlers() -> None:
         _state["last_person_time"] = time.monotonic()
         _state["events"].append("Unknown face")
         action_log.set_context("face_unknown", "stranger")
-        eye_engine.set_expression(EyeExpression.CURIOUS, duration=3.0)
-        await sounds.play("chirp_curious")
+        action_router.emit(Intent.EXPRESS_CURIOSITY, source="face_unknown")
 
     @bus.on(EventType.PERSON_LOST)
     async def on_lost(event: Event) -> None:
@@ -270,10 +236,8 @@ async def setup_event_handlers() -> None:
         tts.set_voice_profile(None)
         if conversation.in_conversation:
             await conversation.end_session()
-        await sm.transition_to(RobotState.IDLE_CURIOUS, trigger="person_lost")
         # Look around for them
-        eye_engine.set_expression(EyeExpression.CURIOUS, duration=3.0)
-        eye_engine.set_pupil(-0.8, 0)
+        action_router.emit(Intent.EXPRESS_CURIOSITY, source="person_lost", variant="look_around")
 
     @bus.on(EventType.EMOTION_DETECTED)
     async def on_emotion(event: Event) -> None:
@@ -292,20 +256,17 @@ async def setup_event_handlers() -> None:
 
         reaction = _EMOTION_REACTIONS.get(emotion.lower(), _EMOTION_REACTIONS["neutral"])
         eye_engine.set_expression(reaction["expr"], duration=4.0)
-        tasks = []
         if reaction["sound"]:
-            tasks.append(sounds.play(reaction["sound"]))
+            asyncio.create_task(sounds.play(reaction["sound"]))
 
-        # Physical reaction to emotion
+        # Physical reaction to emotion — via intents, router decides the body
         if emotion == "happy":
-            tasks.append(behavior_engine.happy_reaction())
+            action_router.emit(Intent.EXPRESS_JOY, source="on_emotion", speak=False)
         elif emotion == "sad" and _state["distance_cm"] > 60:
-            tasks.append(navigation.forward(speed=0.2, duration=1.0))
+            action_router.emit(Intent.COMFORT, source="on_emotion",
+                               name=cosmo_bb.person_name)
         elif emotion == "angry":
-            tasks.append(navigation.backward(speed=0.2, duration=0.6))
-
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            action_router.emit(Intent.FLEE, source="on_emotion")
 
     @bus.on(EventType.WAKE_WORD)
     async def on_wake(event: Event) -> None:
@@ -314,7 +275,6 @@ async def setup_event_handlers() -> None:
         action_log.set_context("wake_word", word)
         eye_engine.set_expression(EyeExpression.CURIOUS, duration=3.0)
         await sounds.play("beep_ack")
-        await sm.transition_to(RobotState.LISTENING, trigger="wake_word")
 
     @bus.on(EventType.USER_INTENT)
     async def on_intent(event: Event) -> None:
@@ -322,27 +282,22 @@ async def setup_event_handlers() -> None:
         action = event.data.get("action", "?")
         _state["last_intent"] = f"{intent} → {action}"
         _state["events"].append(f"Intent: {intent}")
-        if action == "navigation.approach_person":
-            asyncio.create_task(navigation.approach_person())
-        elif action == "navigation.retreat":
-            asyncio.create_task(navigation.retreat())
-        elif action == "navigation.stop":
-            asyncio.create_task(navigation.stop())
-        elif action == "navigation.spin_360":
-            asyncio.create_task(navigation.spin_360())
-        elif action == "behavior.dance":
-            asyncio.create_task(behavior_engine.dance())
-        elif action == "behavior.happy_reaction":
-            asyncio.create_task(behavior_engine.happy_reaction())
-        elif action == "behavior.love_reaction":
-            asyncio.create_task(behavior_engine.love_reaction())
-        elif action == "state.transition.SLEEPING":
-            eye_engine.set_expression(EyeExpression.SLEEPY)
-            await sounds.play("sleep_exhale")
+        _intent_map = {
+            "navigation.approach_person": (Intent.COME, {}),
+            "navigation.retreat": (Intent.FLEE, {}),
+            "navigation.stop": (Intent.STOP, {}),
+            "navigation.spin_360": (Intent.EXPRESS_JOY, {"variant": "spin"}),
+            "behavior.dance": (Intent.EXPRESS_JOY, {"variant": "dance"}),
+            "behavior.happy_reaction": (Intent.EXPRESS_JOY, {}),
+            "behavior.love_reaction": (Intent.EXPRESS_AFFECTION, {}),
+            "behavior.look_around": (Intent.EXPRESS_CURIOSITY, {}),
+            "state.transition.SLEEPING": (Intent.SLEEP, {}),
+        }
+        if action in _intent_map:
+            mapped, params = _intent_map[action]
+            action_router.emit(mapped, source="voice_command", **params)
         elif action == "audio.mute_30s":
             sounds.mute(30)
-        elif action == "behavior.look_around":
-            asyncio.create_task(behavior_engine._look_around())
         elif action == "cosmo_mind.disable":
             cosmo_mind.disable()
         elif action == "cosmo_mind.enable":
@@ -506,7 +461,6 @@ async def main() -> None:
     from core.memory.working import wm
     await wm.start()
     await personality.start()
-    await sm.start(RobotState.IDLE_CALM)
 
     import os as _os
     _llm_key = _os.environ.get("ANTHROPIC_API_KEY", "")
@@ -566,15 +520,8 @@ async def main() -> None:
     await attention.start()
     console.print("[green]✓ Attention system[/green]")
 
-    # Behavior engine (idle behaviors + proactive speech)
-    await behavior_engine.start()
-    console.print("[green]✓ Behavior engine[/green]")
-
     await cosmo_mind.start()
     console.print("[green]✓ Cosmo Mind (rule engine)[/green]")
-
-    await pet_brain.start()
-    console.print("[green]✓ Pet Brain (movement decisions)[/green]")
 
     behavior_tree.setup()
     await behavior_tree.start()
@@ -588,6 +535,20 @@ async def main() -> None:
         console.print(f"[green]✓ Audio pipeline — wake={audio_pipeline._wake_backend}[/green]")
     else:
         console.print("[yellow]⚠ Audio pipeline — no mic (C920 not found?)[/yellow]")
+
+    # Capability registry — declare what is actually usable right now
+    bootstrap_current_hardware(cap_registry)
+    if not _camera_ok:
+        cap_registry.set_state(Capability.VISION, CapState.ABSENT, "no camera")
+    if not audio_pipeline.is_running:
+        cap_registry.set_state(Capability.HEARING, CapState.ABSENT, "no mic")
+    cap_registry.simulate(Capability.EXPRESSION, "terminal eyes")
+    if motor_controller.is_mock:
+        cap_registry.simulate(Capability.LOCOMOTION, "mock motors")
+    if servo_controller.is_mock:
+        cap_registry.simulate(Capability.HEAD_MOVEMENT, "mock servos")
+    asyncio.create_task(cap_sweep_loop(cap_registry), name="cap_sweep")
+    console.print("[green]✓ Capability registry (1 Hz sweep)[/green]")
 
     await setup_event_handlers()
     asyncio.create_task(alone_watcher())
@@ -642,7 +603,6 @@ async def main() -> None:
         await behavior_tree.stop()
         await attention.stop()
         await cosmo_mind.stop()
-        await pet_brain.stop()
         await audio_pipeline.stop()
         await motor_controller.stop(emergency=True)
         await stream_server.stop()

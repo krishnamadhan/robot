@@ -78,19 +78,14 @@ def build_dashboard(robot_state: dict) -> Layout:
     flags = [k for k, v in thresholds.items() if v]
     flags_str = ", ".join(flags) if flags else "none"
 
-    sm_state = robot_state.get("state_machine", {}).get("current", "unknown")
-    sm_time = robot_state.get("state_machine", {}).get("time_in_state_s", 0)
+    caps = robot_state.get("capabilities", {})
+    ready = sum(1 for v in caps.values() if v in ("ready", "simulated"))
+    caps_line = f"{ready}/{len(caps)} usable" if caps else "unknown"
 
-    left_content = f"""[bold]Behavioral State[/bold]
-{sm_state}
-In state: {sm_time:.0f}s
-
-[bold]Emotional State[/bold]
-"""
     layout["left"].update(Panel(
-        str(left_content) + "\n",
+        f"[bold]Capabilities[/bold]\n{caps_line}\n\n[bold]Emotional State[/bold]\n",
         title="[cyan]Personality",
-        renderable=Panel(pers_table, title=f"State: [bold yellow]{sm_state}[/]",
+        renderable=Panel(pers_table, title=f"Caps: [bold yellow]{caps_line}[/]",
                           subtitle=f"Flags: {flags_str}"),
     ))
 
@@ -192,7 +187,7 @@ async def run_monitor() -> None:
 
     from core.event_bus import bus, Event, EventType
     from core.personality import personality
-    from core.state_machine import sm, RobotState
+    from core.capabilities import registry
     from hardware.mock import mock_hardware
     from utils.telemetry import telemetry
     from perception.vision.camera import camera
@@ -201,7 +196,6 @@ async def run_monitor() -> None:
     await bus.start()
     await mock_hardware.initialize_all()
     await personality.start()
-    await sm.start(RobotState.IDLE_CALM)
 
     # Try starting camera
     cam_available = await camera.start()
@@ -233,7 +227,7 @@ async def run_monitor() -> None:
             robot_state = {
                 "personality": personality.introspect(),
                 "thresholds": personality.check_thresholds(),
-                "state_machine": sm.stats(),
+                "capabilities": registry.snapshot(),
                 "sensors": sensors,
                 "recent_events": events_data,
                 "event_bus": bus.stats(),

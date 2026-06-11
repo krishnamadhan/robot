@@ -268,6 +268,7 @@ class NavigationEngine:
                 await asyncio.sleep(0.3)
                 await motor_controller.heartbeat()
         finally:
+            bus.unsubscribe(_on_person)
             await self.stop()
             self._state = NavState.IDLE
             log.info("nav.follow_mode_end")

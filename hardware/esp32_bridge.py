@@ -13,9 +13,20 @@ from typing import Optional, Callable
 
 import serial
 
+from core.capabilities import Capability, CapState, registry
 from core.event_bus import bus, Event, EventType, EventPriority
 
 log = structlog.get_logger(__name__)
+
+_SENSOR_CAPS = {
+    "ultra": Capability.PROXIMITY,
+    "pir": Capability.MOTION_SENSE,
+    "cliff": Capability.CLIFF_SENSE,
+    "touch": Capability.TOUCH,
+    "sound": Capability.SOUND_SENSE,
+    "vibe": Capability.VIBRATION_SENSE,
+    "imu": Capability.ORIENTATION,
+}
 
 _BAUD = 115200
 _READ_TIMEOUT = 0.1
@@ -138,6 +149,10 @@ class ESP32Bridge:
             except Exception as e:
                 log.warning("esp32_bridge.read_error", error=str(e))
                 self._connected = False
+                if not self._mock:
+                    for c in (*_SENSOR_CAPS.values(), Capability.LOCOMOTION):
+                        if registry.state(c) not in (CapState.ABSENT, CapState.SIMULATED):
+                            registry.set_state(c, CapState.FAILED, "bridge disconnected")
                 await asyncio.sleep(_RECONNECT_DELAY)
 
     async def _writer_loop(self):
@@ -182,6 +197,9 @@ class ESP32Bridge:
             self._last_hb = time.monotonic()
             self._esp_uptime = msg.get("up", 0)
             self._sensor_flags = msg.get("sensors", {})
+            if not self._mock:
+                # Motors live on the ESP32 — its heartbeat is locomotion health
+                registry.mark_seen(Capability.LOCOMOTION, "esp32 hb")
             return
 
         if t == "s":
@@ -201,6 +219,13 @@ class ESP32Bridge:
     async def _dispatch_sensor(self, msg: dict):
         sensor_id = msg.get("id")
         val = msg.get("v")
+
+        cap = _SENSOR_CAPS.get(sensor_id)
+        if cap:
+            if self._mock:
+                registry.simulate(cap)
+            else:
+                registry.mark_seen(cap, sensor_id)
 
         if sensor_id == "ultra":
             dist = float(val)

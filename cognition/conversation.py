@@ -174,13 +174,10 @@ class ConversationManager:
         speak: bool = True,
     ) -> Dict[str, Any]:
         # Budget guard — audio pipeline bypasses mind.py directly; check here
-        try:
-            from cognition.mind import cosmo_mind
-            if cosmo_mind._budget.over_limit():
-                log.warning("conversation.budget_exceeded")
-                return {"text": "", "backend": "budget_exceeded", "latency_ms": 0}
-        except Exception:
-            pass
+        from cognition.llm import token_budget
+        if not token_budget.claude_allowed():
+            log.warning("conversation.budget_exceeded")
+            return {"text": "", "backend": "budget_exceeded", "latency_ms": 0}
 
         pid = person_id or self._active_person_id
         pname = self._active_person_name

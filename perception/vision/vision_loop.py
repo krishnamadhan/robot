@@ -30,6 +30,7 @@ from core.event_bus import Event, EventType, bus
 from core.personality import personality
 from perception.vision.camera import camera
 from perception.vision.face import FaceEngine, RecognitionResult
+from core.capabilities import Capability, registry as cap_registry
 from perception.vision.emotion import EmotionDetector
 from utils.config import cfg
 from utils.logger import get_logger
@@ -144,6 +145,7 @@ class VisionLoop:
             detections = await loop.run_in_executor(
                 None, self._face_engine.detect_faces, frame
             )
+            cap_registry.mark_seen(Capability.VISION, "frame processed")
 
             # Update shared state
             self._current_frame      = frame
@@ -214,6 +216,7 @@ class VisionLoop:
                 result = await loop.run_in_executor(
                     None, self._face_engine.recognize, det
                 )
+                cap_registry.mark_seen(Capability.FACE_ID, "recognition ran")
                 await self._handle_recognition(result, frame, det)
 
             elapsed = time.monotonic() - t0
@@ -253,6 +256,7 @@ class VisionLoop:
                 face_crop, track_id=track_id, person_id=person_id
             )
             if emotion_result:
+                cap_registry.mark_seen(Capability.EMOTION_READ, "emotion read")
                 await self._handle_emotion(emotion_result, person_id)
 
             elapsed = time.monotonic() - t0

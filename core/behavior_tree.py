@@ -146,6 +146,18 @@ class GestureDetected(Behaviour):
         return Status.SUCCESS
 
 
+class CapUsable(Behaviour):
+    """Prune a subtree when its required capabilities are not usable."""
+
+    def __init__(self, *caps, name: str = "CapUsable"):
+        super().__init__(name=name)
+        self._caps = caps
+
+    def update(self) -> Status:
+        from core.capabilities import registry
+        return Status.SUCCESS if registry.has_all(self._caps) else Status.FAILURE
+
+
 class SafetyTriggered(Behaviour):
     """Placeholder — Phase D+ will wire cliff/obstacle/pickup here."""
     def update(self) -> Status:
@@ -236,44 +248,38 @@ class DoPointReact(_GestureAction):
 
 class DoGreet(_AsyncAction):
     def update(self) -> Status:
-        from expression.eyes import EyeExpression, eye_engine
-        from expression.sounds import sounds
+        from core.action_router import router
+        from core.intents import Intent
 
         name = bb.person_name
         bb.last_greeted[name] = time.monotonic()
 
         from utils.action_log import action_log
         action_log.set_context("face_greet", name)
-        eye_engine.set_expression(EyeExpression.HAPPY, duration=3.0)
-        self._fire(sounds.play("chime_greeting"))
+        router.emit(Intent.GREET, source="bt", name=name, person_id=bb.person_id)
         log.info("bt.greet", name=name)
         return Status.SUCCESS
 
 
 class DoEmotionReact(_AsyncAction):
-    _REACTIONS = {
-        "happy":     ("HAPPY",     "trill_excited"),
-        "sad":       ("SAD",       "whimper_sad"),
-        "angry":     ("SCARED",    "whimper_sad"),
-        "surprised": ("SURPRISED", "chirp_happy"),
-        "fearful":   ("SCARED",    "whimper_sad"),
-        "disgusted": ("CONFUSED",  None),
-    }
-
     def update(self) -> Status:
-        from expression.eyes import EyeExpression, eye_engine
-        from expression.sounds import sounds
+        from core.action_router import router
+        from core.intents import Intent
 
         emotion = bb.emotion
         bb.last_emotion_reacted   = emotion
         bb.last_emotion_react_time = time.monotonic()
 
-        expr_name, sound_name = self._REACTIONS.get(emotion.lower(), ("CURIOUS", None))
-        expr = getattr(EyeExpression, expr_name, EyeExpression.CURIOUS)
-        eye_engine.set_expression(expr, duration=4.0)
-        if sound_name:
-            self._fire(sounds.play(sound_name))
-        log.info("bt.emotion_react", emotion=emotion)
+        intent, params = {
+            "happy":     (Intent.EXPRESS_JOY,       {"speak": False}),
+            "sad":       (Intent.COMFORT,           {"name": bb.person_name}),
+            "angry":     (Intent.EXPRESS_FEAR,      {}),
+            "surprised": (Intent.ALERT,             {}),
+            "fearful":   (Intent.COMFORT,           {"name": bb.person_name}),
+            "disgusted": (Intent.EXPRESS_CURIOSITY, {}),
+        }.get(emotion.lower(), (Intent.EXPRESS_CURIOSITY, {}))
+        router.emit(intent, source="bt_emotion", **params)
+        log.info("bt.emotion_react", emotion=emotion, intent=intent.value)
         return Status.SUCCESS
 
 
@@ -347,16 +353,13 @@ class DoWanderExplore(_AsyncAction):
             return Status.FAILURE  # cooldown — fall through to bored_med
 
         DoWanderExplore._last_wander = now
-        from expression.eyes import EyeExpression, eye_engine
-        from expression.sounds import sounds
-        from behavior.navigation import navigation
+        from core.action_router import router
+        from core.intents import Intent
         from utils.action_log import action_log
 
         alone_s = time.monotonic() - bb.alone_since
         action_log.set_context("behavior_wander", f"alone {alone_s:.0f}s")
-        eye_engine.set_expression(EyeExpression.CURIOUS, duration=5.0)
-        self._fire(sounds.play("curious_pip"))
-        self._fire(navigation.wander(duration=20))
+        router.emit(Intent.WANDER, source="bt", duration=20)
         log.info("bt.wander", alone_s=alone_s)
         return Status.SUCCESS
 
@@ -370,16 +373,21 @@ class DoIdleSound(_AsyncAction):
             return Status.SUCCESS
         bb.last_bored_sound_time = now
 
-        from expression.eyes import EyeExpression, eye_engine
-        from expression.sounds import sounds
+        from core.action_router import router
+        from core.intents import Intent
         from utils.action_log import action_log
         import random
 
-        sound = random.choice(["bored_sigh", "yawn_sweep"])
+        if bb.energy < 0.15:
+            variant = "seek_attention"
+        else:
+            variant = random.choices(
+                ["bored", "blink", "purr", "curious_sound"],
+                weights=[4, 2, 2, 2],
+            )[0]
         action_log.set_context("behavior_idle", "no person, bored")
-        eye_engine.set_expression(EyeExpression.SLEEPY, duration=3.0)
-        self._fire(sounds.play(sound))
-        log.info("bt.bored_idle", sound=sound)
+        router.emit(Intent.IDLE_FIDGET, source="bt", variant=variant)
+        log.info("bt.bored_idle", variant=variant)
         return Status.SUCCESS
 
 
@@ -430,7 +438,9 @@ def build_tree() -> Behaviour:
         seq.add_children([GestureDetected(gesture_name=raw_name, name=f"Gest_{node_name}"), action])
         return seq
 
-    gesture_sel = py_trees.composites.Selector(name="GESTURE", memory=False)
+    from core.capabilities import Capability
+
+    gesture_sel = py_trees.composites.Selector(name="GESTURE_INNER", memory=False)
     gesture_sel.add_children([
         _gesture_seq("Open_Palm",   DoWaveResponse(name="DoWaveResponse"), "WAVE"),
         _gesture_seq("Thumb_Up",    DoThumbsUp(name="DoThumbsUp"),         "THUMBS"),
@@ -439,9 +449,15 @@ def build_tree() -> Behaviour:
         _gesture_seq("ILoveYou",    DoLoveReact(name="DoLoveReact"),       "LOVE"),
         _gesture_seq("Pointing_Up", DoPointReact(name="DoPointReact"),     "POINT"),
     ])
+    gesture_gated = py_trees.composites.Sequence(name="GESTURE", memory=False)
+    gesture_gated.add_children([
+        CapUsable(Capability.VISION, name="CapVision"),
+        gesture_sel,
+    ])
 
     greet_seq = py_trees.composites.Sequence(name="GREET", memory=False)
     greet_seq.add_children([
+        CapUsable(Capability.FACE_ID, name="CapFaceID"),
         PersonVisible(name="PersonVisible_G"),
         NotGreetedRecently(name="NotGreetedRecently"),
         DoGreet(name="DoGreet"),
@@ -449,6 +465,7 @@ def build_tree() -> Behaviour:
 
     emotion_seq = py_trees.composites.Sequence(name="EMOTION_REACT", memory=False)
     emotion_seq.add_children([
+        CapUsable(Capability.EMOTION_READ, name="CapEmotionRead"),
         PersonVisible(name="PersonVisible_E"),
         EmotionChanged(name="EmotionChanged"),
         DoEmotionReact(name="DoEmotionReact"),
@@ -461,7 +478,7 @@ def build_tree() -> Behaviour:
     ])
 
     social = py_trees.composites.Selector(name="SOCIAL", memory=False)
-    social.add_children([gesture_sel, greet_seq, emotion_seq, presence_seq])
+    social.add_children([gesture_gated, greet_seq, emotion_seq, presence_seq])
 
     # ── AUTONOMOUS ────────────────────────────────────────────────────────────
     enter_sleep = py_trees.composites.Sequence(name="ENTER_SLEEP", memory=False)

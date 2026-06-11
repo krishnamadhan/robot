@@ -46,6 +46,50 @@ class TokenBudget:
         self._total = 0
         self._call_count = 0
         self._lock = asyncio.Lock()
+        self._conn = None   # lazy sqlite; False = persistence unavailable
+
+    # ── Persistence (OQ-5: memory_meta table, atomic increment UPSERT) ──────
+    def _db(self):
+        if self._conn is None:
+            try:
+                import sqlite3
+                from core.memory.episodic import DB_PATH
+                DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+                self._conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+                self._conn.execute(
+                    "CREATE TABLE IF NOT EXISTS memory_meta "
+                    "(key TEXT PRIMARY KEY, value TEXT)")
+                self._conn.commit()
+            except Exception as e:
+                log.warning("token_budget.persistence_unavailable", error=str(e)[:120])
+                self._conn = False
+        return self._conn or None
+
+    def _persist_add(self, tokens: int) -> None:
+        conn = self._db()
+        if not conn:
+            return
+        try:
+            conn.execute(
+                "INSERT INTO memory_meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET "
+                "value = CAST(CAST(value AS INTEGER) + CAST(excluded.value AS INTEGER) AS TEXT)",
+                (f"token_budget:{self._day}", str(tokens)))
+            conn.commit()
+        except Exception as e:
+            log.warning("token_budget.persist_failed", error=str(e)[:120])
+
+    def _load_persisted(self) -> int:
+        conn = self._db()
+        if not conn:
+            return 0
+        try:
+            row = conn.execute(
+                "SELECT value FROM memory_meta WHERE key = ?",
+                (f"token_budget:{self._day}",)).fetchone()
+            return int(row[0]) if row else 0
+        except Exception:
+            return 0
 
     def _reset_if_new_day(self) -> None:
         today = datetime.date.today().isoformat()
@@ -54,14 +98,18 @@ class TokenBudget:
                 log.info("token_budget.daily_summary",
                          date=self._day, total=self._total, calls=self._call_count)
             self._day = today
-            self._total = 0
             self._call_count = 0
+            # Survive process restarts: resume today's spend from SQLite
+            self._total = self._load_persisted()
+            if self._total:
+                log.info("token_budget.resumed", day_total=self._total)
 
     def record(self, tokens: int) -> None:
         """Record tokens used (call after a Claude response)."""
         self._reset_if_new_day()
         self._total += tokens
         self._call_count += 1
+        self._persist_add(tokens)
         log.info("token_budget.usage",
                  call_tokens=tokens, day_total=self._total,
                  day_limit=self._limit, calls=self._call_count)
@@ -88,213 +136,9 @@ class TokenBudget:
         return max(0, self._limit - self.day_total)
 
 
-# Shared singleton budget used by LLMRouter and CosmoMind
+# Shared singleton budget — sole Claude usage ledger (LLMInterface + CosmoMind)
 token_budget = TokenBudget()
 
-
-# ── OllamaProvider ────────────────────────────────────────────────────────────
-
-class OllamaProvider:
-    """Local Ollama inference. Primary LLM — free, private, offline."""
-
-    TIMEOUT_S = 15.0   # from config; override via config/models.yaml
-    MAX_TOKENS = 200
-
-    def __init__(self, base_url: str = "http://127.0.0.1:11434", model: str = "llama3.2:1b") -> None:
-        self._base_url = base_url
-        self._model = model
-        self._healthy: Optional[bool] = None   # None = not yet checked
-
-    async def health_check(self) -> bool:
-        """Quick reachability check — caches result for 30s."""
-        try:
-            import httpx
-            async with httpx.AsyncClient(timeout=2.0) as client:
-                r = await client.get(f"{self._base_url}/api/tags")
-                self._healthy = (r.status_code == 200)
-        except Exception:
-            self._healthy = False
-        return self._healthy
-
-    async def generate(
-        self,
-        prompt: str,
-        system: str,
-        max_tokens: int = MAX_TOKENS,
-    ) -> Optional[Dict[str, Any]]:
-        """Generate a response. Returns None on failure."""
-        try:
-            import httpx
-            payload = {
-                "model": self._model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": prompt},
-                ],
-                "stream": False,
-                "keep_alive": "1h",
-                "options": {"temperature": 0.8, "num_predict": max_tokens},
-            }
-            timeout = self.TIMEOUT_S
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                r = await client.post(f"{self._base_url}/api/chat", json=payload)
-                r.raise_for_status()
-                data = r.json()
-                text = data.get("message", {}).get("content", "").strip()
-                if not text:
-                    return None
-                return {
-                    "text": text,
-                    "backend": f"ollama/{self._model}",
-                    "tokens": data.get("eval_count", 0),
-                }
-        except Exception as e:
-            log.warning("ollama.generate_failed", error=str(e)[:80])
-            self._healthy = False
-            return None
-
-
-# ── ClaudeProvider ────────────────────────────────────────────────────────────
-
-class ClaudeProvider:
-    """Anthropic Claude Haiku — cloud fallback, respects TokenBudget."""
-
-    TIMEOUT_S  = 10.0
-    MAX_TOKENS = 150
-
-    def __init__(
-        self,
-        model: str = "claude-haiku-4-5-20251001",
-        budget: Optional[TokenBudget] = None,
-    ) -> None:
-        self._model  = model
-        self._budget = budget or token_budget
-        self._client = None
-
-    def _get_client(self):
-        if self._client is None:
-            api_key = os.environ.get("ANTHROPIC_API_KEY")
-            if not api_key:
-                raise RuntimeError("ANTHROPIC_API_KEY not set")
-            import anthropic
-            self._client = anthropic.AsyncAnthropic(api_key=api_key)
-        return self._client
-
-    async def generate(
-        self,
-        prompt: str,
-        system: str,
-        max_tokens: int = MAX_TOKENS,
-    ) -> Optional[Dict[str, Any]]:
-        """Generate a response. Returns None on budget exhaustion or failure."""
-        if not self._budget.claude_allowed():
-            log.warning("claude.budget_exhausted", day_total=self._budget.day_total)
-            return None
-        try:
-            client = self._get_client()
-            response = await asyncio.wait_for(
-                client.messages.create(
-                    model=self._model,
-                    max_tokens=max_tokens,
-                    system=system,
-                    messages=[{"role": "user", "content": prompt}],
-                ),
-                timeout=self.TIMEOUT_S,
-            )
-            text = response.content[0].text.strip() if response.content else ""
-            tokens = response.usage.input_tokens + response.usage.output_tokens
-            self._budget.record(tokens)
-            return {
-                "text": text,
-                "backend": f"claude/{self._model}",
-                "tokens": tokens,
-            }
-        except asyncio.TimeoutError:
-            log.error("claude.timeout")
-            return None
-        except Exception as e:
-            log.warning("claude.generate_failed", error=str(e)[:80])
-            return None
-
-
-# ── LLMRouter ─────────────────────────────────────────────────────────────────
-
-class LLMRouter:
-    """
-    Routes LLM calls: Ollama first → Claude fallback → non-verbal only.
-
-    Guardrails:
-    - Ollama is ALWAYS tried first (local, free, private).
-    - Claude called ONLY when Ollama fails/times-out AND budget allows.
-    - Both down → returns empty dict (caller must fall back to non-verbal).
-    - Budget exhausted → Claude skipped; Ollama still tried.
-    """
-
-    def __init__(
-        self,
-        ollama: Optional[OllamaProvider] = None,
-        claude: Optional[ClaudeProvider] = None,
-        budget: Optional[TokenBudget] = None,
-    ) -> None:
-        from utils.config import cfg as _cfg
-        llm_cfg = _cfg.models.llm
-
-        self._ollama = ollama or OllamaProvider(
-            base_url=llm_cfg.get("backends", {}).get("ollama", {}).get("base_url", "http://127.0.0.1:11434"),
-            model=llm_cfg.get("backends", {}).get("ollama", {}).get("model", "llama3.2:1b"),
-        )
-        self._claude = claude or ClaudeProvider(
-            model=llm_cfg.get("backends", {}).get("claude", {}).get("model", "claude-haiku-4-5-20251001"),
-            budget=budget or token_budget,
-        )
-        self._budget = budget or token_budget
-
-    async def generate(
-        self,
-        prompt: str,
-        system: str,
-        max_tokens: int = 150,
-    ) -> Dict[str, Any]:
-        """
-        Try Ollama first, then Claude on failure, else empty.
-        Returns {"text": ..., "backend": ..., "tokens": ...}
-        """
-        t0 = time.monotonic()
-
-        # I4: Ollama first
-        try:
-            result = await self._ollama.generate(prompt, system, max_tokens)
-        except Exception as e:
-            log.warning("llm_router.ollama_exception", error=str(e)[:80])
-            result = None
-        if result and result.get("text"):
-            result["latency_ms"] = int((time.monotonic() - t0) * 1000)
-            log.info("llm_router.used_ollama", latency_ms=result["latency_ms"])
-            return result
-
-        # I4+I6: Ollama down → Claude fallback
-        if self._budget.claude_allowed():
-            try:
-                result = await self._claude.generate(prompt, system, max_tokens)
-            except Exception as e:
-                log.warning("llm_router.claude_exception", error=str(e)[:80])
-                result = None
-            if result and result.get("text"):
-                result["latency_ms"] = int((time.monotonic() - t0) * 1000)
-                log.info("llm_router.used_claude", latency_ms=result["latency_ms"])
-                return result
-
-        # I3+I6: Both down or budget exhausted → non-verbal only
-        log.warning("llm_router.both_unavailable",
-                    budget_ok=self._budget.claude_allowed())
-        return {"text": "", "backend": "unavailable", "latency_ms": 0, "tokens": 0}
-
-    async def is_ollama_ready(self) -> bool:
-        return await self._ollama.health_check()
-
-
-# Singleton router — used by conversation.py
-llm_router = LLMRouter()
 
 COSMO_SYSTEM_PROMPT = """You are Cosmo — a small robot living with Madhan and Indhu in their apartment.
 
@@ -324,6 +168,26 @@ RULES:
 - If asked to do something harmful: just say "That doesn't sound like a good idea."
 
 {context}"""
+
+
+# Static prefix of the system prompt (everything before the dynamic context).
+# Sent as its own block with cache_control so Anthropic can cache it across calls.
+_PROMPT_STATIC = COSMO_SYSTEM_PROMPT.split("{context}")[0].rstrip()
+
+
+def _system_to_blocks(system: str) -> List[Dict[str, Any]]:
+    """Split a built system prompt into a cacheable static block + dynamic tail."""
+    if system.startswith(_PROMPT_STATIC):
+        dynamic = system[len(_PROMPT_STATIC):].strip()
+        blocks: List[Dict[str, Any]] = [{
+            "type": "text", "text": _PROMPT_STATIC,
+            "cache_control": {"type": "ephemeral"},
+        }]
+        if dynamic:
+            blocks.append({"type": "text", "text": dynamic})
+        return blocks
+    return [{"type": "text", "text": system,
+             "cache_control": {"type": "ephemeral"}}]
 
 
 def _build_context(
@@ -475,8 +339,50 @@ class LLMInterface:
 
         return {"text": "", "backend": "unavailable", "latency_ms": 0, "tokens": 0}
 
+    async def generate_once(
+        self,
+        prompt: str,
+        system: str,
+        max_tokens: int = 80,
+        claude_direct: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        One-shot generation with a caller-supplied system prompt (D4 two-tier).
+
+        claude_direct=False (ambient: lonely/startle/dark): Ollama first,
+          Claude fallback — cheap, frequent, low-stakes.
+        claude_direct=True (greet-by-name / conversation): straight to Claude —
+          rare by construction, carries episodic recall a 1B model fumbles.
+        """
+        messages = [{"role": "user", "content": prompt}]
+        t0 = time.monotonic()
+
+        if not claude_direct and self._ollama_available is not False:
+            try:
+                result = await self._call_ollama(system, messages, max_tokens)
+                if result:
+                    result["latency_ms"] = int((time.monotonic() - t0) * 1000)
+                    return result
+            except Exception as e:
+                log.warning("llm.once_ollama_failed", error=str(e)[:80])
+                self._ollama_available = False
+
+        if not token_budget.claude_allowed():
+            log.warning("llm.once_budget_exhausted", day_total=token_budget.day_total)
+            return {"text": "", "backend": "budget_exhausted", "latency_ms": 0, "tokens": 0}
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            return {"text": "", "backend": "unavailable", "latency_ms": 0, "tokens": 0}
+        try:
+            result = await self._call_claude(system, messages, max_tokens)
+            result["latency_ms"] = int((time.monotonic() - t0) * 1000)
+            return result
+        except Exception as e:
+            log.warning("llm.once_claude_failed", error=str(e)[:80])
+            return {"text": "", "backend": "unavailable", "latency_ms": 0, "tokens": 0}
+
     async def _call_ollama(
-        self, system: str, messages: List[Dict[str, str]]
+        self, system: str, messages: List[Dict[str, str]],
+        max_tokens: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         import httpx
         payload = {
@@ -486,7 +392,7 @@ class LLMInterface:
             "keep_alive": "1h",   # keep model loaded in RAM between calls
             "options": {
                 "temperature": 0.8,
-                "num_predict": self.MAX_TOKENS,
+                "num_predict": max_tokens or self.MAX_TOKENS,
             },
         }
         async with httpx.AsyncClient(timeout=self.OLLAMA_TIMEOUT_S) as client:
@@ -508,7 +414,8 @@ class LLMInterface:
     CLAUDE_TIMEOUT_S = 10.0
 
     async def _call_claude(
-        self, system: str, messages: List[Dict[str, str]]
+        self, system: str, messages: List[Dict[str, str]],
+        max_tokens: Optional[int] = None,
     ) -> Dict[str, Any]:
         import anthropic
         if self._anthropic_client is None:
@@ -520,8 +427,8 @@ class LLMInterface:
         response = await asyncio.wait_for(
             self._anthropic_client.messages.create(
                 model=self._claude_model,
-                max_tokens=self.MAX_TOKENS,
-                system=system,
+                max_tokens=max_tokens or self.MAX_TOKENS,
+                system=_system_to_blocks(system),
                 messages=messages,
             ),
             timeout=self.CLAUDE_TIMEOUT_S,
@@ -583,6 +490,11 @@ class LLMInterface:
         if not api_key:
             return
 
+        if not token_budget.claude_allowed():
+            log.warning("llm.stream_budget_exhausted",
+                        day_total=token_budget.day_total)
+            return
+
         import anthropic
         if self._anthropic_client is None:
             self._anthropic_client = anthropic.AsyncAnthropic(api_key=api_key)
@@ -592,7 +504,7 @@ class LLMInterface:
             async with self._anthropic_client.messages.stream(
                 model=self._claude_model,
                 max_tokens=self.MAX_TOKENS,
-                system=system_prompt,
+                system=_system_to_blocks(system_prompt),
                 messages=messages,
             ) as stream:
                 async for text_chunk in stream.text_stream:
@@ -608,15 +520,18 @@ class LLMInterface:
                             yield sentence
                 if buffer.strip():
                     yield buffer.strip()
-                # Capture usage after stream ends — callers use this for budget tracking
+                # Record usage against the daily budget (OQ-7a: this path was
+                # uncounted — the main conversation path bypassed the limit).
                 try:
                     final = await stream.get_final_message()
+                    used = final.usage.input_tokens + final.usage.output_tokens
+                    token_budget.record(used)
                     log.info("llm.stream_usage",
                              input_tokens=final.usage.input_tokens,
                              output_tokens=final.usage.output_tokens,
-                             total=final.usage.input_tokens + final.usage.output_tokens)
-                except Exception:
-                    pass
+                             total=used)
+                except Exception as e:
+                    log.warning("llm.stream_usage_unrecorded", error=str(e)[:80])
         except Exception as e:
             log.warning("llm.stream_failed", error=str(e)[:80])
             # Fall back to non-streaming

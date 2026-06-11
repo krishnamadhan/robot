@@ -1,12 +1,15 @@
 """
 Cosmo's autonomous brain — two-tier decision system.
 
-Tier 1 (rule engine, free): handles movement, expressions, obstacle avoidance.
-  Runs every 5s, zero API cost.
+Tier 1 (rule engine, free): situational triggers (dark, obstacle, morning,
+  wind-down, curiosity). Runs every 5s, zero API cost. Emits Intents only —
+  core.action_router is the sole actuator authority.
 
-Tier 2 (Claude, paid): called ONLY when Cosmo has something worth saying.
-  Triggers: person appears, emotion changes, touched, alone too long.
-  Rate-limited per trigger with jitter to feel organic.
+Tier 2 (LLM, via cognition.llm.LLMInterface): called ONLY when Cosmo has
+  something worth saying. D4 routing: ambient triggers (lonely/startle/dark)
+  go Ollama-first with Claude fallback; person-carrying triggers (greet,
+  emotion reactions, curiosity questions with episodic recall) go straight
+  to Claude Haiku — rare by construction.
 """
 
 import asyncio
@@ -17,19 +20,16 @@ from typing import List, Optional
 
 from core.attention import attention
 from core.event_bus import bus, Event, EventType
-from expression.eyes import EyeExpression, eye_engine
-from expression.sounds import sounds
+from core.action_router import router
+from core.intents import Intent
 from expression.speech import tts
-from hardware.motors import motor_controller
 from hardware.sensor_manager import sensor_manager
 from utils.logger import get_logger
 
 log = get_logger(__name__)
 
-MODEL             = "claude-haiku-4-5-20251001"
 RULE_INTERVAL     = 5.0    # seconds between rule-engine ticks
-SPEAK_COOLDOWN_S  = 45     # minimum gap between spontaneous Claude speech
-DAILY_TOKEN_LIMIT = 100_000
+SPEAK_COOLDOWN_S  = 45     # minimum gap between spontaneous LLM speech
 
 # Per-trigger cooldown overrides (seconds)
 _TRIGGER_COOLDOWNS = {
@@ -41,7 +41,13 @@ _TRIGGER_COOLDOWNS = {
     "alone_long":      180,
     "obstacle":        30,
     "dark_room":       90,
+    "curiosity":       300,   # re-homed behavior_engine curiosity engine
+    "memory_ref":      600,   # re-homed behavior_engine memory bring-up
+    "wonder":          1200,  # re-homed behavior_engine wonder-aloud
 }
+
+# D4: ambient triggers → Ollama-first; everything else → Claude direct
+_AMBIENT_TRIGGERS = {"alone_long", "obstacle", "dark_room", "wonder"}
 
 # Prompts sent to Claude — short, focused on speech only
 _SPEAK_PROMPTS = {
@@ -53,6 +59,9 @@ _SPEAK_PROMPTS = {
     "touched":         lambda name: f"[{name or 'someone'} just touched you. React with surprise or delight, 1 sentence, English.]",
     "obstacle":        lambda _:    "[You almost bumped into something. React with surprise or annoyance, 1 sentence, English.]",
     "dark_room":       lambda _:    "[You just entered a dark room. React a little scared, 1 sentence, English.]",
+    "curiosity":       lambda name: f"[Ask {name or 'them'} one short, friendly question about their day or plans. 1 sentence.]",
+    "memory_ref":      lambda name: f"[Bring up one of your memories of {name or 'them'} naturally, like a friend would. 1 sentence.]",
+    "wonder":          lambda _:    "[You're alone and your mind is drifting. Wonder aloud about something — playful or philosophical, 1 sentence.]",
 }
 
 _SYSTEM = (
@@ -62,50 +71,13 @@ _SYSTEM = (
 )
 
 
-class _DailyBudget:
-    def __init__(self, limit: int) -> None:
-        self._limit        = limit
-        self._day          = None
-        self._total_tokens = 0
-        self._calls        = 0
-
-    def _reset_if_new_day(self) -> None:
-        import datetime
-        today = datetime.date.today().isoformat()
-        if self._day != today:
-            if self._day:
-                log.info("cosmo_mind.daily_summary",
-                         date=self._day, calls=self._calls, tokens=self._total_tokens)
-            self._day, self._total_tokens, self._calls = today, 0, 0
-
-    def record(self, usage) -> None:
-        self._reset_if_new_day()
-        n = getattr(usage, "input_tokens", 0) + getattr(usage, "output_tokens", 0)
-        self._total_tokens += n
-        self._calls        += 1
-        log.info("cosmo_mind.tokens",
-                 call_tokens=n, day_total=self._total_tokens,
-                 day_limit=self._limit, calls_today=self._calls)
-
-    def over_limit(self) -> bool:
-        self._reset_if_new_day()
-        return self._total_tokens >= self._limit
-
-    @property
-    def day_total(self) -> int:
-        return self._total_tokens
-
-
 class CosmoMind:
 
     def __init__(self) -> None:
         self._running       = False
         self._task          = None
-        self._client        = None
-        self._enabled       = False
+        self._enabled       = True   # ambient tier (Ollama) needs no API key
         self._last_spoke    = 0.0
-        self._last_action   = time.monotonic()
-        self._budget        = _DailyBudget(DAILY_TOKEN_LIMIT)
         self._budget_lock   = asyncio.Lock()
         # Prevents two concurrent triggers from both passing tts.is_speaking check
         self._speech_in_flight = asyncio.Event()
@@ -114,20 +86,15 @@ class CosmoMind:
         self._trigger_last: dict = {}
 
         # Rule-engine state
-        self._was_dark      = False
-        self._obstacle_warn = False
+        self._was_dark        = False
+        self._obstacle_warn   = False
+        self._morning_day     = -1     # day-number of last morning greet
+        self._wound_down      = False  # said goodnight tonight
 
-        try:
-            import anthropic
-            key = os.environ.get("ANTHROPIC_API_KEY", "")
-            if key:
-                self._client  = anthropic.Anthropic(api_key=key)
-                self._enabled = True
-                log.info("cosmo_mind.ready", model=MODEL, daily_limit=DAILY_TOKEN_LIMIT)
-            else:
-                log.warning("cosmo_mind.no_api_key")
-        except ImportError:
-            log.warning("cosmo_mind.anthropic_not_installed")
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            log.warning("cosmo_mind.no_api_key",
+                        note="Claude-direct triggers disabled; ambient tier still works")
+        log.info("cosmo_mind.ready")
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -146,15 +113,13 @@ class CosmoMind:
                 pass
 
     def enable(self) -> None:
-        if not self._client:
-            log.warning("cosmo_mind.enable_failed", reason="no api key")
-            return
         self._enabled = True
         log.info("cosmo_mind.enabled")
 
     def disable(self) -> None:
         self._enabled = False
-        log.info("cosmo_mind.disabled", day_total=self._budget.day_total)
+        from cognition.llm import token_budget
+        log.info("cosmo_mind.disabled", day_total=token_budget.day_total)
 
     # ── event-driven speech subscribers ──────────────────────────────────────
 
@@ -217,66 +182,82 @@ class CosmoMind:
                 log.error("cosmo_mind.rule_error", error=str(e)[:200])
             await asyncio.sleep(RULE_INTERVAL)
 
+    @staticmethod
+    def _hour() -> int:
+        import datetime
+        return datetime.datetime.now().hour
+
+    @classmethod
+    def _is_sleep_hours(cls) -> bool:
+        """Midnight–7am: Cosmo stays silent (re-homed from behavior_engine)."""
+        return 0 <= cls._hour() < 7
+
     async def _rule_tick(self) -> None:
-        """Pure logic — no API calls. Handles movement and expressions."""
-        if self._is_busy():
-            return
+        """Pure logic — no API calls, no direct actuation. Emits Intents only;
+        autonomous movement (wander/explore) is owned by the behavior tree."""
+        dist = sensor_manager.get_distance_cm()
+        lux  = sensor_manager.get_lux()
 
-        dist   = sensor_manager.get_distance_cm()
-        lux    = sensor_manager.get_lux()
-        moving = motor_controller.is_moving
-        idle_s = time.monotonic() - self._last_action
-
-        # ── Dark room ──
-        if lux < 50 and not self._was_dark:
-            self._was_dark = True
-            eye_engine.set_expression(EyeExpression.SCARED, duration=5.0)
-            log.info("cosmo_mind.rule", action="dark_room")
-            return
-        if lux >= 50:
-            self._was_dark = False
-
-        # ── Obstacle ──
+        # ── Obstacle (safety reflex — fires even when busy/asleep) ──
         if dist < 25 and not self._obstacle_warn:
             self._obstacle_warn = True
-            eye_engine.set_expression(EyeExpression.SURPRISED, duration=2.0)
-            await motor_controller.stop()
+            router.emit(Intent.STOP, source="mind_rule")
+            router.emit(Intent.ALERT, source="mind_rule", reason="obstacle")
             log.info("cosmo_mind.rule", action="obstacle_stop", dist=dist)
             return
         if dist >= 25:
             self._obstacle_warn = False
 
-        # ── Been alone too long → wander ──
-        if idle_s > 120 and not moving:
-            try:
-                from behavior.navigation import navigation
-                if navigation.state.value == "idle":
-                    self._last_action = time.monotonic()
-                    asyncio.create_task(navigation.wander(duration=20))
-                    eye_engine.set_expression(EyeExpression.CURIOUS, duration=5.0)
-                    log.info("cosmo_mind.rule", action="wander", idle_s=idle_s)
-            except Exception:
-                pass
+        if self._is_busy():
+            return
 
-        # ── Bright + clear → occasionally explore ──
-        elif dist > 80 and idle_s > 60 and not moving and random.random() < 0.15:
-            try:
-                from behavior.navigation import navigation
-                asyncio.create_task(navigation.forward(speed=0.2, duration=1.5))
-                self._last_action = time.monotonic()
-                log.info("cosmo_mind.rule", action="forward_explore", dist=dist)
-            except Exception:
-                pass
+        hour = self._hour()
+        if self._is_sleep_hours():
+            self._wound_down = False   # reset for next night
+            return
 
-        # ── Alone too long → sad speech ──
-        alone_s = idle_s
-        try:
-            from core.behavior_tree import bb as cosmo_bb
-            if not cosmo_bb.person_visible:
-                if alone_s > 600:
-                    await self._maybe_speak("alone_long", None, cooldown=300)
-        except Exception:
-            pass
+        # ── Wind-down: goodnight once per night at 23:00 (re-homed) ──
+        if hour == 23 and not self._wound_down:
+            self._wound_down = True
+            router.emit(Intent.SLEEP, source="mind_rule", speak=True)
+            log.info("cosmo_mind.rule", action="wind_down")
+            return
+
+        # ── Dark room (speech is handled by the LIGHT_CHANGED subscriber) ──
+        if lux < 50 and not self._was_dark:
+            self._was_dark = True
+            router.emit(Intent.EXPRESS_FEAR, source="mind_rule")
+            log.info("cosmo_mind.rule", action="dark_room")
+            return
+        if lux >= 50:
+            self._was_dark = False
+
+        from core.behavior_tree import bb as cosmo_bb
+        now = time.monotonic()
+
+        if cosmo_bb.person_visible:
+            name = cosmo_bb.person_name or None
+            # ── Morning greeting, once per day 7–10am (re-homed) ──
+            today = int(time.time() / 86400)
+            if 7 <= hour <= 10 and self._morning_day != today and name:
+                self._morning_day = today
+                router.emit(Intent.GREET, source="mind_rule",
+                            name=name, variant="morning")
+                log.info("cosmo_mind.rule", action="morning_greet", name=name)
+                return
+            # ── Curiosity question / memory bring-up (re-homed) ──
+            if now - self._trigger_last.get("curiosity", 0.0) >= _TRIGGER_COOLDOWNS["curiosity"]:
+                await self._maybe_speak("curiosity", name)
+            elif now - self._trigger_last.get("memory_ref", 0.0) >= _TRIGGER_COOLDOWNS["memory_ref"]:
+                await self._maybe_speak("memory_ref", name)
+            return
+
+        # ── Alone: wonder aloud (rare) or lonely speech (re-homed) ──
+        alone_s = now - cosmo_bb.alone_since
+        if alone_s > 1200 and random.random() < 0.01:
+            await self._maybe_speak("wonder", None)
+        elif alone_s > 600:
+            await self._maybe_speak("alone_long", None, cooldown=300)
 
     # ── System prompt builder ────────────────────────────────────────────────
 
@@ -386,16 +367,16 @@ Response rules:
         base = override if override is not None else _TRIGGER_COOLDOWNS.get(trigger, SPEAK_COOLDOWN_S)
         return base * random.uniform(0.85, 1.15)
 
-    # Non-verbal reaction map: fired BEFORE Claude speech to feel more alive
+    # Non-verbal reaction intents: fired BEFORE LLM speech to feel more alive
     _NONVERBAL: dict = {
-        "face_seen":     (EyeExpression.HAPPY,     "chirp_happy"),
-        "emotion_happy": (EyeExpression.HAPPY,     "trill_excited"),
-        "emotion_sad":   (EyeExpression.SAD,       "whimper_sad"),
-        "emotion_angry": (EyeExpression.SCARED,    None),
-        "touched":       (EyeExpression.LOVING,    "purr_content"),
-        "alone_long":    (EyeExpression.SAD,       "whimper_sad"),
-        "obstacle":      (EyeExpression.SURPRISED, None),
-        "dark_room":     (EyeExpression.SCARED,    None),
+        "face_seen":     (Intent.EXPRESS_JOY,       {"speak": False}),
+        "emotion_happy": (Intent.EXPRESS_JOY,       {"speak": False}),
+        "emotion_sad":   (Intent.EXPRESS_FEAR,      {}),
+        "emotion_angry": (Intent.EXPRESS_FEAR,      {}),
+        "touched":       (Intent.EXPRESS_AFFECTION, {"speak": False}),
+        "alone_long":    (Intent.EXPRESS_FEAR,      {}),
+        "obstacle":      (Intent.ALERT,             {"reason": "obstacle"}),
+        "dark_room":     (Intent.EXPRESS_FEAR,      {}),
     }
 
     async def _maybe_speak(
@@ -404,23 +385,28 @@ Response rules:
         name: Optional[str],
         cooldown: Optional[int] = None,
     ) -> None:
-        """Call Claude to produce speech, guarded by cooldowns and budget.
+        """Produce LLM speech, guarded by cooldowns and budget (D4 two-tier).
 
-        Improvements over original:
-        - Non-verbal reaction (eyes + sound) fires BEFORE the API call
+        - Non-verbal reaction intent fires BEFORE the LLM call
         - _speech_in_flight flag prevents concurrent triggers both passing
         - Cooldowns committed only AFTER successful TTS handoff (not burned on failure)
         """
-        if not self._enabled or not self._client:
+        if not self._enabled:
+            return
+        if self._is_sleep_hours():
             return
         if tts.is_speaking or self._speech_in_flight.is_set():
             return
         if self._is_busy():
             return
 
+        claude_direct = trigger not in _AMBIENT_TRIGGERS
+
+        from cognition.llm import llm as llm_iface, token_budget
         async with self._budget_lock:
-            if self._budget.over_limit():
-                log.warning("cosmo_mind.budget_exceeded", day_total=self._budget.day_total)
+            if claude_direct and not token_budget.claude_allowed():
+                log.warning("cosmo_mind.budget_exceeded",
+                            day_total=token_budget.day_total)
                 return
 
             now = time.monotonic()
@@ -436,10 +422,8 @@ Response rules:
             # ── Non-verbal reaction FIRST (free, zero latency) ────────────────
             nv = self._NONVERBAL.get(trigger)
             if nv:
-                eye_expr, sound_name = nv
-                eye_engine.set_expression(eye_expr, duration=3.0)
-                if sound_name:
-                    asyncio.create_task(sounds.play(sound_name))
+                nv_intent, nv_params = nv
+                router.emit(nv_intent, source=f"mind_{trigger}", **nv_params)
                 await asyncio.sleep(random.uniform(0.2, 0.5))
 
             # ── Build prompt ──────────────────────────────────────────────────
@@ -464,32 +448,14 @@ Response rules:
                 system_prompt = _SYSTEM + (f"\n\nRecent context: {mem}" if mem else "")
 
             log.info("cosmo_mind.speak_trigger", trigger=trigger, name=name,
-                     has_person=bool(person_id))
+                     has_person=bool(person_id), claude_direct=claude_direct)
 
-            # ── Claude API call ───────────────────────────────────────────────
-            loop = asyncio.get_event_loop()
-            try:
-                response = await asyncio.wait_for(
-                    loop.run_in_executor(
-                        None,
-                        lambda: self._client.messages.create(
-                            model=MODEL,
-                            max_tokens=60,
-                            system=system_prompt,
-                            messages=[{"role": "user", "content": prompt}],
-                        )
-                    ),
-                    timeout=15.0,
-                )
-            except asyncio.TimeoutError:
-                log.error("cosmo_mind.api_timeout", trigger=trigger)
-                return
-            except Exception as e:
-                log.error("cosmo_mind.api_error", error=str(e)[:300])
-                return
-
-            self._budget.record(response.usage)
-            text = response.content[0].text.strip() if response.content else ""
+            # ── LLM call via LLMInterface (D3/D4) — budget recorded inside ────
+            result = await llm_iface.generate_once(
+                prompt, system_prompt, max_tokens=60,
+                claude_direct=claude_direct,
+            )
+            text = (result or {}).get("text", "").strip()
             if text:
                 asyncio.create_task(tts.speak(text))
                 log.info("cosmo_mind.spoke", trigger=trigger, text=text[:60])

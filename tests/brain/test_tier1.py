@@ -1,46 +1,85 @@
 """
-B1 — Tier-1 rule engine correctness tests (I1, I2).
+B1 — Tier-1 rule engine correctness tests (I1, I2), post Phase-1 refactor.
 
-Assertions:
-  - Every rule fires with correct conditions
-  - Zero LLM calls in any rule path
-  - Non-verbal reaction (eye + sound) structurally precedes any speech trigger
-  - Cooldown deduplication works
+The rule engine emits Intents via core.action_router only — no direct
+actuation. Assertions:
+  - Every rule fires with correct conditions (obstacle, dark, alone_long)
+  - Zero LLM calls in any pure-rule path
+  - Non-verbal reaction intent structurally precedes any LLM speech
+  - Cooldown / dedup flags work
 """
 
 import asyncio
 import sys
 import time
 from pathlib import Path
-from typing import Any, List
-from unittest.mock import AsyncMock, MagicMock, patch, call
+from typing import List
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from core.intents import Intent
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-def make_mind_with_mocks(dist_cm=100.0, lux=300.0, idle_s=10.0, moving=False):
-    """Build a CosmoMind instance with all HAL mocked."""
+def make_mind(idle_s: float = 10.0):
+    """Build a CosmoMind instance without running __init__ side effects."""
     from cognition.mind import CosmoMind
 
     mind = CosmoMind.__new__(CosmoMind)
     mind._running       = False
     mind._task          = None
-    mind._client        = None
-    mind._enabled       = False
+    mind._enabled       = True
     mind._last_spoke    = 0.0
-    mind._last_action   = time.monotonic() - idle_s
-    mind._budget        = MagicMock()
-    mind._budget.over_limit.return_value = False
     mind._budget_lock   = asyncio.Lock()
     mind._speech_in_flight = asyncio.Event()
     mind._trigger_last  = {}
     mind._was_dark      = False
     mind._obstacle_warn = False
-
+    mind._morning_day   = -1
+    mind._wound_down    = False
+    mind._is_busy       = lambda: False
     return mind
+
+
+def fake_bb(person_visible: bool, alone_s: float = 0.0, name=None):
+    """Install a fake core.behavior_tree module with a blackboard."""
+    mod = MagicMock()
+    mod.bb.person_visible = person_visible
+    mod.bb.person_name = name
+    mod.bb.alone_since = time.monotonic() - alone_s
+    sys.modules["core.behavior_tree"] = mod
+    return mod
+
+
+def sensor_mock(dist_cm: float, lux: float) -> MagicMock:
+    m = MagicMock()
+    m.get_distance_cm.return_value = dist_cm
+    m.get_lux.return_value = lux
+    return m
+
+
+def daytime():
+    """Patch the clock to 12:00 — outside sleep/wind-down/morning windows."""
+    from cognition.mind import CosmoMind
+    return patch.object(CosmoMind, "_hour", staticmethod(lambda: 12))
+
+
+def fresh_cooldowns(mind) -> None:
+    """Suppress curiosity/memory_ref so person-visible ticks stay silent."""
+    now = time.monotonic()
+    mind._trigger_last["curiosity"] = now
+    mind._trigger_last["memory_ref"] = now
+
+
+def spy_speak(mind) -> list:
+    calls: list = []
+    async def _spy(trigger, name, cooldown=None):
+        calls.append(trigger)
+    mind._maybe_speak = _spy
+    return calls
 
 
 # ── Test rule: dark room ──────────────────────────────────────────────────────
@@ -48,137 +87,70 @@ def make_mind_with_mocks(dist_cm=100.0, lux=300.0, idle_s=10.0, moving=False):
 class TestDarkRoomRule:
 
     @pytest.mark.asyncio
-    async def test_dark_room_sets_scared_eyes(self):
-        """lux < 50 → SCARED expression, was_dark set to True."""
-        mind = make_mind_with_mocks(lux=10.0)
-
-        mock_eye    = MagicMock()
-        mock_sensor = MagicMock()
-        mock_sensor.get_distance_cm.return_value = 100.0
-        mock_sensor.get_lux.return_value = 10.0
-        mock_motors = MagicMock()
-        mock_motors.is_moving = False
-
-        eye_calls = []
-        def _track_eye(expr, duration=3.0):
-            eye_calls.append(str(expr))
-        mock_eye.set_expression.side_effect = _track_eye
-
-        mock_nav = MagicMock()
-        mock_nav.state.value = "idle"
-        mock_nav.wander = AsyncMock()
-        mock_nav.forward = AsyncMock()
-
-        fake_bb_mod = MagicMock()
-        fake_bb_mod.bb.person_visible = True
-        sys.modules["core.behavior_tree"] = fake_bb_mod
+    async def test_dark_room_emits_fear_intent(self):
+        """lux < 50 → Intent.EXPRESS_FEAR emitted, was_dark set."""
+        mind = make_mind()
+        fresh_cooldowns(mind)
+        fake_bb(person_visible=True)
+        mock_router = MagicMock()
 
         with (
-            patch("cognition.mind.sensor_manager", mock_sensor),
-            patch("cognition.mind.motor_controller", mock_motors),
-            patch("cognition.mind.eye_engine", mock_eye),
-            patch("cognition.mind.tts", MagicMock()),
-            patch("cognition.mind.sounds", MagicMock()),
+            patch("cognition.mind.sensor_manager", sensor_mock(100.0, 10.0)),
+            patch("cognition.mind.router", mock_router),
+            daytime(),
         ):
             await mind._rule_tick()
 
         assert mind._was_dark is True
-        assert any("SCARED" in c for c in eye_calls), f"Expected SCARED in {eye_calls}"
+        emitted = [c.args[0] for c in mock_router.emit.call_args_list]
+        assert Intent.EXPRESS_FEAR in emitted, f"Expected EXPRESS_FEAR in {emitted}"
 
     @pytest.mark.asyncio
     async def test_dark_room_no_llm_call(self):
         """Dark room rule fires zero LLM calls."""
-        mind = make_mind_with_mocks(lux=5.0)
-
-        llm_call_count = {"n": 0}
-        original_speak = mind._maybe_speak
-
-        async def patched_speak(*args, **kwargs):
-            # should not reach here (mind is disabled)
-            llm_call_count["n"] += 1
-
-        mind._maybe_speak = patched_speak
-
-        mock_sensor = MagicMock()
-        mock_sensor.get_distance_cm.return_value = 100.0
-        mock_sensor.get_lux.return_value = 5.0
-        mock_motors = MagicMock()
-        mock_motors.is_moving = False
-        mock_eye = MagicMock()
-
-        fake_bb_mod = MagicMock()
-        fake_bb_mod.bb.person_visible = True
-        sys.modules["core.behavior_tree"] = fake_bb_mod
+        mind = make_mind()
+        calls = spy_speak(mind)
+        fake_bb(person_visible=True)
 
         with (
-            patch("cognition.mind.sensor_manager", mock_sensor),
-            patch("cognition.mind.motor_controller", mock_motors),
-            patch("cognition.mind.eye_engine", mock_eye),
-            patch("cognition.mind.tts", MagicMock()),
-            patch("cognition.mind.sounds", MagicMock()),
+            patch("cognition.mind.sensor_manager", sensor_mock(100.0, 5.0)),
+            patch("cognition.mind.router", MagicMock()),
+            daytime(),
         ):
             await mind._rule_tick()
 
-        # Rule tick calls eye expression (non-verbal), not LLM
-        # Dark room calls eye_engine.set_expression directly — no API call
-        assert llm_call_count["n"] == 0, "Dark room rule should not call LLM"
+        assert calls == [], "Dark room rule should not call LLM"
 
     @pytest.mark.asyncio
     async def test_dark_room_only_fires_once(self):
-        """Dark room rule respects _was_dark flag — doesn't fire twice."""
-        mind = make_mind_with_mocks(lux=5.0)
-        mind._was_dark = True  # already triggered
-
-        mock_eye    = MagicMock()
-        mock_sensor = MagicMock()
-        mock_sensor.get_distance_cm.return_value = 100.0
-        mock_sensor.get_lux.return_value = 5.0
-        mock_motors = MagicMock()
-        mock_motors.is_moving = False
-
-        fake_bb_mod = MagicMock()
-        fake_bb_mod.bb.person_visible = True
-        sys.modules["core.behavior_tree"] = fake_bb_mod
+        """was_dark flag prevents repeat EXPRESS_FEAR while still dark."""
+        mind = make_mind()
+        mind._was_dark = True
+        fresh_cooldowns(mind)
+        fake_bb(person_visible=True)
+        mock_router = MagicMock()
 
         with (
-            patch("cognition.mind.sensor_manager", mock_sensor),
-            patch("cognition.mind.motor_controller", mock_motors),
-            patch("cognition.mind.eye_engine", mock_eye),
-            patch("cognition.mind.tts", MagicMock()),
-            patch("cognition.mind.sounds", MagicMock()),
+            patch("cognition.mind.sensor_manager", sensor_mock(100.0, 5.0)),
+            patch("cognition.mind.router", mock_router),
+            daytime(),
         ):
             await mind._rule_tick()
 
-        mock_eye.set_expression.assert_not_called()
+        emitted = [c.args[0] for c in mock_router.emit.call_args_list]
+        assert Intent.EXPRESS_FEAR not in emitted
 
     @pytest.mark.asyncio
     async def test_was_dark_resets_when_light_returns(self):
-        """was_dark flag resets when lux >= 50."""
-        mind = make_mind_with_mocks(lux=300.0)
-        mind._was_dark = True  # was dark before
-
-        mock_sensor = MagicMock()
-        mock_sensor.get_distance_cm.return_value = 100.0
-        mock_sensor.get_lux.return_value = 300.0
-        mock_motors = MagicMock()
-        mock_motors.is_moving = False
-        mock_eye    = MagicMock()
-
-        mock_nav = MagicMock()
-        mock_nav.state.value = "idle"
-        mock_nav.wander = AsyncMock()
-        mock_nav.forward = AsyncMock()
-
-        fake_bb_mod = MagicMock()
-        fake_bb_mod.bb.person_visible = True
-        sys.modules["core.behavior_tree"] = fake_bb_mod
+        mind = make_mind()
+        mind._was_dark = True
+        fresh_cooldowns(mind)
+        fake_bb(person_visible=True)
 
         with (
-            patch("cognition.mind.sensor_manager", mock_sensor),
-            patch("cognition.mind.motor_controller", mock_motors),
-            patch("cognition.mind.eye_engine", mock_eye),
-            patch("cognition.mind.tts", MagicMock()),
-            patch("cognition.mind.sounds", MagicMock()),
+            patch("cognition.mind.sensor_manager", sensor_mock(100.0, 300.0)),
+            patch("cognition.mind.router", MagicMock()),
+            daytime(),
         ):
             await mind._rule_tick()
 
@@ -190,207 +162,116 @@ class TestDarkRoomRule:
 class TestObstacleRule:
 
     @pytest.mark.asyncio
-    async def test_obstacle_stops_motor_and_sets_surprised(self):
-        """dist < 25 → motor stop + SURPRISED expression."""
-        mind = make_mind_with_mocks(dist_cm=10.0)
-
-        mock_sensor = MagicMock()
-        mock_sensor.get_distance_cm.return_value = 10.0
-        mock_sensor.get_lux.return_value = 300.0
-        mock_motors = MagicMock()
-        mock_motors.is_moving = True
-        mock_motors.stop = AsyncMock()
-        mock_eye = MagicMock()
-
-        eye_calls = []
-        def _track(expr, duration=3.0):
-            eye_calls.append(str(expr))
-        mock_eye.set_expression.side_effect = _track
+    async def test_obstacle_emits_stop_and_alert(self):
+        """dist < 25 → Intent.STOP + Intent.ALERT(reason=obstacle)."""
+        mind = make_mind()
+        mock_router = MagicMock()
 
         with (
-            patch("cognition.mind.sensor_manager", mock_sensor),
-            patch("cognition.mind.motor_controller", mock_motors),
-            patch("cognition.mind.eye_engine", mock_eye),
-            patch("cognition.mind.tts", MagicMock()),
-            patch("cognition.mind.sounds", MagicMock()),
+            patch("cognition.mind.sensor_manager", sensor_mock(10.0, 300.0)),
+            patch("cognition.mind.router", mock_router),
+            daytime(),
         ):
             await mind._rule_tick()
 
-        mock_motors.stop.assert_awaited_once()
-        assert any("SURPRISED" in c for c in eye_calls), f"Expected SURPRISED, got {eye_calls}"
+        emitted = [c.args[0] for c in mock_router.emit.call_args_list]
+        assert Intent.STOP in emitted, f"Expected STOP in {emitted}"
+        assert Intent.ALERT in emitted, f"Expected ALERT in {emitted}"
+        assert mind._obstacle_warn is True
+
+    @pytest.mark.asyncio
+    async def test_obstacle_fires_even_when_busy(self):
+        """Safety reflex bypasses the busy gate."""
+        mind = make_mind()
+        mind._is_busy = lambda: True
+        mock_router = MagicMock()
+
+        with (
+            patch("cognition.mind.sensor_manager", sensor_mock(10.0, 300.0)),
+            patch("cognition.mind.router", mock_router),
+            daytime(),
+        ):
+            await mind._rule_tick()
+
+        emitted = [c.args[0] for c in mock_router.emit.call_args_list]
+        assert Intent.STOP in emitted
 
     @pytest.mark.asyncio
     async def test_obstacle_no_stop_when_clear(self):
-        """dist > 25 → no motor stop."""
-        mind = make_mind_with_mocks(dist_cm=100.0)
-
-        mock_sensor = MagicMock()
-        mock_sensor.get_distance_cm.return_value = 100.0
-        mock_sensor.get_lux.return_value = 300.0
-        mock_motors = MagicMock()
-        mock_motors.is_moving = False
-        mock_motors.stop = AsyncMock()
-        mock_eye = MagicMock()
-
-        mock_nav = MagicMock()
-        mock_nav.state.value = "idle"
-        mock_nav.wander = AsyncMock()
-        mock_nav.forward = AsyncMock()
-
-        fake_bb_mod = MagicMock()
-        fake_bb_mod.bb.person_visible = True
-        sys.modules["core.behavior_tree"] = fake_bb_mod
+        """dist > 25 → no STOP emit, warn flag cleared."""
+        mind = make_mind()
+        mind._obstacle_warn = True
+        fresh_cooldowns(mind)
+        fake_bb(person_visible=True)
+        mock_router = MagicMock()
 
         with (
-            patch("cognition.mind.sensor_manager", mock_sensor),
-            patch("cognition.mind.motor_controller", mock_motors),
-            patch("cognition.mind.eye_engine", mock_eye),
-            patch("cognition.mind.tts", MagicMock()),
-            patch("cognition.mind.sounds", MagicMock()),
+            patch("cognition.mind.sensor_manager", sensor_mock(100.0, 300.0)),
+            patch("cognition.mind.router", mock_router),
+            daytime(),
         ):
             await mind._rule_tick()
 
-        mock_motors.stop.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_obstacle_no_llm_call(self):
-        """Obstacle rule fires zero LLM calls."""
-        mind = make_mind_with_mocks(dist_cm=5.0)
-        llm_calls = {"n": 0}
-
-        original_speak = mind._maybe_speak
-        async def spy_speak(*a, **kw):
-            llm_calls["n"] += 1
-        mind._maybe_speak = spy_speak
-
-        mock_sensor = MagicMock()
-        mock_sensor.get_distance_cm.return_value = 5.0
-        mock_sensor.get_lux.return_value = 300.0
-        mock_motors = MagicMock()
-        mock_motors.is_moving = True
-        mock_motors.stop = AsyncMock()
-        mock_eye = MagicMock()
-
-        with (
-            patch("cognition.mind.sensor_manager", mock_sensor),
-            patch("cognition.mind.motor_controller", mock_motors),
-            patch("cognition.mind.eye_engine", mock_eye),
-            patch("cognition.mind.tts", MagicMock()),
-            patch("cognition.mind.sounds", MagicMock()),
-        ):
-            await mind._rule_tick()
-
-        assert llm_calls["n"] == 0, "Obstacle rule should not call LLM"
+        emitted = [c.args[0] for c in mock_router.emit.call_args_list]
+        assert Intent.STOP not in emitted
+        assert mind._obstacle_warn is False
 
     @pytest.mark.asyncio
     async def test_obstacle_warn_dedup(self):
-        """obstacle_warn flag prevents duplicate motor stops."""
-        mind = make_mind_with_mocks(dist_cm=10.0)
-        mind._obstacle_warn = True  # already warned
-
-        mock_sensor = MagicMock()
-        mock_sensor.get_distance_cm.return_value = 10.0
-        mock_sensor.get_lux.return_value = 300.0
-        mock_motors = MagicMock()
-        mock_motors.is_moving = True
-        mock_motors.stop = AsyncMock()
-        mock_eye = MagicMock()
+        """obstacle_warn flag prevents duplicate STOP emits."""
+        mind = make_mind()
+        mind._obstacle_warn = True
+        fresh_cooldowns(mind)
+        fake_bb(person_visible=True)
+        mock_router = MagicMock()
 
         with (
-            patch("cognition.mind.sensor_manager", mock_sensor),
-            patch("cognition.mind.motor_controller", mock_motors),
-            patch("cognition.mind.eye_engine", mock_eye),
-            patch("cognition.mind.tts", MagicMock()),
-            patch("cognition.mind.sounds", MagicMock()),
+            patch("cognition.mind.sensor_manager", sensor_mock(10.0, 300.0)),
+            patch("cognition.mind.router", mock_router),
+            daytime(),
         ):
             await mind._rule_tick()
 
-        mock_motors.stop.assert_not_called()
-
-
-# ── Test rule: idle wander ───────────────────────────────────────────────────
-
-class TestIdleWanderRule:
+        emitted = [c.args[0] for c in mock_router.emit.call_args_list]
+        assert Intent.STOP not in emitted
 
     @pytest.mark.asyncio
-    async def test_wander_triggered_after_idle(self):
-        """idle_s > 120 → wander + CURIOUS eyes."""
-        mind = make_mind_with_mocks(dist_cm=150.0, idle_s=200.0)
-
-        mock_sensor = MagicMock()
-        mock_sensor.get_distance_cm.return_value = 150.0
-        mock_sensor.get_lux.return_value = 300.0
-        mock_motors = MagicMock()
-        mock_motors.is_moving = False
-        mock_eye = MagicMock()
-
-        eye_calls = []
-        def _track(expr, duration=3.0):
-            eye_calls.append(str(expr))
-        mock_eye.set_expression.side_effect = _track
-
-        mock_nav = MagicMock()
-        mock_nav.state.value = "idle"
-        mock_nav.wander = AsyncMock()
-        mock_nav.forward = AsyncMock()
-
-        fake_bb_mod = MagicMock()
-        fake_bb_mod.bb.person_visible = True
-        sys.modules["core.behavior_tree"] = fake_bb_mod
+    async def test_obstacle_no_llm_call(self):
+        mind = make_mind()
+        calls = spy_speak(mind)
 
         with (
-            patch("cognition.mind.sensor_manager", mock_sensor),
-            patch("cognition.mind.motor_controller", mock_motors),
-            patch("cognition.mind.eye_engine", mock_eye),
-            patch("cognition.mind.tts", MagicMock()),
-            patch("cognition.mind.sounds", MagicMock()),
-            patch("behavior.navigation.navigation", mock_nav, create=True),
-        ):
-            import importlib
-            import cognition.mind as mind_mod
-            with patch.dict("sys.modules", {"behavior.navigation": MagicMock(navigation=mock_nav)}):
-                await mind._rule_tick()
-
-        # Wander fires or eye expression set to CURIOUS
-        # We accept either navigation.wander called OR CURIOUS eyes set
-        # (import may be mocked differently)
-        wander_or_curious = (
-            mock_nav.wander.await_count > 0
-            or any("CURIOUS" in c for c in eye_calls)
-        )
-        assert wander_or_curious, f"Expected wander or CURIOUS, got eye={eye_calls}, wander={mock_nav.wander.await_count}"
-
-    @pytest.mark.asyncio
-    async def test_no_wander_when_recently_active(self):
-        """idle_s < 120 → no wander."""
-        mind = make_mind_with_mocks(dist_cm=150.0, idle_s=30.0)
-
-        mock_sensor = MagicMock()
-        mock_sensor.get_distance_cm.return_value = 150.0
-        mock_sensor.get_lux.return_value = 300.0
-        mock_motors = MagicMock()
-        mock_motors.is_moving = False
-        mock_eye = MagicMock()
-
-        mock_nav = MagicMock()
-        mock_nav.wander = AsyncMock()
-        mock_nav.state.value = "idle"
-
-        fake_bb_mod = MagicMock()
-        fake_bb_mod.bb.person_visible = True
-        sys.modules["core.behavior_tree"] = fake_bb_mod
-
-        with (
-            patch("cognition.mind.sensor_manager", mock_sensor),
-            patch("cognition.mind.motor_controller", mock_motors),
-            patch("cognition.mind.eye_engine", mock_eye),
-            patch("cognition.mind.tts", MagicMock()),
-            patch("cognition.mind.sounds", MagicMock()),
-            patch.dict("sys.modules", {"behavior.navigation": MagicMock(navigation=mock_nav)}),
+            patch("cognition.mind.sensor_manager", sensor_mock(5.0, 300.0)),
+            patch("cognition.mind.router", MagicMock()),
+            daytime(),
         ):
             await mind._rule_tick()
 
-        mock_nav.wander.assert_not_awaited()
+        assert calls == [], "Obstacle rule should not call LLM"
+
+
+# ── Test: no autonomous movement from the mind (BT owns wander) ───────────────
+
+class TestNoMindMovement:
+
+    @pytest.mark.asyncio
+    async def test_idle_tick_emits_no_movement_intents(self):
+        """Long-idle tick must NOT emit WANDER/COME/APPROACH — BT owns movement."""
+        mind = make_mind(idle_s=500.0)
+        spy_speak(mind)
+        fake_bb(person_visible=False, alone_s=100.0)
+        mock_router = MagicMock()
+
+        with (
+            patch("cognition.mind.sensor_manager", sensor_mock(150.0, 300.0)),
+            patch("cognition.mind.router", mock_router),
+            daytime(),
+        ):
+            await mind._rule_tick()
+
+        emitted = [c.args[0] for c in mock_router.emit.call_args_list]
+        for movement in (Intent.WANDER, Intent.COME, Intent.APPROACH, Intent.FLEE):
+            assert movement not in emitted, f"Mind must not emit {movement}"
 
 
 # ── Test: Non-verbal BEFORE speech (I2) ──────────────────────────────────────
@@ -398,90 +279,53 @@ class TestIdleWanderRule:
 class TestNonVerbalBeforeSpeech:
 
     @pytest.mark.asyncio
-    async def test_nonverbal_fires_before_api_would_be_called(self):
-        """
-        For every trigger in _NONVERBAL, the eye_expression call occurs
-        before tts.speak would be called. We verify ordering by recording
-        timestamps.
-        """
-        from cognition.mind import CosmoMind, EyeExpression
+    async def test_nonverbal_intent_fires_before_llm_call(self):
+        """Non-verbal router.emit happens before LLMInterface.generate_once."""
+        from cognition.mind import CosmoMind
 
-        timeline: List[dict] = []
+        timeline: List[str] = []
+        mind = make_mind()
 
-        mock_eye = MagicMock()
-        def _set_expr(expr, duration=3.0):
-            timeline.append({"t": time.monotonic(), "kind": "eye", "expr": str(expr)})
-        mock_eye.set_expression.side_effect = _set_expr
+        mock_router = MagicMock()
+        mock_router.emit.side_effect = lambda *a, **kw: timeline.append("nonverbal")
 
         mock_tts = MagicMock()
         mock_tts.is_speaking = False
-        async def _speak(text):
-            timeline.append({"t": time.monotonic(), "kind": "speech", "text": text})
-        mock_tts.speak = AsyncMock(side_effect=_speak)
+        mock_tts.speak = AsyncMock()
 
-        mock_sounds = MagicMock()
-        async def _play(name):
-            timeline.append({"t": time.monotonic(), "kind": "sound", "name": name})
-        mock_sounds.play = AsyncMock(side_effect=_play)
-
-        # Build a minimal mind that is ENABLED with a fake client
-        mind = CosmoMind.__new__(CosmoMind)
-        mind._running       = False
-        mind._task          = None
-        mind._client        = MagicMock()
-        mind._enabled       = True
-        mind._last_spoke    = 0.0
-        mind._last_action   = time.monotonic() - 200
-        mind._budget        = MagicMock()
-        mind._budget.over_limit.return_value = False
-        mind._budget_lock   = asyncio.Lock()
-        mind._speech_in_flight = asyncio.Event()
-        mind._trigger_last  = {}
-        mind._was_dark      = False
-        mind._obstacle_warn = False
-
-        # Patch the Anthropic API call to just return fake text
-        fake_response = MagicMock()
-        fake_response.content = [MagicMock(text="Hello there!")]
-        fake_response.usage = MagicMock(input_tokens=10, output_tokens=5)
-
-        # Simulate face_seen which has both eye + sound non-verbal
         mock_attention = MagicMock()
         mock_attention.state.focused = False
 
+        async def fake_generate_once(prompt, system, max_tokens=80, claude_direct=False):
+            timeline.append("llm")
+            return {"text": "Hello there!", "backend": "claude"}
+
+        mock_llm = MagicMock()
+        mock_llm.generate_once = fake_generate_once
+        mock_budget = MagicMock()
+        mock_budget.claude_allowed.return_value = True
+
         with (
+            patch("cognition.mind.router", mock_router),
             patch("cognition.mind.tts", mock_tts),
-            patch("cognition.mind.sounds", mock_sounds),
-            patch("cognition.mind.eye_engine", mock_eye),
             patch("cognition.mind.attention", mock_attention),
-            patch("core.memory.episodic.episodic") as mock_ep,
+            patch.dict("sys.modules", {}),
+            patch("cognition.llm.llm", mock_llm),
+            patch("cognition.llm.token_budget", mock_budget),
+            patch.object(CosmoMind, "_hour", staticmethod(lambda: 12)),
+            patch.object(CosmoMind, "_build_rich_system_prompt",
+                         AsyncMock(return_value="sys")),
+            patch.object(CosmoMind, "_memory_context",
+                         AsyncMock(return_value="")),
         ):
-            mock_ep.get_context_for_person = AsyncMock(return_value={
-                "familiarity": 0.0, "total_interactions": 0, "memories": []
-            })
-            mock_ep.retrieve = AsyncMock(return_value=[])
+            await mind._maybe_speak("face_seen", "Madhan")
 
-            # Patch the actual API call
-            async def fake_executor_call(executor, func):
-                return fake_response
-
-            loop = asyncio.get_event_loop()
-            with patch.object(loop, "run_in_executor", side_effect=fake_executor_call):
-                await mind._maybe_speak("face_seen", "Madhan")
-
-        # Allow async tasks to run
         await asyncio.sleep(0.05)
 
-        # Verify ordering: eye/sound must come before speech
-        eye_or_sound = [e for e in timeline if e["kind"] in ("eye", "sound")]
-        speeches     = [e for e in timeline if e["kind"] == "speech"]
-
-        assert len(eye_or_sound) > 0, "Expected non-verbal events"
-        if speeches:
-            first_nv_t  = min(e["t"] for e in eye_or_sound)
-            first_spk_t = min(e["t"] for e in speeches)
-            assert first_nv_t <= first_spk_t + 0.01, (
-                f"Non-verbal ({first_nv_t:.4f}) should precede speech ({first_spk_t:.4f})"
+        assert "nonverbal" in timeline, f"Expected non-verbal emit, got {timeline}"
+        if "llm" in timeline:
+            assert timeline.index("nonverbal") < timeline.index("llm"), (
+                f"Non-verbal must precede LLM call: {timeline}"
             )
 
 
@@ -490,46 +334,38 @@ class TestNonVerbalBeforeSpeech:
 class TestTriggerCooldowns:
 
     def test_cooldown_values_defined_for_all_triggers(self):
-        """All expected triggers have cooldown entries."""
         from cognition.mind import _TRIGGER_COOLDOWNS
         expected = {"face_seen", "emotion_happy", "emotion_sad", "emotion_angry",
-                    "touched", "alone_long", "obstacle", "dark_room"}
+                    "touched", "alone_long", "obstacle", "dark_room",
+                    "curiosity", "memory_ref", "wonder"}
         missing = expected - set(_TRIGGER_COOLDOWNS.keys())
         assert not missing, f"Missing cooldown entries: {missing}"
 
     def test_all_cooldowns_positive(self):
-        """All cooldown values are > 0."""
         from cognition.mind import _TRIGGER_COOLDOWNS
         for key, val in _TRIGGER_COOLDOWNS.items():
             assert val > 0, f"{key} cooldown must be positive"
 
-    def test_alone_long_has_highest_cooldown(self):
-        """alone_long should have the highest or equal-highest cooldown."""
+    def test_alone_long_has_high_cooldown(self):
         from cognition.mind import _TRIGGER_COOLDOWNS
         assert _TRIGGER_COOLDOWNS["alone_long"] >= 120
 
+    def test_ambient_triggers_subset_of_cooldowns(self):
+        """Every D4 ambient trigger must have a cooldown entry."""
+        from cognition.mind import _AMBIENT_TRIGGERS, _TRIGGER_COOLDOWNS
+        missing = _AMBIENT_TRIGGERS - set(_TRIGGER_COOLDOWNS.keys())
+        assert not missing, f"Ambient triggers without cooldown: {missing}"
+
     @pytest.mark.asyncio
-    async def test_speak_respects_per_trigger_cooldown(self):
-        """Two consecutive calls to the same trigger are deduplicated."""
-        from cognition.mind import CosmoMind
+    async def test_speak_returns_early_when_disabled(self):
+        mind = make_mind()
+        mind._enabled = False
+        mock_router = MagicMock()
 
-        mind = CosmoMind.__new__(CosmoMind)
-        mind._enabled = False   # disabled — no API calls
-        mind._client = None
-        mind._last_spoke = 0.0
-        mind._trigger_last = {}
-        mind._budget = MagicMock()
-        mind._budget.over_limit.return_value = False
-        mind._budget_lock = asyncio.Lock()
-        mind._speech_in_flight = asyncio.Event()
+        with patch("cognition.mind.router", mock_router):
+            await mind._maybe_speak("face_seen", "test")
 
-        calls = {"n": 0}
-        original = mind._maybe_speak
-
-        # Should return early when disabled
-        await mind._maybe_speak("face_seen", "test")
-        # No calls since disabled
-        assert calls["n"] == 0
+        mock_router.emit.assert_not_called()
 
 
 # ── Test: Rule tick makes zero LLM calls (I1) ────────────────────────────────
@@ -537,102 +373,98 @@ class TestTriggerCooldowns:
 class TestI1RuleTick:
 
     @pytest.mark.asyncio
-    async def test_rule_tick_zero_llm_calls_all_scenarios(self):
-        """
-        Run _rule_tick with all triggerable conditions.
-        Patch _maybe_speak as a spy — it should never be called from rule_tick
-        (it's only called by event handlers, not inline from rule_tick paths).
-        """
-        # The rule_tick never calls _maybe_speak directly except in the alone_long block.
-        # That block is also gated by behavior_tree.bb.person_visible == False AND alone_s > 600.
-        # For shorter idle times, it should not fire at all.
-        from cognition.mind import CosmoMind
-
-        direct_api_calls = {"n": 0}
-
-        for dist, lux, idle in [
-            (5.0, 300.0, 10.0),    # obstacle
-            (100.0, 5.0, 10.0),   # dark
-            (150.0, 300.0, 200.0), # wander
-            (100.0, 300.0, 700.0), # alone long (with person_visible=True → no speech)
+    async def test_rule_tick_zero_llm_calls_pure_rule_paths(self):
+        """Obstacle / dark / clear scenarios never reach _maybe_speak
+        (curiosity suppressed via fresh cooldowns)."""
+        for dist, lux in [
+            (5.0, 300.0),    # obstacle
+            (100.0, 5.0),    # dark
+            (150.0, 300.0),  # clear, person visible
         ]:
-            mind = make_mind_with_mocks(dist_cm=dist, lux=lux, idle_s=idle)
-
-            mock_sensor = MagicMock()
-            mock_sensor.get_distance_cm.return_value = dist
-            mock_sensor.get_lux.return_value = lux
-            mock_motors = MagicMock()
-            mock_motors.is_moving = False
-            mock_motors.stop = AsyncMock()
-            mock_eye = MagicMock()
-
-            mock_nav = MagicMock()
-            mock_nav.state.value = "idle"
-            mock_nav.wander = AsyncMock()
-            mock_nav.forward = AsyncMock()
-
-            # person IS visible → alone_long should NOT fire
-            fake_bb_mod = MagicMock()
-            fake_bb_mod.bb.person_visible = True
-            sys.modules["core.behavior_tree"] = fake_bb_mod
-
-            # Track any _maybe_speak calls
-            speak_calls = {"n": 0}
-            async def _spy_speak(*a, **kw):
-                speak_calls["n"] += 1
-            mind._maybe_speak = _spy_speak
+            mind = make_mind()
+            calls = spy_speak(mind)
+            fresh_cooldowns(mind)
+            fake_bb(person_visible=True)
 
             with (
-                patch("cognition.mind.sensor_manager", mock_sensor),
-                patch("cognition.mind.motor_controller", mock_motors),
-                patch("cognition.mind.eye_engine", mock_eye),
-                patch("cognition.mind.tts", MagicMock()),
-                patch("cognition.mind.sounds", MagicMock()),
-                patch.dict("sys.modules", {"behavior.navigation": MagicMock(navigation=mock_nav)}),
+                patch("cognition.mind.sensor_manager", sensor_mock(dist, lux)),
+                patch("cognition.mind.router", MagicMock()),
+                daytime(),
             ):
                 await mind._rule_tick()
 
-            # When person_visible=True, no speech should fire
-            assert speak_calls["n"] == 0, (
-                f"Rule tick called _maybe_speak for dist={dist}, lux={lux}, idle={idle}"
+            assert calls == [], (
+                f"Rule tick called _maybe_speak for dist={dist}, lux={lux}: {calls}"
             )
 
     @pytest.mark.asyncio
     async def test_alone_long_fires_when_no_person(self):
-        """alone_s > 600 AND person_visible=False → _maybe_speak('alone_long') fires."""
-        mind = make_mind_with_mocks(dist_cm=150.0, lux=300.0, idle_s=700.0)
-
-        mock_sensor = MagicMock()
-        mock_sensor.get_distance_cm.return_value = 150.0
-        mock_sensor.get_lux.return_value = 300.0
-        mock_motors = MagicMock()
-        mock_motors.is_moving = False
-        mock_motors.stop = AsyncMock()
-        mock_eye = MagicMock()
-
-        speak_calls = []
-        async def _spy_speak(trigger, name, cooldown=None):
-            speak_calls.append(trigger)
-        mind._maybe_speak = _spy_speak
-
-        mock_nav = MagicMock()
-        mock_nav.state.value = "idle"
-        mock_nav.wander = AsyncMock()
-
-        fake_bb_mod = MagicMock()
-        fake_bb_mod.bb.person_visible = False
-        sys.modules["core.behavior_tree"] = fake_bb_mod
+        """alone_s > 600 AND person_visible=False → _maybe_speak('alone_long')."""
+        mind = make_mind()
+        calls = spy_speak(mind)
+        fake_bb(person_visible=False, alone_s=700.0)
 
         with (
-            patch("cognition.mind.sensor_manager", mock_sensor),
-            patch("cognition.mind.motor_controller", mock_motors),
-            patch("cognition.mind.eye_engine", mock_eye),
-            patch("cognition.mind.tts", MagicMock()),
-            patch("cognition.mind.sounds", MagicMock()),
-            patch.dict("sys.modules", {"behavior.navigation": MagicMock(navigation=mock_nav)}),
+            patch("cognition.mind.sensor_manager", sensor_mock(150.0, 300.0)),
+            patch("cognition.mind.router", MagicMock()),
+            daytime(),
         ):
             await mind._rule_tick()
 
-        assert "alone_long" in speak_calls, (
-            f"Expected alone_long trigger, got {speak_calls}"
-        )
+        assert "alone_long" in calls, f"Expected alone_long trigger, got {calls}"
+
+    @pytest.mark.asyncio
+    async def test_curiosity_fires_when_person_visible_and_cooldown_elapsed(self):
+        mind = make_mind()
+        calls = spy_speak(mind)
+        fake_bb(person_visible=True, name="Madhan")
+
+        with (
+            patch("cognition.mind.sensor_manager", sensor_mock(150.0, 300.0)),
+            patch("cognition.mind.router", MagicMock()),
+            daytime(),
+        ):
+            await mind._rule_tick()
+
+        assert "curiosity" in calls, f"Expected curiosity trigger, got {calls}"
+
+    @pytest.mark.asyncio
+    async def test_sleep_hours_silences_rules(self):
+        """During 0–7h the tick exits before any non-safety rule."""
+        from cognition.mind import CosmoMind
+        mind = make_mind()
+        calls = spy_speak(mind)
+        fake_bb(person_visible=False, alone_s=700.0)
+        mock_router = MagicMock()
+
+        with (
+            patch("cognition.mind.sensor_manager", sensor_mock(150.0, 5.0)),
+            patch("cognition.mind.router", mock_router),
+            patch.object(CosmoMind, "_hour", staticmethod(lambda: 3)),
+        ):
+            await mind._rule_tick()
+
+        assert calls == []
+        emitted = [c.args[0] for c in mock_router.emit.call_args_list]
+        assert Intent.EXPRESS_FEAR not in emitted
+
+    @pytest.mark.asyncio
+    async def test_wind_down_emits_sleep_once(self):
+        """hour == 23 → Intent.SLEEP(speak=True), only once per night."""
+        from cognition.mind import CosmoMind
+        mind = make_mind()
+        fake_bb(person_visible=False)
+        mock_router = MagicMock()
+
+        with (
+            patch("cognition.mind.sensor_manager", sensor_mock(150.0, 300.0)),
+            patch("cognition.mind.router", mock_router),
+            patch.object(CosmoMind, "_hour", staticmethod(lambda: 23)),
+        ):
+            await mind._rule_tick()
+            await mind._rule_tick()
+
+        sleeps = [c for c in mock_router.emit.call_args_list
+                  if c.args[0] == Intent.SLEEP]
+        assert len(sleeps) == 1, f"Expected exactly one SLEEP emit, got {len(sleeps)}"
+        assert sleeps[0].kwargs.get("speak") is True

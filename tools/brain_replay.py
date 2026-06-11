@@ -419,14 +419,12 @@ async def assert_invariants(
 
     # I3: Budget cap
     # We simulate budget check: over-limit path should silence Claude
-    # For B0 this just checks the DailyBudget class works
+    # Uses the unified TokenBudget (OQ-5)
     try:
-        from cognition.mind import _DailyBudget
-        b = _DailyBudget(1000)
-        class U:
-            input_tokens = 1001
-            output_tokens = 0
-        b.record(U())
+        from cognition.llm import TokenBudget
+        b = TokenBudget(1000)
+        b._db = lambda: None   # keep replay out of the real SQLite ledger
+        b.record(1001)
         if b.over_limit():
             inv.set("I3", True, "budget over_limit() works correctly")
         else:

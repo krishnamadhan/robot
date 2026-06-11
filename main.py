@@ -68,11 +68,11 @@ class CosmoRobot:
         log.info("cosmo.subsystem_ok", name="personality",
                   state=personality.describe())
 
-        # ── State machine ─────────────────────────────────────────────────────
-        from core.state_machine import sm, RobotState
-        await sm.start(RobotState.IDLE_CALM)
-        log.info("cosmo.subsystem_ok", name="state_machine",
-                  initial_state=sm.current)
+        # ── Behavior tree (sole decision authority) ──────────────────────────
+        from core.behavior_tree import behavior_tree
+        behavior_tree.setup()
+        await behavior_tree.start()
+        log.info("cosmo.subsystem_ok", name="behavior_tree")
 
         # ── Camera pipeline ───────────────────────────────────────────────────
         from perception.vision.camera import camera
@@ -90,46 +90,49 @@ class CosmoRobot:
                       backend="yolov8n" if person_detector._use_yolo else "hog")
 
         # ── Wire event handlers ───────────────────────────────────────────────
-        self._wire_handlers(bus, sm, personality)
+        self._wire_handlers(bus, personality)
 
         self._running = True
         log.info("cosmo.ready", mood=personality.describe())
         print(f"\n{'='*50}")
         print(f"  Cosmo is awake! {personality.describe()}")
-        print(f"  State: {sm.current}")
         print(f"  Simulation: {cfg.simulation_enabled()}")
         print(f"{'='*50}\n")
 
-    def _wire_handlers(self, bus, sm, personality) -> None:
+    def _wire_handlers(self, bus, personality) -> None:
         from core.event_bus import EventType, Event
-        from core.state_machine import RobotState
+        from core.action_router import router
+        from core.behavior_tree import bb
+        from core.intents import Intent
+        import time as _time
 
         @bus.on(EventType.PERSON_DETECTED)
         async def on_person(event: Event) -> None:
             personality.process_event("person_arrived")
-            if not sm.in_state(RobotState.INTERACTIVE, RobotState.ALERT):
-                await sm.transition_to(RobotState.ALERT_PERSON, trigger="person_detected")
+            bb.person_visible = True
 
         @bus.on(EventType.PERSON_LOST)
         async def on_person_lost(event: Event) -> None:
             personality.process_event("person_left")
-            if sm.in_state(RobotState.ALERT):
-                await sm.transition_to(RobotState.IDLE_CURIOUS, trigger="person_lost")
+            bb.person_visible = False
+            bb.alone_since = _time.monotonic()
 
         @bus.on(EventType.TOUCH_DETECTED)
         async def on_touch(event: Event) -> None:
             personality.process_event("touch_gentle")
-            await sm.transition_to(RobotState.EXPRESSING_HAPPY, trigger="touch")
+            router.emit(Intent.EXPRESS_AFFECTION, source="touch", speak=False)
 
         @bus.on(EventType.CLIFF_DETECTED)
         async def on_cliff(event: Event) -> None:
             log.warning("cosmo.cliff_detected")
-            await sm.transition_to(RobotState.SAFE_MODE, trigger="cliff", force=True)
+            router.emit(Intent.STOP, source="cliff", emergency=True)
+            router.emit(Intent.ALERT, source="cliff", reason="cliff")
 
         @bus.on(EventType.BATTERY_CRITICAL)
         async def on_battery_critical(event: Event) -> None:
             personality.process_event("battery_low")
-            await sm.transition_to(RobotState.SAFE_MODE, trigger="battery_critical", force=True)
+            router.emit(Intent.STOP, source="battery", emergency=True)
+            router.emit(Intent.ALERT, source="battery", reason="battery_critical")
 
         @bus.on(EventType.LIGHT_CHANGED)
         async def on_light(event: Event) -> None:

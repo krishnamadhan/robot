@@ -242,8 +242,13 @@ class SensorManager:
     # ── Pi I2C poll loops ─────────────────────────────────────────────────────
 
     async def _poll_light(self) -> None:
+        from core.capabilities import Capability, registry as cap_registry
         while self._running:
             lux = self.bh1750.read_lux()
+            if self.bh1750._mock:
+                cap_registry.simulate(Capability.AMBIENT_LIGHT)
+            else:
+                cap_registry.mark_seen(Capability.AMBIENT_LIGHT, "bh1750 poll")
             if abs(lux - self._last_lux) > 50:
                 self._last_lux = lux
                 await bus.publish(Event(

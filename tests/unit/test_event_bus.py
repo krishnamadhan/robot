@@ -117,6 +117,5 @@ def test_event_priority_assignment():
 def test_event_age():
     import time
     e = Event(type=EventType.TICK)
-    import asyncio
-    asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.01))
+    time.sleep(0.01)
     assert e.age_ms() >= 10

@@ -178,10 +178,7 @@ class TestConversationBudgetGate:
         from cognition.conversation import ConversationManager
 
         fake_budget = MagicMock()
-        fake_budget.over_limit.return_value = True
-
-        mock_mind = MagicMock()
-        mock_mind._budget = fake_budget
+        fake_budget.claude_allowed.return_value = False
 
         cm = ConversationManager.__new__(ConversationManager)
         cm._active_person_id = "madhan"
@@ -192,14 +189,9 @@ class TestConversationBudgetGate:
         cm._respond_lock = asyncio.Lock()
         cm._threads = {}
 
-        # Patch the lazy import of cosmo_mind inside conversation.py
-        import cognition.mind as mind_mod
-        original_cosmo_mind = mind_mod.cosmo_mind
-        mind_mod.cosmo_mind = mock_mind
-        try:
+        # Patch the lazy import of the unified budget inside conversation.py
+        with patch("cognition.llm.token_budget", fake_budget):
             result = await cm.respond("Hello", person_id="madhan", speak=False)
-        finally:
-            mind_mod.cosmo_mind = original_cosmo_mind
 
         assert result["backend"] == "budget_exceeded"
         assert result["text"] == ""
@@ -224,23 +216,20 @@ class TestFullDaySoak:
         mind = CosmoMind.__new__(CosmoMind)
         mind._running = False
         mind._task = None
-        mind._client = None
-        mind._enabled = False
+        mind._enabled = True
         mind._last_spoke = 0.0
-        mind._last_action = time.monotonic() - 10
-        mind._budget = MagicMock()
-        mind._budget.over_limit.return_value = False
         mind._budget_lock = asyncio.Lock()
         mind._speech_in_flight = asyncio.Event()
-        mind._trigger_last = {}
+        # Re-homed ambient speech triggers (curiosity/memory_ref/wonder) are
+        # mid-cooldown — I1 asserts the rule tick makes no unguarded LLM calls.
+        _now = time.monotonic()
+        mind._trigger_last = {"curiosity": _now, "memory_ref": _now, "wonder": _now}
         mind._was_dark = False
         mind._obstacle_warn = False
+        mind._morning_day = int(time.time() / 86400)  # morning greet already done
+        mind._wound_down = False
 
         mock_sensor = MagicMock()
-        mock_motors = MagicMock()
-        mock_motors.is_moving = False
-        mock_motors.stop = AsyncMock()
-        mock_eye = MagicMock()
 
         fake_llm = FakeLLM(["Hello!", "Nice!", "Sure!", "I see.", "Ok!"] * 20)
 
@@ -261,10 +250,6 @@ class TestFullDaySoak:
             data = event.get("data", {})
             mock_sensor.get_distance_cm.return_value = data.get("dist_cm", 100)
             mock_sensor.get_lux.return_value = data.get("lux", 300)
-            mock_motors.is_moving = data.get("moving", False)
-
-            idle_s = data.get("idle_s", 10)
-            mind._last_action = time.monotonic() - idle_s
 
             spy_speak_calls = {"n": 0}
             async def spy_speak(*a, **kw):
@@ -273,20 +258,15 @@ class TestFullDaySoak:
 
             fake_bb_mod = MagicMock()
             fake_bb_mod.bb.person_visible = data.get("person_visible", True)
-            sys.modules["core.behavior_tree"] = fake_bb_mod
-
-            mock_nav = MagicMock()
-            mock_nav.state.value = "idle"
-            mock_nav.wander = AsyncMock()
-            mock_nav.forward = AsyncMock()
+            fake_bb_mod.bb.person_name = "Madhan"
+            fake_bb_mod.bb.alone_since = time.monotonic()  # just left → no lonely speech
 
             with (
                 patch("cognition.mind.sensor_manager", mock_sensor),
-                patch("cognition.mind.motor_controller", mock_motors),
-                patch("cognition.mind.eye_engine", mock_eye),
+                patch("cognition.mind.router", MagicMock()),
                 patch("cognition.mind.tts", MagicMock()),
-                patch("cognition.mind.sounds", MagicMock()),
-                patch.dict("sys.modules", {"behavior.navigation": MagicMock(navigation=mock_nav)}),
+                patch.object(CosmoMind, "_hour", staticmethod(lambda: 12)),
+                patch.dict("sys.modules", {"core.behavior_tree": fake_bb_mod}),
             ):
                 await mind._rule_tick()
 
@@ -350,68 +330,63 @@ class TestFullDaySoak:
 class TestGracefulDegradation:
 
     @pytest.mark.asyncio
-    async def test_ollama_down_conversation_falls_back_to_claude(self):
-        """I6: Ollama down → conversation uses Claude fallback."""
-        from cognition.llm import LLMRouter, OllamaProvider, ClaudeProvider, TokenBudget
+    async def test_ollama_down_conversation_falls_back_to_claude(self, monkeypatch):
+        """I6: Ollama down → LLMInterface uses Claude fallback."""
+        import cognition.llm as llm_mod
+        from cognition.llm import LLMInterface, TokenBudget
 
-        budget = TokenBudget(100_000)
-        ollama = OllamaProvider()
-        claude = ClaudeProvider(budget=budget)
+        monkeypatch.setattr(llm_mod, "token_budget", TokenBudget(100_000))
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
 
-        ollama.generate = AsyncMock(return_value=None)  # Ollama down
+        iface = LLMInterface()
+        iface._call_ollama = AsyncMock(return_value=None)  # Ollama down
+        iface._call_claude = AsyncMock(return_value={
+            "text": "Claude fallback!", "backend": "claude/test", "tokens": 10})
 
-        claude_response = {"text": "Claude fallback!", "backend": "claude/test", "tokens": 10}
-        claude.generate = AsyncMock(return_value=claude_response)
-
-        router = LLMRouter(ollama=ollama, claude=claude, budget=budget)
-        result = await router.generate("hello", "system prompt")
+        result = await iface.generate_once("hello", "system prompt")
 
         assert result["text"] == "Claude fallback!"
         assert "claude" in result["backend"]
 
     @pytest.mark.asyncio
-    async def test_both_down_returns_empty_no_crash(self):
+    async def test_both_down_returns_empty_no_crash(self, monkeypatch):
         """I6: Both down → empty result, no exception."""
-        from cognition.llm import LLMRouter, OllamaProvider, ClaudeProvider, TokenBudget
+        import cognition.llm as llm_mod
+        from cognition.llm import LLMInterface, TokenBudget
 
-        budget = TokenBudget(100_000)
-        ollama = OllamaProvider()
-        claude = ClaudeProvider(budget=budget)
+        monkeypatch.setattr(llm_mod, "token_budget", TokenBudget(100_000))
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
 
-        ollama.generate = AsyncMock(return_value=None)
-        claude.generate = AsyncMock(return_value=None)
-
-        router = LLMRouter(ollama=ollama, claude=claude, budget=budget)
+        iface = LLMInterface()
+        iface._call_ollama = AsyncMock(return_value=None)
+        iface._call_claude = AsyncMock(side_effect=RuntimeError("Claude down"))
 
         # Must not raise
-        result = await router.generate("hello", "system prompt")
+        result = await iface.generate_once("hello", "system prompt")
         assert result["text"] == ""
         assert result["backend"] == "unavailable"
 
     @pytest.mark.asyncio
-    async def test_budget_exhausted_ollama_continues(self):
+    async def test_budget_exhausted_ollama_continues(self, monkeypatch):
         """I3+I6: Budget exhausted → Ollama still works, Claude silenced."""
-        from cognition.llm import LLMRouter, OllamaProvider, ClaudeProvider, TokenBudget
+        import cognition.llm as llm_mod
+        from cognition.llm import LLMInterface, TokenBudget
 
         budget = TokenBudget(100)
         budget.record(100)  # exhaust
+        monkeypatch.setattr(llm_mod, "token_budget", budget)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
 
-        ollama = OllamaProvider()
-        claude = ClaudeProvider(budget=budget)
-
-        ollama.generate = AsyncMock(return_value={
+        iface = LLMInterface()
+        iface._call_ollama = AsyncMock(return_value={
             "text": "Ollama still alive!",
             "backend": "ollama/test",
             "tokens": 5,
         })
-        claude_calls = {"n": 0}
-        async def spy_claude(*a, **kw):
-            claude_calls["n"] += 1
-            return {"text": "Claude!", "backend": "claude", "tokens": 10}
-        claude.generate = spy_claude
+        iface._call_claude = AsyncMock(return_value={
+            "text": "Claude!", "backend": "claude", "tokens": 10})
 
-        router = LLMRouter(ollama=ollama, claude=claude, budget=budget)
-        result = await router.generate("hello", "system")
+        result = await iface.generate_once("hello", "system")
 
         assert result["text"] == "Ollama still alive!"
-        assert claude_calls["n"] == 0, "Claude must not be called when budget exhausted"
+        iface._call_claude.assert_not_awaited()
