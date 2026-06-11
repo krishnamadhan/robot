@@ -482,5 +482,12 @@ class EyeEngine:
     def current_expression(self) -> EyeExpression:
         return self._state.expression
 
+    @property
+    def event_expression_active(self) -> bool:
+        """True while a timed (event-driven) expression is showing —
+        idle micro-motion should defer to it."""
+        return bool(self._timed_expr_end and
+                    time.monotonic() < self._timed_expr_end)
+
 
 eye_engine = EyeEngine()

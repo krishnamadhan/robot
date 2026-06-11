@@ -83,6 +83,8 @@ def _get_key(fd) -> str:
 
 async def run_simulator() -> None:
     await eye_engine.start()
+    from expression.idle_motion import idle_motion
+    await idle_motion.start()
 
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)

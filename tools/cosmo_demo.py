@@ -510,7 +510,9 @@ async def main() -> None:
 
     # Eye engine (terminal renderer — OLED when hardware arrives)
     await eye_engine.start()
-    console.print("[green]✓ Eye engine (terminal)[/green]")
+    from expression.idle_motion import idle_motion
+    await idle_motion.start()
+    console.print("[green]✓ Eye engine (terminal) + idle motion[/green]")
 
     # Sound engine
     await sounds.start()
