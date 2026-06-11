@@ -101,3 +101,42 @@ async def test_thresholds(engine):
 async def test_unknown_event_doesnt_crash(engine):
     engine.process_event("completely_made_up_event_xyz")
     # Should not crash, just log and return
+
+
+# ── Circadian energy modulation (Phase 2.3) ──────────────────────────────────
+
+def _at_hour(hour):
+    from unittest.mock import MagicMock, patch
+    return patch("core.personality.time.localtime",
+                 return_value=MagicMock(tm_hour=hour))
+
+
+@pytest.mark.asyncio
+async def test_circadian_targets_drop_at_late_night(engine):
+    with _at_hour(2):
+        _, energy_night = engine._circadian_targets()
+    with _at_hour(8):
+        _, energy_morning = engine._circadian_targets()
+    assert energy_night < energy_morning
+    # settled overnight energy must reach the sleepy band (< 0.2 thresholds)
+    assert energy_night <= 0.2
+
+
+@pytest.mark.asyncio
+async def test_circadian_drift_pulls_energy_down_overnight(engine):
+    import time as _time
+    engine.state.energy = 0.9
+    with _at_hour(2):
+        engine._last_update = _time.monotonic() - 3600  # one elapsed hour
+        engine._update()
+    assert engine.state.energy < 0.9
+
+
+@pytest.mark.asyncio
+async def test_circadian_drift_recovers_energy_in_morning(engine):
+    import time as _time
+    engine.state.energy = 0.2
+    with _at_hour(8):
+        engine._last_update = _time.monotonic() - 3600
+        engine._update()
+    assert engine.state.energy > 0.2

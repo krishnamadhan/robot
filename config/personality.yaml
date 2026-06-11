@@ -69,12 +69,14 @@ personality:
       mood_min: 0.7
 
   time_of_day:
-    # Energy and mood modifiers by hour (0-23)
+    # Shifts the baseline targets energy/mood drift toward (0-23).
+    # late_night must push the settled energy below 0.2 so the sleepy
+    # face/behaviors actually engage overnight.
     morning:   { hours: [6, 7, 8, 9, 10], energy_mod: +0.15, mood_mod: +0.1 }
     afternoon: { hours: [11, 12, 13, 14, 15, 16], energy_mod: 0.0, mood_mod: 0.0 }
     evening:   { hours: [17, 18, 19, 20], energy_mod: +0.1, mood_mod: +0.15 }
-    night:     { hours: [21, 22, 23], energy_mod: -0.2, mood_mod: -0.05 }
-    late_night: { hours: [0, 1, 2, 3, 4, 5], energy_mod: -0.4, mood_mod: -0.1 }
+    night:     { hours: [21, 22, 23], energy_mod: -0.3, mood_mod: -0.05 }
+    late_night: { hours: [0, 1, 2, 3, 4, 5], energy_mod: -0.5, mood_mod: -0.1 }
 
   known_persons:
     Madhan:

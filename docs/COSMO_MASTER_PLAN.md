@@ -83,7 +83,7 @@ Before Phase 1 reports done:
 
 - [x] 2.1 Eye engine: expression state machine driven by personality vector (extend existing EyeEngine; reg.simulate(EXPRESSION))
 - [x] 2.2 Idle personality loop: curiosity glances, boredom fidgets, settling, micro-reactions (expression/idle_motion.py)
-- [ ] 2.3 Circadian energy modulation
+- [x] 2.3 Circadian energy modulation (circadian targets in personality drift)
 - [ ] 2.4 Reactive expressions off existing events
 - [ ] 2.5 Greet-by-name: SFace + persons table + episodic recall; Tanglish via Claude Haiku (per-path language decision here)
 - [ ] **STOP — report**

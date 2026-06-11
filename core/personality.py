@@ -300,16 +300,16 @@ class PersonalityEngine:
         bl = self._baselines
         s = self._state
 
-        # Drift each dimension toward its baseline
-        s.mood += (bl.get("mood", 0.55) - s.mood) * dr.get("mood_decay_per_hour", 0.02) * elapsed_h
-        s.energy += (bl.get("energy", 0.65) - s.energy) * dr.get("energy_recovery_per_hour", 0.15) * elapsed_h
+        # Circadian modulation: time-of-day shifts the *baseline target*
+        # the drift moves toward (an additive per-tick nudge is too weak to
+        # win against baseline recovery — energy never dropped at night)
+        mood_target, energy_target = self._circadian_targets()
+
+        # Drift each dimension toward its (circadian-shifted) baseline
+        s.mood += (mood_target - s.mood) * dr.get("mood_decay_per_hour", 0.02) * elapsed_h
+        s.energy += (energy_target - s.energy) * dr.get("energy_recovery_per_hour", 0.15) * elapsed_h
         s.arousal += (bl.get("arousal", 0.4) - s.arousal) * dr.get("arousal_decay_per_sec", 0.003) * (elapsed_h * 3600)
         s.attachment += (bl.get("attachment", 0.5) - s.attachment) * dr.get("attention_decay_per_min", 0.1) * (elapsed_h * 60)
-
-        # Time-of-day modulation (small nudge each tick)
-        tod_mod = self._time_of_day_modifiers()
-        s.energy += tod_mod["energy_mod"] * elapsed_h * 0.5   # gentle push
-        s.mood += tod_mod["mood_mod"] * elapsed_h * 0.5
 
         s.clamp()
 
@@ -336,6 +336,14 @@ class PersonalityEngine:
                     "mood_mod": period.get("mood_mod", 0.0),
                 }
         return {"energy_mod": 0.0, "mood_mod": 0.0}
+
+    def _circadian_targets(self) -> Tuple[float, float]:
+        """(mood_target, energy_target) — baselines shifted by time of day."""
+        bl = self._baselines
+        tod = self._time_of_day_modifiers()
+        mood_target = max(-1.0, min(1.0, bl.get("mood", 0.55) + tod["mood_mod"]))
+        energy_target = max(0.05, min(1.0, bl.get("energy", 0.65) + tod["energy_mod"]))
+        return mood_target, energy_target
 
     def _mood_trend(self) -> str:
         """Is mood going up, down, or stable over last 10 minutes?"""
