@@ -175,7 +175,7 @@
 - **Priority:** Medium — mutes Cosmo silently, hard to diagnose
 
 ### KI-016: SQLite episodic memory — concurrent writes from thread pool cause "database is locked"
-- **Status:** Open — low urgency (only triggers under high load)
+- **Status:** ✅ Resolved 2026-06-12 — episodic.py migrated to aiosqlite (single async connection serializes all access; `initialize()`/`close()` now async, call sites updated in main.py / cosmo_demo.py / memory_browser.py; tests rewritten to async API). TokenBudget keeps its own separate sync conn (WAL, atomic UPSERT) — unaffected.
 - **Service:** core/memory/episodic.py line ~63
 - **Symptom:** `sqlite3.connect(..., check_same_thread=False)` is used with multiple `run_in_executor()` calls hitting the default ThreadPoolExecutor. Under concurrent emotion + face + conversation writes, SQLite's default 5s busy timeout may expire, raising `OperationalError: database is locked` and silently dropping the memory write.
 - **Root cause:** Shared sqlite3 connection across threads without a write serialisation layer.

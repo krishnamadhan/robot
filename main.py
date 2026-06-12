@@ -59,7 +59,7 @@ class CosmoRobot:
         # ── Memory system ─────────────────────────────────────────────────────
         from core.memory.episodic import episodic
         from core.memory.spatial import spatial
-        episodic.initialize()
+        await episodic.initialize()
         log.info("cosmo.subsystem_ok", name="memory")
 
         # ── Personality engine ────────────────────────────────────────────────
@@ -208,7 +208,7 @@ class CosmoRobot:
 
         try:
             from core.memory.episodic import episodic
-            episodic.close()
+            await episodic.close()
         except Exception:
             pass
 

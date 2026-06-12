@@ -8,12 +8,12 @@
 
 ## P0 — Architecture gaps (fix before Phase 2 motors go live)
 
-- [ ] **ESP32 local cliff reflex**: add `Pin.irq` on cliff GPIO13/14 in `esp32/main.py` — local motor stop without Pi round-trip. Currently cliff→Pi→motor has unbounded latency if Pi is busy.
-- [ ] **Bounded `_outq`**: replace plain list in `esp32/main.py` with a bounded deque (max 20 items, drop oldest) — prevents unbounded memory growth at 10 Hz polling.
-- [ ] **Event bus `create_task` dispatch**: `core/event_bus.py` currently awaits handlers inline. Switch to `asyncio.create_task` so a slow CLIFF_DETECTED handler cannot block the loop.
-- [ ] **Kill HSM or define ownership**: both `state_machine.py` (HSM) and py_trees behavior tree run simultaneously in `tools/cosmo_demo.py` with no boundary. Either remove the HSM and route everything through py_trees, or document the split clearly in `docs/DECISIONS.md`.
-- [ ] **Unify LLM call paths**: `cognition/llm.py:LLMInterface` (Ollama→Claude) and `cognition/mind.py` (direct `anthropic.Anthropic` client) are two separate paths. Route everything through `LLMInterface`.
-- [ ] **Unify + persist token budget**: `cognition/llm.py:TokenBudget` and `cognition/mind.py:_DailyBudget` are separate, neither persists to disk. Merge into one class; persist to `~/.robot/memory_meta/budget.json` so a crash doesn't reset the counter.
+- [x] **ESP32 local cliff reflex**: add `Pin.irq` on cliff GPIO13/14 in `esp32/main.py` — local motor stop without Pi round-trip. Currently cliff→Pi→motor has unbounded latency if Pi is busy. *(done 2026-06-12, OQ-1)*
+- [x] **Bounded `_outq`**: replace plain list in `esp32/main.py` with a bounded deque (max 20 items, drop oldest) — prevents unbounded memory growth at 10 Hz polling. *(done 2026-06-12, OQ-2 — bounded list 100, critical never dropped)*
+- [x] **Event bus `create_task` dispatch**: `core/event_bus.py` currently awaits handlers inline. Switch to `asyncio.create_task` so a slow CLIFF_DETECTED handler cannot block the loop. *(done 2026-06-11, OQ-3)*
+- [x] **Kill HSM or define ownership**: both `state_machine.py` (HSM) and py_trees behavior tree run simultaneously in `tools/cosmo_demo.py` with no boundary. Either remove the HSM and route everything through py_trees, or document the split clearly in `docs/DECISIONS.md`. *(done 2026-06-11 — HSM archived, BT sole authority, OQ-4)*
+- [x] **Unify LLM call paths**: `cognition/llm.py:LLMInterface` (Ollama→Claude) and `cognition/mind.py` (direct `anthropic.Anthropic` client) are two separate paths. Route everything through `LLMInterface`. *(done 2026-06-11, OQ-6)*
+- [x] **Unify + persist token budget**: `cognition/llm.py:TokenBudget` and `cognition/mind.py:_DailyBudget` are separate, neither persists to disk. Merge into one class; persist to `~/.robot/memory_meta/budget.json` so a crash doesn't reset the counter. *(done 2026-06-11, OQ-5 — persisted to memory_meta SQLite, not JSON)*
 
 ---
 
@@ -32,7 +32,7 @@
 
 ## P2 — Code improvements
 
-- [ ] KI-016: migrate episodic memory to aiosqlite (currently blocking async loop with smbus2 reads)
+- [x] KI-016: migrate episodic memory to aiosqlite *(done 2026-06-12 — async lifecycle: `await episodic.initialize()/close()`)*
 - [ ] Re-enroll Indhu face: 20 samples, good light (currently ~75% — target 90%+) → `python3 tools/enroll_face.py`
 - [ ] Prompt caching (ADR-018): add ephemeral cache headers to Claude calls — after OLED + face tests
 - [ ] Test Piper Kitten Micro 25MB vs current lessac-medium 61MB (ADR-016)

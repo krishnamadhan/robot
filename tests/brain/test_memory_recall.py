@@ -10,15 +10,11 @@ Tests:
   - Empty DB returns ""
 """
 
-import asyncio
-import sqlite3
 import sys
-import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict
-from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiosqlite
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -27,28 +23,21 @@ from core.memory.episodic import EpisodicMemory, Episode
 
 
 @pytest.fixture
-def mem_db():
-    """Fresh in-memory EpisodicMemory for each test."""
+async def mem_db():
+    """Fresh in-memory EpisodicMemory for each test (KI-016: aiosqlite)."""
     db = EpisodicMemory.__new__(EpisodicMemory)
-    db._db_path = Path(":memory:")  # not used — we override conn
-    # check_same_thread=False needed for asyncio test executor calls
-    db._conn = sqlite3.connect(":memory:", check_same_thread=False)
-    db._conn.row_factory = sqlite3.Row
-    db._loop = None
-    db._create_schema()
-    return db
-
-
-def _store_sync(db: EpisodicMemory, episode: Episode) -> str:
-    """Synchronous store for test setup."""
-    return db._store_sync(episode)
+    db._db_path = Path(":memory:")
+    db._conn = await aiosqlite.connect(":memory:")
+    db._conn.row_factory = aiosqlite.Row
+    await db._create_schema()
+    yield db
+    await db.close()
 
 
 # ── Basic read/write ──────────────────────────────────────────────────────────
 
 class TestEpisodicStoreAndRetrieve:
 
-    @pytest.mark.asyncio
     async def test_store_and_retrieve(self, mem_db):
         """Store an episode, retrieve it back."""
         ep = Episode(
@@ -58,23 +47,14 @@ class TestEpisodicStoreAndRetrieve:
             importance=0.8,
             emotional_valence=0.5,
         )
-        _store_sync(mem_db, ep)
+        await mem_db.store(ep)
 
-        loop = asyncio.get_event_loop()
-        episodes = await loop.run_in_executor(
-            None, mem_db._retrieve_sync,
-            10, "madhan", None, 0.0, None, None, None, None
-        )
+        episodes = await mem_db.retrieve(limit=10, person_id="madhan")
         assert len(episodes) == 1
         assert "idli" in episodes[0].summary
 
-    @pytest.mark.asyncio
     async def test_empty_db_returns_empty_list(self, mem_db):
-        loop = asyncio.get_event_loop()
-        episodes = await loop.run_in_executor(
-            None, mem_db._retrieve_sync,
-            10, None, None, 0.0, None, None, None, None
-        )
+        episodes = await mem_db.retrieve(limit=10)
         assert episodes == []
 
 
@@ -82,12 +62,10 @@ class TestEpisodicStoreAndRetrieve:
 
 class TestRecallForPrompt:
 
-    @pytest.mark.asyncio
     async def test_empty_db_returns_empty_string(self, mem_db):
-        result = mem_db._recall_sync("madhan", None, 5, 800)
+        result = await mem_db.recall_for_prompt("madhan", None, 5, 800)
         assert result == ""
 
-    @pytest.mark.asyncio
     async def test_stores_and_recalls_fact(self, mem_db):
         """I5: Fact stored → retrieved in recall."""
         ep = Episode(
@@ -96,12 +74,11 @@ class TestRecallForPrompt:
             person_id="madhan",
             importance=0.8,
         )
-        _store_sync(mem_db, ep)
+        await mem_db.store(ep)
 
-        result = mem_db._recall_sync("madhan", None, 5, 800)
+        result = await mem_db.recall_for_prompt("madhan", None, 5, 800)
         assert "idli" in result, f"Expected 'idli' in recall result: {result!r}"
 
-    @pytest.mark.asyncio
     async def test_caps_output_to_max_chars(self, mem_db):
         """Memory recall respects hard char cap."""
         for i in range(20):
@@ -111,24 +88,21 @@ class TestRecallForPrompt:
                 person_id="madhan",
                 importance=0.5,
             )
-            _store_sync(mem_db, ep)
+            await mem_db.store(ep)
 
-        result = mem_db._recall_sync("madhan", None, 20, 800)
+        result = await mem_db.recall_for_prompt("madhan", None, 20, 800)
         assert len(result) <= 800, f"Recall exceeded cap: {len(result)} chars"
 
-    @pytest.mark.asyncio
     async def test_keyword_search_finds_relevant(self, mem_db):
         """Keyword search surfaces relevant memories not in top-N by recency."""
-        # Store old, low-importance memory about food
-        import time as _time
         ep_old = Episode(
             episode_type="conversation",
             summary="Madhan once mentioned he hates broccoli",
             person_id="madhan",
             importance=0.3,
-            timestamp=_time.time() - 7 * 86400,  # 7 days ago
+            timestamp=time.time() - 7 * 86400,  # 7 days ago
         )
-        _store_sync(mem_db, ep_old)
+        await mem_db.store(ep_old)
 
         # Store many newer entries to push old one down by recency
         for i in range(10):
@@ -138,13 +112,12 @@ class TestRecallForPrompt:
                 person_id="madhan",
                 importance=0.5,
             )
-            _store_sync(mem_db, ep)
+            await mem_db.store(ep)
 
         # Search with keyword "broccoli" should find it
-        result = mem_db._recall_sync("madhan", ["broccoli"], 5, 800)
+        result = await mem_db.recall_for_prompt("madhan", ["broccoli"], 5, 800)
         assert "broccoli" in result, f"Keyword search failed: {result!r}"
 
-    @pytest.mark.asyncio
     async def test_person_filter_isolation(self, mem_db):
         """Recall for person A should not include person B's memories."""
         ep_a = Episode(
@@ -159,11 +132,11 @@ class TestRecallForPrompt:
             person_id="indhu",
             importance=0.8,
         )
-        _store_sync(mem_db, ep_a)
-        _store_sync(mem_db, ep_b)
+        await mem_db.store(ep_a)
+        await mem_db.store(ep_b)
 
-        result_a = mem_db._recall_sync("madhan", None, 5, 800)
-        result_b = mem_db._recall_sync("indhu", None, 5, 800)
+        result_a = await mem_db.recall_for_prompt("madhan", None, 5, 800)
+        result_b = await mem_db.recall_for_prompt("indhu", None, 5, 800)
 
         assert "Tamil movies" in result_a
         assert "dancing" not in result_a
@@ -175,24 +148,13 @@ class TestRecallForPrompt:
 
 class TestStoreFact:
 
-    @pytest.mark.asyncio
     async def test_store_fact_persists(self, mem_db):
         """store_fact writes a retrievable episode."""
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(
-            None,
-            lambda: _store_sync(mem_db, Episode(
-                episode_type="conversation_fact",
-                summary="Madhan's favorite color is blue",
-                person_id="madhan",
-                importance=0.7,
-            ))
-        )
+        await mem_db.store_fact("madhan", "Madhan's favorite color is blue")
 
-        result = mem_db._recall_sync("madhan", None, 5, 800)
+        result = await mem_db.recall_for_prompt("madhan", None, 5, 800)
         assert "blue" in result, f"Expected fact in recall: {result!r}"
 
-    @pytest.mark.asyncio
     async def test_store_fact_high_importance(self, mem_db):
         """Facts stored with importance=0.7 appear before low-importance ones."""
         ep_low = Episode(
@@ -201,16 +163,10 @@ class TestStoreFact:
             person_id="madhan",
             importance=0.2,
         )
-        ep_fact = Episode(
-            episode_type="conversation_fact",
-            summary="Madhan is a software developer",
-            person_id="madhan",
-            importance=0.7,
-        )
-        _store_sync(mem_db, ep_low)
-        _store_sync(mem_db, ep_fact)
+        await mem_db.store(ep_low)
+        await mem_db.store_fact("madhan", "Madhan is a software developer")
 
-        result = mem_db._recall_sync("madhan", None, 5, 800)
+        result = await mem_db.recall_for_prompt("madhan", None, 5, 800)
         assert "software developer" in result
 
 
@@ -222,10 +178,8 @@ class TestI5FactInjection:
     must appear in a later prompt's memory context.
     """
 
-    @pytest.mark.asyncio
     async def test_fact_survives_and_appears_in_prompt(self, mem_db):
         """Simulate: teach fact early, recall in later conversation."""
-        # Step 1: Store fact (simulates voice_conversation scenario)
         ep = Episode(
             episode_type="conversation_fact",
             summary="Madhan told Cosmo his favorite food is idli with sambar",
@@ -233,22 +187,18 @@ class TestI5FactInjection:
             importance=0.8,
             emotional_valence=0.4,
         )
-        _store_sync(mem_db, ep)
+        await mem_db.store(ep)
 
-        # Step 2: Simulate later conversation context build
-        memories = mem_db._recall_sync("madhan", None, 5, 800)
+        memories = await mem_db.recall_for_prompt("madhan", None, 5, 800)
 
-        # Step 3: Simulate LLM prompt injection
         from cognition.mind import _SYSTEM
         system_prompt = _SYSTEM + f"\n\nMemories:\n{memories}"
 
-        # I5 assertion: fact is in the prompt
         assert "idli" in system_prompt, (
             f"I5 FAILED: fact 'idli' not found in prompt.\n"
             f"Memories block:\n{memories}\n"
         )
 
-    @pytest.mark.asyncio
     async def test_multiple_facts_all_recalled(self, mem_db):
         """Multiple important facts all appear in recall (within cap)."""
         facts = [
@@ -263,15 +213,14 @@ class TestI5FactInjection:
                 person_id="madhan",
                 importance=importance,
             )
-            _store_sync(mem_db, ep)
+            await mem_db.store(ep)
 
-        memories = mem_db._recall_sync("madhan", None, 5, 800)
+        memories = await mem_db.recall_for_prompt("madhan", None, 5, 800)
 
         for summary, _ in facts:
             key = summary.split()[-1]  # last word as check
             assert key in memories, f"Fact '{summary}' not in recall: {memories!r}"
 
-    @pytest.mark.asyncio
     async def test_memory_block_capped_at_800_chars(self, mem_db):
         """Hard cap: memory block injected into prompt never exceeds 800 chars."""
         for i in range(30):
@@ -281,7 +230,7 @@ class TestI5FactInjection:
                 person_id="madhan",
                 importance=0.6,
             )
-            _store_sync(mem_db, ep)
+            await mem_db.store(ep)
 
-        memories = mem_db._recall_sync("madhan", None, 30, 800)
+        memories = await mem_db.recall_for_prompt("madhan", None, 30, 800)
         assert len(memories) <= 800, f"Memory block too long: {len(memories)}"

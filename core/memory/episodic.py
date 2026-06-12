@@ -9,16 +9,20 @@ Schema design decisions:
 
 Forgetting curve: importance decays over time so old trivial memories
 naturally become less retrievable without being deleted.
+
+KI-016: backed by aiosqlite — one async connection serializes all access,
+so concurrent recognition + conversation writes can't hit "database is
+locked" the way thread-pool executor calls on a shared sync conn did.
 """
 
-import asyncio
 import json
-import sqlite3
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+import aiosqlite
 
 from utils.logger import get_logger
 
@@ -42,32 +46,25 @@ class Episode:
 
 
 class EpisodicMemory:
-    """
-    Long-term episodic memory store.
-
-    Async API wraps synchronous SQLite via run_in_executor to avoid
-    blocking the event loop on disk I/O.
-    """
+    """Long-term episodic memory store (async, aiosqlite)."""
 
     # Importance decays at this rate per day — old trivial memories fade
     IMPORTANCE_DECAY_PER_DAY = 0.05
 
     def __init__(self) -> None:
         self._db_path = DB_PATH
-        self._conn: Optional[sqlite3.Connection] = None
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._conn: Optional[aiosqlite.Connection] = None
 
-    def initialize(self) -> None:
-        """Call once at startup (sync). Creates DB and tables."""
+    async def initialize(self) -> None:
+        """Call once at startup. Creates DB and tables."""
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        self._create_schema()
+        self._conn = await aiosqlite.connect(str(self._db_path))
+        self._conn.row_factory = aiosqlite.Row
+        await self._create_schema()
         log.info("episodic_memory.initialized", path=str(self._db_path))
 
-    def _create_schema(self) -> None:
-        c = self._conn.cursor()
-        c.executescript("""
+    async def _create_schema(self) -> None:
+        await self._conn.executescript("""
         PRAGMA journal_mode=WAL;
 
         CREATE TABLE IF NOT EXISTS episodes (
@@ -103,18 +100,13 @@ class EpisodicMemory:
             value TEXT
         );
         """)
-        self._conn.commit()
+        await self._conn.commit()
 
     # ── Episode CRUD ─────────────────────────────────────────────────────────
 
     async def store(self, episode: Episode) -> str:
         """Store an episode. Returns episode ID."""
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._store_sync, episode)
-
-    def _store_sync(self, episode: Episode) -> str:
-        c = self._conn.cursor()
-        c.execute("""
+        await self._conn.execute("""
             INSERT INTO episodes
             (id, timestamp, episode_type, person_id, room_id,
              emotional_valence, importance, summary, raw_data, linked_episodes)
@@ -131,7 +123,7 @@ class EpisodicMemory:
             json.dumps(episode.raw_data),
             json.dumps(episode.linked_episodes),
         ))
-        self._conn.commit()
+        await self._conn.commit()
         return episode.id
 
     async def retrieve(
@@ -144,24 +136,6 @@ class EpisodicMemory:
         max_valence: Optional[float] = None,
         since_ts: Optional[float] = None,
         room_id: Optional[str] = None,
-    ) -> List[Episode]:
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            None, self._retrieve_sync,
-            limit, person_id, episode_type,
-            min_importance, min_valence, max_valence, since_ts, room_id
-        )
-
-    def _retrieve_sync(
-        self,
-        limit: int,
-        person_id: Optional[str],
-        episode_type: Optional[str],
-        min_importance: float,
-        min_valence: Optional[float],
-        max_valence: Optional[float],
-        since_ts: Optional[float],
-        room_id: Optional[str],
     ) -> List[Episode]:
         clauses = ["importance >= ?"]
         params: List[Any] = [min_importance]
@@ -188,14 +162,14 @@ class EpisodicMemory:
         where = " AND ".join(clauses)
         params.append(limit)
 
-        rows = self._conn.execute(
+        cur = await self._conn.execute(
             f"SELECT * FROM episodes WHERE {where} ORDER BY importance DESC, timestamp DESC LIMIT ?",
             params
-        ).fetchall()
-
+        )
+        rows = await cur.fetchall()
         return [self._row_to_episode(r) for r in rows]
 
-    def _row_to_episode(self, row: sqlite3.Row) -> Episode:
+    def _row_to_episode(self, row: aiosqlite.Row) -> Episode:
         return Episode(
             id=row["id"],
             timestamp=row["timestamp"],
@@ -210,13 +184,10 @@ class EpisodicMemory:
         )
 
     async def get_by_id(self, episode_id: str) -> Optional[Episode]:
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._get_by_id_sync, episode_id)
-
-    def _get_by_id_sync(self, episode_id: str) -> Optional[Episode]:
-        row = self._conn.execute(
+        cur = await self._conn.execute(
             "SELECT * FROM episodes WHERE id = ?", (episode_id,)
-        ).fetchone()
+        )
+        row = await cur.fetchone()
         return self._row_to_episode(row) if row else None
 
     # ── Person management ────────────────────────────────────────────────────
@@ -225,23 +196,14 @@ class EpisodicMemory:
                             relationship_delta: float = 0.0,
                             face_encoding: Optional[bytes] = None,
                             notes: Optional[Dict[str, Any]] = None) -> None:
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(
-            None, self._upsert_person_sync,
-            person_id, name, relationship_delta, face_encoding, notes
-        )
-
-    def _upsert_person_sync(self, person_id: str, name: Optional[str],
-                             relationship_delta: float,
-                             face_encoding: Optional[bytes],
-                             notes: Optional[Dict[str, Any]]) -> None:
-        existing = self._conn.execute(
+        cur = await self._conn.execute(
             "SELECT * FROM persons WHERE id = ?", (person_id,)
-        ).fetchone()
+        )
+        existing = await cur.fetchone()
 
         if existing:
             rq = min(1.0, max(0.0, existing["relationship_quality"] + relationship_delta))
-            self._conn.execute("""
+            await self._conn.execute("""
                 UPDATE persons SET
                     name = COALESCE(?, name),
                     relationship_quality = ?,
@@ -253,23 +215,20 @@ class EpisodicMemory:
             """, (name, rq, time.time(), json.dumps(notes) if notes else None,
                   face_encoding, person_id))
         else:
-            self._conn.execute("""
+            await self._conn.execute("""
                 INSERT INTO persons
                 (id, name, relationship_quality, interaction_count, last_seen,
                  personality_notes, face_encoding)
                 VALUES (?, ?, ?, 1, ?, ?, ?)
             """, (person_id, name, 0.5 + relationship_delta, time.time(),
                   json.dumps(notes or {}), face_encoding))
-        self._conn.commit()
+        await self._conn.commit()
 
     async def get_person(self, person_id: str) -> Optional[Dict[str, Any]]:
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._get_person_sync, person_id)
-
-    def _get_person_sync(self, person_id: str) -> Optional[Dict[str, Any]]:
-        row = self._conn.execute(
+        cur = await self._conn.execute(
             "SELECT * FROM persons WHERE id = ?", (person_id,)
-        ).fetchone()
+        )
+        row = await cur.fetchone()
         if not row:
             return None
         return {
@@ -282,13 +241,10 @@ class EpisodicMemory:
         }
 
     async def list_persons(self) -> List[Dict[str, Any]]:
-        loop = asyncio.get_event_loop()
-        rows = await loop.run_in_executor(
-            None,
-            lambda: self._conn.execute(
-                "SELECT id, name, relationship_quality, interaction_count, last_seen FROM persons ORDER BY last_seen DESC"
-            ).fetchall()
+        cur = await self._conn.execute(
+            "SELECT id, name, relationship_quality, interaction_count, last_seen FROM persons ORDER BY last_seen DESC"
         )
+        rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
     # ── Maintenance ──────────────────────────────────────────────────────────
@@ -302,35 +258,33 @@ class EpisodicMemory:
         Structured memory context for LLM injection.
         Returns familiarity, recent memories, last mood, total interactions.
         """
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            None, self._get_context_sync, person_id, limit
-        )
-
-    def _get_context_sync(self, person_id: str, limit: int) -> dict:
         cutoff = time.time() - 30 * 86400  # last 30 days
-        rows = self._conn.execute(
+        cur = await self._conn.execute(
             """SELECT summary, timestamp, emotional_valence, episode_type
                FROM episodes
                WHERE person_id = ? AND timestamp > ?
                ORDER BY importance DESC, timestamp DESC LIMIT ?""",
             (person_id, cutoff, limit),
-        ).fetchall()
+        )
+        rows = await cur.fetchall()
 
-        last_row = self._conn.execute(
+        cur = await self._conn.execute(
             "SELECT emotional_valence FROM episodes WHERE person_id = ? ORDER BY timestamp DESC LIMIT 1",
             (person_id,),
-        ).fetchone()
+        )
+        last_row = await cur.fetchone()
 
-        total = self._conn.execute(
+        cur = await self._conn.execute(
             "SELECT COUNT(*) FROM episodes WHERE person_id = ?",
             (person_id,),
-        ).fetchone()[0]
+        )
+        total = (await cur.fetchone())[0]
 
-        prow = self._conn.execute(
+        cur = await self._conn.execute(
             "SELECT relationship_quality, last_seen FROM persons WHERE id = ?",
             (person_id,),
-        ).fetchone()
+        )
+        prow = await cur.fetchone()
 
         memories = []
         for summary, ts, valence, ep_type in rows:
@@ -357,29 +311,23 @@ class EpisodicMemory:
 
     async def apply_forgetting_curve(self) -> int:
         """Decay importance of old memories. Run daily."""
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._apply_forgetting_sync)
-
-    def _apply_forgetting_sync(self) -> int:
         cutoff = time.time() - 86400   # older than 1 day
         decay = self.IMPORTANCE_DECAY_PER_DAY
-        c = self._conn.cursor()
-        c.execute("""
+        cur = await self._conn.execute("""
             UPDATE episodes
             SET importance = MAX(0.05, importance - ?)
             WHERE timestamp < ? AND importance > 0.05
         """, (decay, cutoff))
-        self._conn.commit()
-        return c.rowcount
+        await self._conn.commit()
+        return cur.rowcount
 
     async def stats(self) -> Dict[str, Any]:
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._stats_sync)
-
-    def _stats_sync(self) -> Dict[str, Any]:
-        total = self._conn.execute("SELECT COUNT(*) FROM episodes").fetchone()[0]
-        persons = self._conn.execute("SELECT COUNT(*) FROM persons").fetchone()[0]
-        oldest = self._conn.execute("SELECT MIN(timestamp) FROM episodes").fetchone()[0]
+        cur = await self._conn.execute("SELECT COUNT(*) FROM episodes")
+        total = (await cur.fetchone())[0]
+        cur = await self._conn.execute("SELECT COUNT(*) FROM persons")
+        persons = (await cur.fetchone())[0]
+        cur = await self._conn.execute("SELECT MIN(timestamp) FROM episodes")
+        oldest = (await cur.fetchone())[0]
         return {
             "total_episodes": total,
             "total_persons": persons,
@@ -407,18 +355,6 @@ class EpisodicMemory:
 
         Returns a formatted string ready for LLM injection, or "" if no memories.
         """
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            None, self._recall_sync, person_id, keywords, limit, max_chars
-        )
-
-    def _recall_sync(
-        self,
-        person_id: Optional[str],
-        keywords: Optional[List[str]],
-        limit: int,
-        max_chars: int,
-    ) -> str:
         if not self._conn:
             return ""
         try:
@@ -429,28 +365,30 @@ class EpisodicMemory:
                 base_clause += " AND person_id = ?"
                 base_params.append(person_id)
 
-            rows = self._conn.execute(
+            cur = await self._conn.execute(
                 f"""SELECT id, summary, timestamp, emotional_valence, importance
                     FROM episodes
                     WHERE {base_clause}
                     ORDER BY (importance * 0.4 + 0.6 * (timestamp / (SELECT MAX(timestamp) + 1 FROM episodes)))
                     DESC LIMIT ?""",
                 base_params + [limit],
-            ).fetchall()
+            )
+            rows = list(await cur.fetchall())
 
             seen_ids: set = {r[0] for r in rows}
 
             # Keyword search (LIKE) — union with above
             if keywords:
                 for kw in keywords[:3]:   # limit to 3 keywords to avoid query bloat
-                    kw_rows = self._conn.execute(
+                    cur = await self._conn.execute(
                         f"""SELECT id, summary, timestamp, emotional_valence, importance
                             FROM episodes
                             WHERE summary LIKE ? {'AND person_id = ?' if person_id else ''}
                             ORDER BY timestamp DESC LIMIT ?""",
                         ([f"%{kw}%", person_id, limit // 2] if person_id
                          else [f"%{kw}%", limit // 2]),
-                    ).fetchall()
+                    )
+                    kw_rows = await cur.fetchall()
                     for r in kw_rows:
                         if r[0] not in seen_ids:
                             rows.append(r)
@@ -509,9 +447,10 @@ class EpisodicMemory:
         )
         return await self.store(ep)
 
-    def close(self) -> None:
+    async def close(self) -> None:
         if self._conn:
-            self._conn.close()
+            await self._conn.close()
+            self._conn = None
 
 
 episodic = EpisodicMemory()

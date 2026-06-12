@@ -461,7 +461,7 @@ async def main() -> None:
         raise SystemExit(1)
 
     await bus.start()
-    episodic.initialize()
+    await episodic.initialize()
     from core.memory.working import wm
     await wm.start()
     await personality.start()

@@ -71,6 +71,19 @@ def make_mock_tts():
     return m
 
 
+async def make_mem_db():
+    """In-memory aiosqlite-backed EpisodicMemory (KI-016)."""
+    import aiosqlite
+    from core.memory.episodic import EpisodicMemory
+
+    db = EpisodicMemory.__new__(EpisodicMemory)
+    db._db_path = Path(":memory:")
+    db._conn = await aiosqlite.connect(":memory:")
+    db._conn.row_factory = aiosqlite.Row
+    await db._create_schema()
+    return db
+
+
 # ── Test: basic conversation turn ────────────────────────────────────────────
 
 class TestConversationTurn:
@@ -82,14 +95,8 @@ class TestConversationTurn:
         mock_tts = make_mock_tts()
 
         from cognition.conversation import ConversationManager
-        from core.memory.episodic import EpisodicMemory
-        import sqlite3
 
-        mem_db = EpisodicMemory.__new__(EpisodicMemory)
-        mem_db._conn = sqlite3.connect(":memory:", check_same_thread=False)
-        mem_db._conn.row_factory = sqlite3.Row
-        mem_db._loop = None
-        mem_db._create_schema()
+        mem_db = await make_mem_db()
 
         cm = ConversationManager.__new__(ConversationManager)
         cm._active_person_id = "madhan"
@@ -113,15 +120,10 @@ class TestConversationTurn:
     @pytest.mark.asyncio
     async def test_memory_context_injected_in_context(self):
         """recall_for_prompt output appears in context passed to LLM."""
-        import sqlite3
         from cognition.conversation import ConversationManager
-        from core.memory.episodic import EpisodicMemory, Episode
+        from core.memory.episodic import Episode
 
-        mem_db = EpisodicMemory.__new__(EpisodicMemory)
-        mem_db._conn = sqlite3.connect(":memory:", check_same_thread=False)
-        mem_db._conn.row_factory = sqlite3.Row
-        mem_db._loop = None
-        mem_db._create_schema()
+        mem_db = await make_mem_db()
 
         # Pre-populate with a fact
         ep = Episode(
@@ -130,7 +132,7 @@ class TestConversationTurn:
             person_id="madhan",
             importance=0.8,
         )
-        mem_db._store_sync(ep)
+        await mem_db.store(ep)
 
         context_captured = {}
         fake_llm = FakeLLM(["Nice to talk!"])
@@ -233,14 +235,7 @@ class TestFullDaySoak:
 
         fake_llm = FakeLLM(["Hello!", "Nice!", "Sure!", "I see.", "Ok!"] * 20)
 
-        import sqlite3
-        from core.memory.episodic import EpisodicMemory, Episode
-
-        mem_db = EpisodicMemory.__new__(EpisodicMemory)
-        mem_db._conn = sqlite3.connect(":memory:", check_same_thread=False)
-        mem_db._conn.row_factory = sqlite3.Row
-        mem_db._loop = None
-        mem_db._create_schema()
+        mem_db = await make_mem_db()
 
         events = fixture.get("events", [])
         tier1_events = [e for e in events if e["type"] == "RULE_TICK"]

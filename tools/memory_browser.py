@@ -173,7 +173,7 @@ async def run() -> None:
     print("  Type 'help' for commands, 'q' to quit\n")
 
     try:
-        episodic.initialize()
+        await episodic.initialize()
     except Exception as e:
         print(f"  ERROR: Could not initialize episodic memory: {e}")
         return

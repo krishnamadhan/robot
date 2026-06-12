@@ -26,24 +26,30 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 # ── DB failure modes ──────────────────────────────────────────────────────────
 
+async def _make_mem_db():
+    """In-memory aiosqlite-backed EpisodicMemory (KI-016)."""
+    import aiosqlite
+    from core.memory.episodic import EpisodicMemory
+
+    db = EpisodicMemory.__new__(EpisodicMemory)
+    db._db_path = Path(":memory:")
+    db._conn = await aiosqlite.connect(":memory:")
+    db._conn.row_factory = aiosqlite.Row
+    await db._create_schema()
+    return db
+
+
 class TestEpisodicDBFailures:
 
     @pytest.mark.asyncio
     async def test_corrupted_db_returns_empty_string(self):
         """Corrupted DB → recall_for_prompt returns '' gracefully."""
-        from core.memory.episodic import EpisodicMemory
-
-        db = EpisodicMemory.__new__(EpisodicMemory)
-        db._db_path = Path(":memory:")
-        db._conn = sqlite3.connect(":memory:", check_same_thread=False)
-        db._conn.row_factory = sqlite3.Row
-        db._loop = None
-        db._create_schema()
+        db = await _make_mem_db()
 
         # Corrupt: close the connection so queries fail
-        db._conn.close()
+        await db._conn.close()
 
-        result = db._recall_sync("madhan", None, 5, 800)
+        result = await db.recall_for_prompt("madhan", None, 5, 800)
         assert result == "", f"Expected empty string on closed DB, got: {result!r}"
 
     @pytest.mark.asyncio
@@ -54,28 +60,24 @@ class TestEpisodicDBFailures:
         db = EpisodicMemory.__new__(EpisodicMemory)
         db._conn = None
 
-        result = db._recall_sync("madhan", None, 5, 800)
+        result = await db.recall_for_prompt("madhan", None, 5, 800)
         assert result == ""
 
     @pytest.mark.asyncio
     async def test_empty_db_first_boot(self):
         """Fresh DB (first boot) → all reads return sensible defaults."""
-        from core.memory.episodic import EpisodicMemory
+        db = await _make_mem_db()
+        try:
+            # All reads should work without any data
+            result = await db.recall_for_prompt("madhan", None, 5, 800)
+            assert result == ""
 
-        db = EpisodicMemory.__new__(EpisodicMemory)
-        db._conn = sqlite3.connect(":memory:", check_same_thread=False)
-        db._conn.row_factory = sqlite3.Row
-        db._loop = None
-        db._create_schema()
-
-        # All reads should work without any data
-        result = db._recall_sync("madhan", None, 5, 800)
-        assert result == ""
-
-        ctx = db._get_context_sync("madhan", 5)
-        assert ctx["total_interactions"] == 0
-        assert ctx["familiarity"] == 0.0
-        assert ctx["memories"] == []
+            ctx = await db.get_context_for_person("madhan", 5)
+            assert ctx["total_interactions"] == 0
+            assert ctx["familiarity"] == 0.0
+            assert ctx["memories"] == []
+        finally:
+            await db.close()
 
 
 # ── Malformed LLM output ──────────────────────────────────────────────────────
