@@ -49,14 +49,16 @@ _TRIGGER_COOLDOWNS = {
 # D4: ambient triggers → Ollama-first; everything else → Claude direct
 _AMBIENT_TRIGGERS = {"alone_long", "obstacle", "dark_room", "wonder"}
 
-# Prompts sent to Claude — short, focused on speech only
+# Prompts sent to Claude — short, focused on speech only. Language is governed
+# by the system prompt (config speech.language), except ambient triggers which
+# stay English explicitly — they run Ollama-first and a 1B model fumbles Tanglish.
 _SPEAK_PROMPTS = {
-    "face_seen":       lambda name: f"[You just spotted {name}. Say a warm spontaneous greeting in 1 sentence, English.]",
-    "emotion_happy":   lambda name: f"[{name} looks happy. React naturally in 1 sentence, English. Be playful.]",
-    "emotion_sad":     lambda name: f"[{name} looks sad. Say something sweet and comforting in 1 sentence, English.]",
-    "emotion_angry":   lambda name: f"[{name} looks angry. Say something cheeky to lighten the mood, 1 sentence, English.]",
+    "face_seen":       lambda name: f"[You just spotted {name}. Greet them BY NAME — warm, spontaneous, like you missed them. 1 sentence.]",
+    "emotion_happy":   lambda name: f"[{name} looks happy. React naturally in 1 sentence. Be playful.]",
+    "emotion_sad":     lambda name: f"[{name} looks sad. Say something sweet and comforting in 1 sentence.]",
+    "emotion_angry":   lambda name: f"[{name} looks angry. Say something cheeky to lighten the mood, 1 sentence.]",
     "alone_long":      lambda _:    "[You've been alone for a while. Say something bored or lonely in 1 sentence, English. Be a little dramatic.]",
-    "touched":         lambda name: f"[{name or 'someone'} just touched you. React with surprise or delight, 1 sentence, English.]",
+    "touched":         lambda name: f"[{name or 'someone'} just touched you. React with surprise or delight, 1 sentence.]",
     "obstacle":        lambda _:    "[You almost bumped into something. React with surprise or annoyance, 1 sentence, English.]",
     "dark_room":       lambda _:    "[You just entered a dark room. React a little scared, 1 sentence, English.]",
     "curiosity":       lambda name: f"[Ask {name or 'them'} one short, friendly question about their day or plans. 1 sentence.]",
@@ -64,11 +66,31 @@ _SPEAK_PROMPTS = {
     "wonder":          lambda _:    "[You're alone and your mind is drifting. Wonder aloud about something — playful or philosophical, 1 sentence.]",
 }
 
-_SYSTEM = (
-    "You are Cosmo, a small playful robot companion. Speak casual English only. "
+# Language styles for Claude-direct (person-facing) speech — config speech.language
+_LANG_STYLES = {
+    "english":  "Speak casual English only.",
+    "tanglish": ("Speak Tanglish — casual spoken Tamil mixed with English, "
+                 "written in Latin script (like 'Enna da, eppadi irukka?'). "
+                 "Light and natural, never formal Tamil, never Tamil script."),
+}
+
+
+def _language() -> str:
+    """Configured speech language for Claude-direct paths (default english)."""
+    try:
+        from utils.config import cfg
+        lang = (getattr(cfg.personality, "speech", None) or {}).get("language", "english")
+    except Exception:
+        lang = "english"
+    return lang if lang in _LANG_STYLES else "english"
+
+
+_SYSTEM_TMPL = (
+    "You are Cosmo, a small playful robot companion. {lang_style} "
     "Respond with ONLY the spoken words — no quotes, no stage directions, no explanation. "
     "Max 12 words."
 )
+_SYSTEM = _SYSTEM_TMPL.format(lang_style=_LANG_STYLES["english"])
 
 
 class CosmoMind:
@@ -129,7 +151,10 @@ class CosmoMind:
         @bus.on(EventType.FACE_RECOGNIZED)
         async def _on_face(event: Event) -> None:
             name = event.data.get("name", "someone")
-            await self._maybe_speak("face_seen", name)
+            # Carry person_id from the event itself — conversation.set_person
+            # may not have run yet when the greeting fires (2.5)
+            await self._maybe_speak("face_seen", name,
+                                    person_id=event.data.get("person_id"))
 
         @bus.on(EventType.EMOTION_DETECTED)
         async def _on_emotion(event: Event) -> None:
@@ -266,6 +291,7 @@ class CosmoMind:
         person_id: Optional[str],
         person_name: Optional[str],
         emotion: Optional[str],
+        lang_style: str = _LANG_STYLES["english"],
     ) -> str:
         from core.memory.episodic import episodic
 
@@ -279,6 +305,19 @@ class CosmoMind:
         familiarity = mem.get("familiarity", 0.0)
         total = mem.get("total_interactions", 0)
         memories = mem.get("memories", [])
+        rel_q = mem.get("relationship_quality", 0.5)
+        away_s = mem.get("away_s")
+
+        if away_s is None or away_s < 3600:
+            away_desc = ""
+        elif away_s < 86400:
+            away_desc = f"\n- You last saw them about {int(away_s / 3600)}h ago"
+        else:
+            away_desc = f"\n- You haven't seen them in {int(away_s / 86400)} day(s) — you missed them"
+
+        bond_desc = ("you adore them" if rel_q > 0.75 else
+                     "you like them" if rel_q > 0.45 else
+                     "you're still warming up to them")
 
         if familiarity > 0.8:
             familiarity_desc = "someone I know very well"
@@ -321,9 +360,9 @@ Your state right now:
 - Mood: {mood_word} ({mood:+.1f})
 - Energy: {energy_word}
 - Attention: {attn_desc}
-- Who you see: {display_name} ({familiarity_desc})
+- Who you see: {display_name} ({familiarity_desc}, {bond_desc})
 - They look: {emotion or "neutral"}
-- You've interacted {total} times before
+- You've interacted {total} times before{away_desc}
 
 Your memories of {display_name}:
 {memory_block}
@@ -337,6 +376,7 @@ Personality:
 - Genuinely cares
 
 Response rules:
+- {lang_style}
 - 1-2 sentences MAX
 - If you have a relevant memory, reference it naturally
 - React to their current emotion, not just their words
@@ -384,6 +424,7 @@ Response rules:
         trigger: str,
         name: Optional[str],
         cooldown: Optional[int] = None,
+        person_id: Optional[str] = None,
     ) -> None:
         """Produce LLM speech, guarded by cooldowns and budget (D4 two-tier).
 
@@ -432,20 +473,22 @@ Response rules:
 
             try:
                 from cognition.conversation import conversation as _conv
-                person_id = _conv._active_person_id
+                person_id = person_id or _conv._active_person_id
                 emotion   = _conv._their_emotion
             except Exception:
-                person_id = None
                 emotion   = None
 
             if emotion and trigger not in ("emotion_happy", "emotion_sad", "emotion_angry"):
                 prompt = f"{prompt} (They seem {emotion} right now.)"
 
+            lang_style = _LANG_STYLES[_language() if claude_direct else "english"]
             if person_id:
-                system_prompt = await self._build_rich_system_prompt(person_id, name, emotion)
+                system_prompt = await self._build_rich_system_prompt(
+                    person_id, name, emotion, lang_style)
             else:
                 mem = await self._memory_context()
-                system_prompt = _SYSTEM + (f"\n\nRecent context: {mem}" if mem else "")
+                system_prompt = (_SYSTEM_TMPL.format(lang_style=lang_style)
+                                 + (f"\n\nRecent context: {mem}" if mem else ""))
 
             log.info("cosmo_mind.speak_trigger", trigger=trigger, name=name,
                      has_person=bool(person_id), claude_direct=claude_direct)

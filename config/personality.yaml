@@ -10,6 +10,12 @@ personality:
     - name: "Indhu"
       language_hints: ["English"]
 
+  speech:
+    # Language for Claude-direct (person-facing) LLM speech: english | tanglish.
+    # Ambient Ollama-first paths always stay English (1B model fumbles Tanglish).
+    # Canned router phrase banks are already Tanglish regardless of this setting.
+    language: "english"
+
   base_traits:
     curiosity: 0.8        # 0-1, how often it explores/investigates
     affection: 0.75       # 0-1, how warm/attached to known people

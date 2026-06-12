@@ -327,6 +327,11 @@ class EpisodicMemory:
             (person_id,),
         ).fetchone()[0]
 
+        prow = self._conn.execute(
+            "SELECT relationship_quality, last_seen FROM persons WHERE id = ?",
+            (person_id,),
+        ).fetchone()
+
         memories = []
         for summary, ts, valence, ep_type in rows:
             age_s = time.time() - ts
@@ -345,6 +350,9 @@ class EpisodicMemory:
             "last_mood": last_row[0] if last_row else 0.0,
             "total_interactions": total,
             "familiarity": min(1.0, total / 20.0),
+            "relationship_quality": prow["relationship_quality"] if prow else 0.5,
+            "away_s": (time.time() - prow["last_seen"])
+                      if prow and prow["last_seen"] else None,
         }
 
     async def apply_forgetting_curve(self) -> int:

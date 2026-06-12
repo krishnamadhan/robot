@@ -85,7 +85,7 @@ Before Phase 1 reports done:
 - [x] 2.2 Idle personality loop: curiosity glances, boredom fidgets, settling, micro-reactions (expression/idle_motion.py)
 - [x] 2.3 Circadian energy modulation (circadian targets in personality drift)
 - [x] 2.4 Reactive expressions off existing events (13-event map with per-event duration/priority)
-- [ ] 2.5 Greet-by-name: SFace + persons table + episodic recall; Tanglish via Claude Haiku (per-path language decision here)
+- [x] 2.5 Greet-by-name: FACE_RECOGNIZED person_id → episodic recall + persons-table bond/last-seen in greet prompt; language configurable (speech.language: english|tanglish) on Claude-direct paths only — decision pending at STOP gate
 - [ ] **STOP — report**
 
 ## PHASE 3 — Movement, safely (firmware now, wiring later)
