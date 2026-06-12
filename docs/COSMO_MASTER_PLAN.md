@@ -93,11 +93,11 @@ Before Phase 1 reports done:
 - [x] 3.1 ESP32 firmware: local cliff reflex (Pin.irq, immediate stop, no Pi round-trip); irq for touch/vibration/PIR; bound _outq (deque ~100, drop-oldest, never drop heartbeats)
 - [x] 3.2 Pi-side: coalesce stale move commands; heartbeat watchdog (3s → bridge offline, eyes "body offline")
 - [x] 3.3 Behaviors gated on LOCOMOTION: APPROACH/FLEE/WANDER/FOLLOW/COME against reg.simulate
-- [ ] **STOP — report**
+- [x] **STOP — report** *(2026-06-12: suite 260 passed, 0 failed; 3.1/3.2/3.3 all committed)*
 
 ## PHASE 4 — docs/HARDWARE_PLAN.md (doc only)
 
-- [ ] Wiring order steps 1–7 with parts/pins/test command/capability flip; GPIO6/16 conflict, MAX17040 failure, KI-024, maintenance checklist, SD-card risk lines
+- [x] Wiring order steps 1–8 with parts/pins/test command/capability flip; GPIO6/16 conflict, MAX17040 failure, KI-024, maintenance checklist, SD-card risk lines
 - [ ] **STOP — report**
 
 ## PHASE 5 — WhatsApp control surface
