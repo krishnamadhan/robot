@@ -256,8 +256,10 @@ class EyeEngine:
         try:
             from luma.oled.device import ssd1306
             from luma.core.interface.serial import i2c as luma_i2c
-            self._oled_left  = ssd1306(luma_i2c(port=1, address=0x3C))
-            self._oled_right = ssd1306(luma_i2c(port=1, address=0x3D))
+            from hardware.i2c_bus import i2c_lock
+            with i2c_lock:
+                self._oled_left  = ssd1306(luma_i2c(port=1, address=0x3C))
+                self._oled_right = ssd1306(luma_i2c(port=1, address=0x3D))
             log.info("eyes.oled_init", left="0x3C", right="0x3D")
         except Exception as e:
             log.warning("eyes.oled_init_failed", error=str(e)[:80])
@@ -405,6 +407,7 @@ class EyeEngine:
         """Render current eye state to both SSD1306 OLEDs. Runs in executor."""
         try:
             from PIL import Image, ImageDraw
+            from hardware.i2c_bus import i2c_lock
             s    = self._state
             expr = s.expression
             W, H = 128, 64
@@ -426,7 +429,9 @@ class EyeEngine:
                 self._draw_eye(draw, cx, cy, ew, eh,
                                px, py, s.blink_progress,
                                brow, pupil_r)
-                oled.display(img)
+                # Per-frame lock so sensor reads can interleave between eyes (KI-019)
+                with i2c_lock:
+                    oled.display(img)
         except Exception as e:
             log.debug("eyes.oled_render_error", error=str(e)[:60])
 

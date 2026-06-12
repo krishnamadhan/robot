@@ -197,7 +197,7 @@
 - **Priority:** Low — requires unusual concurrency. Budget overruns are cost exposure, not a crash.
 
 ### KI-019: Shared I2C bus has no mutex — concurrent sensor + OLED writes collide
-- **Status:** Open — medium priority
+- **Status:** ✅ Resolved 2026-06-12 — `hardware/i2c_bus.py` exposes a process-wide `threading.Lock` (`i2c_lock`). threading.Lock, not asyncio.Lock as originally sketched: the OLED render runs on an executor *thread* (`run_in_executor` in eyes.py) while sensor reads are sync calls on the loop thread — asyncio.Lock cannot serialize across threads. Held around every smbus transaction (BH1750 + UPS HAT) and per OLED frame display (released between the two eyes so sensor reads can interleave). battery_monitor.py is a separate process (reads via cosmo API, lock not applicable). Tests: tests/unit/test_i2c_lock.py.
 - **Service:** hardware/sensor_manager.py, expression/eyes.py
 - **Symptom:** Multiple async tasks share `smbus.SMBus(1)` with no locking. When OLED rendering (eyes.py) runs concurrently with sensor polling (BH1750, MPU-6050, UPS HAT battery reads), they can collide mid-transaction and raise `OSError: [Errno 121] Remote I/O error`. Silent sensor drop or display glitch.
 - **Root cause:** No `asyncio.Lock()` protecting the physical I2C bus. smbus2 is not thread/coroutine-safe.

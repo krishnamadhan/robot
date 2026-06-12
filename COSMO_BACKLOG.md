@@ -19,7 +19,7 @@
 
 ## P1 — Wire hardware (waiting on parcels or XT60)
 
-- [ ] Wire OLED eyes (0x3C + 0x3D) → verify with `i2cdetect` → fix KI-019 I2C mutex → switch eyes.py to oled mode
+- [ ] Wire OLED eyes (0x3C + 0x3D) → verify with `i2cdetect` → switch eyes.py to oled mode (KI-019 mutex done 2026-06-12 — software ready)
 - [ ] Wire motors: rewire TB6612FNG from Pi GPIO → ESP32 GPIO 15–21 — **BLOCKED on XT60 pigtail + capacitors arriving**
 - [ ] Wire PIR HC-SR501 → ESP32 GPIO12, set `SENSORS["pir"] = True` in esp32/main.py
 - [ ] Wire TTP223 touch ×4 → ESP32 GPIO1–4 (head/back/belly/tail), set `SENSORS["touch"] = True`

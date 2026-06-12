@@ -33,20 +33,15 @@ try:
 except ImportError:
     _SMBUS_OK = False
 
+from hardware.i2c_bus import i2c_lock
+
 _i2c_bus_1: Optional["smbus.SMBus"] = None
-_i2c_lock_1: Optional[asyncio.Lock] = None
 
 def _i2c_bus() -> "smbus.SMBus":
     global _i2c_bus_1
     if _i2c_bus_1 is None:
         _i2c_bus_1 = smbus.SMBus(1)
     return _i2c_bus_1
-
-def _i2c_lock() -> asyncio.Lock:
-    global _i2c_lock_1
-    if _i2c_lock_1 is None:
-        _i2c_lock_1 = asyncio.Lock()
-    return _i2c_lock_1
 
 # Personality event keys
 _P_TOUCH    = "touch_detected"
@@ -70,7 +65,8 @@ class BH1750Sensor:
         if not _SMBUS_OK:
             return False
         try:
-            _i2c_bus().write_byte(self.ADDR, self.CMD_CONT_HIGH)
+            with i2c_lock:
+                _i2c_bus().write_byte(self.ADDR, self.CMD_CONT_HIGH)
             time.sleep(0.18)
             self._mock = False
             log.info("bh1750.real")
@@ -83,7 +79,8 @@ class BH1750Sensor:
         if self._mock:
             return self._mock_lux()
         try:
-            data = _i2c_bus().read_i2c_block_data(self.ADDR, self.CMD_CONT_HIGH, 2)
+            with i2c_lock:
+                data = _i2c_bus().read_i2c_block_data(self.ADDR, self.CMD_CONT_HIGH, 2)
             return ((data[0] << 8) | data[1]) / 1.2
         except Exception:
             return self._mock_lux()
@@ -108,7 +105,8 @@ class UPSHATSensor:
         if not _SMBUS_OK:
             return False
         try:
-            _i2c_bus().read_i2c_block_data(self.ADDR, 0x04, 2)
+            with i2c_lock:
+                _i2c_bus().read_i2c_block_data(self.ADDR, 0x04, 2)
             self._mock = False
             log.info("ups_hat.real")
             return True
@@ -123,9 +121,10 @@ class UPSHATSensor:
             self._last_mock_t = now
             return {"percent": round(self._mock_pct, 1), "voltage": 7.4, "charging": False}
         try:
-            raw = _i2c_bus().read_i2c_block_data(self.ADDR, 0x04, 2)
+            with i2c_lock:
+                raw = _i2c_bus().read_i2c_block_data(self.ADDR, 0x04, 2)
+                raw_v = _i2c_bus().read_i2c_block_data(self.ADDR, 0x02, 2)
             pct = min(100.0, ((raw[0] << 8) | raw[1]) >> 4) * 0.02441
-            raw_v = _i2c_bus().read_i2c_block_data(self.ADDR, 0x02, 2)
             volts = ((raw_v[0] << 8) | raw_v[1]) * 1.25 / 1000 / 16
             return {"percent": round(pct, 1), "voltage": round(volts, 2), "charging": False}
         except Exception:
