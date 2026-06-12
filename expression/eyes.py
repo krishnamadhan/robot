@@ -128,6 +128,7 @@ _EVENT_EXPR: Dict[EventType, Tuple[EyeExpression, float, int]] = {
     EventType.WAKE_WORD:          (EyeExpression.SURPRISED, 2.0, PRIORITY_TOUCH),
     EventType.PERSON_LOST:        (EyeExpression.SAD,       2.5, PRIORITY_IDLE),
     EventType.CONVERSATION_START: (EyeExpression.HAPPY,     2.0, PRIORITY_EMOTION),
+    EventType.SENSOR_TIMEOUT:     (EyeExpression.CONFUSED,  4.0, PRIORITY_SAFETY),  # body offline
 }
 
 _EMOTION_EXPR: Dict[str, EyeExpression] = {

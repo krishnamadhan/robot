@@ -290,6 +290,34 @@ class TestMotorCommands:
 
         asyncio.run(run())
 
+    def test_move_commands_coalesce_to_newest(self):
+        bridge = self._make_bridge_with_queue()
+
+        async def run():
+            await bridge.send_motor(0.2, 0.2)
+            await bridge.send_stby(True)
+            await bridge.send_motor(0.9, 0.9)
+            cmds = []
+            while not bridge._send_queue.empty():
+                cmds.append(bridge._send_queue.get_nowait())
+            moves = [c for c in cmds if c["cmd"] == "move"]
+            assert len(moves) == 1
+            assert moves[0]["l"] == 0.9
+            assert any(c["cmd"] == "stby" for c in cmds)  # non-moves survive
+
+        asyncio.run(run())
+
+    def test_move_command_carries_timestamp(self):
+        bridge = self._make_bridge_with_queue()
+
+        async def run():
+            await bridge.send_motor(0.5, 0.5)
+            cmd = bridge._send_queue.get_nowait()
+            import time
+            assert abs(time.monotonic() - cmd["_ts"]) < 1.0
+
+        asyncio.run(run())
+
     def test_json_round_trip(self):
         """Every command must survive JSON encode/decode."""
         cmds = [

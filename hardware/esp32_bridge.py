@@ -31,7 +31,8 @@ _SENSOR_CAPS = {
 _BAUD = 115200
 _READ_TIMEOUT = 0.1
 _RECONNECT_DELAY = 3.0
-_HEARTBEAT_TIMEOUT = 5.0  # declare offline if no HB for this long
+_HEARTBEAT_TIMEOUT = 3.0  # declare body offline if no HB for this long
+_MOVE_STALE_S = 0.3       # don't send move commands older than this
 
 
 class ESP32Bridge:
@@ -40,6 +41,8 @@ class ESP32Bridge:
         self._serial: Optional[serial.Serial] = None
         self._reader_task: Optional[asyncio.Task] = None
         self._writer_task: Optional[asyncio.Task] = None
+        self._watchdog_task: Optional[asyncio.Task] = None
+        self._body_offline = False
         self._send_queue: asyncio.Queue = asyncio.Queue()
         self._connected = False
         self._mock = False
@@ -65,12 +68,13 @@ class ESP32Bridge:
 
         self._reader_task = asyncio.create_task(self._reader_loop())
         self._writer_task = asyncio.create_task(self._writer_loop())
+        self._watchdog_task = asyncio.create_task(self._hb_watchdog_loop())
         if self._mock:
             asyncio.create_task(self._mock_sensor_loop())
         return True
 
     async def stop(self):
-        for t in [self._reader_task, self._writer_task]:
+        for t in [self._reader_task, self._writer_task, self._watchdog_task]:
             if t:
                 t.cancel()
         if self._serial and self._serial.is_open:
@@ -104,7 +108,18 @@ class ESP32Bridge:
 
     async def send_motor(self, left: float, right: float):
         """Send motor speeds. -1.0 (full back) to +1.0 (full fwd)."""
-        await self._send_queue.put({"cmd": "move", "l": round(left, 3), "r": round(right, 3)})
+        # Coalesce: only the newest move matters — drop queued moves so a
+        # slow serial link never replays an out-of-date trajectory
+        keep = []
+        while not self._send_queue.empty():
+            c = self._send_queue.get_nowait()
+            if c.get("cmd") != "move":
+                keep.append(c)
+        for c in keep:
+            self._send_queue.put_nowait(c)
+        await self._send_queue.put({"cmd": "move", "l": round(left, 3),
+                                    "r": round(right, 3),
+                                    "_ts": time.monotonic()})
 
     async def send_stop(self):
         await self._send_queue.put({"cmd": "stop"})
@@ -164,6 +179,10 @@ class ESP32Bridge:
                     continue  # discard in mock mode silently
                 if not self._connected or not self._serial:
                     continue
+                ts = cmd.pop("_ts", None)
+                if (cmd.get("cmd") == "move" and ts is not None
+                        and time.monotonic() - ts > _MOVE_STALE_S):
+                    continue  # stale trajectory — ESP32 watchdog will brake
                 line = json.dumps(cmd) + "\n"
                 await loop.run_in_executor(
                     None, lambda: self._serial.write(line.encode())
@@ -172,6 +191,35 @@ class ESP32Bridge:
                 return
             except Exception as e:
                 log.warning("esp32_bridge.write_error", error=str(e))
+
+    async def _hb_watchdog_loop(self):
+        """Heartbeats are the body's pulse — 3s of silence means the ESP32
+        (motors + sensors) is gone, even if the serial port still looks open."""
+        while True:
+            try:
+                await asyncio.sleep(1.0)
+                if self._mock or not self._connected:
+                    continue
+                age = time.monotonic() - self._last_hb
+                if age > _HEARTBEAT_TIMEOUT and not self._body_offline:
+                    self._body_offline = True
+                    log.warning("esp32_bridge.body_offline", hb_age_s=round(age, 1))
+                    for c in (*_SENSOR_CAPS.values(), Capability.LOCOMOTION):
+                        if registry.state(c) not in (CapState.ABSENT, CapState.SIMULATED):
+                            registry.set_state(c, CapState.FAILED, "esp32 hb lost")
+                    await bus.publish(Event(
+                        type=EventType.SENSOR_TIMEOUT,
+                        data={"source": "esp32_bridge", "reason": "heartbeat_lost",
+                              "hb_age_s": round(age, 1)},
+                        source="esp32_bridge", priority=EventPriority.HIGH,
+                    ))
+                elif age <= _HEARTBEAT_TIMEOUT and self._body_offline:
+                    self._body_offline = False
+                    log.info("esp32_bridge.body_recovered")
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                log.warning("esp32_bridge.watchdog_error", error=str(e))
 
     async def _try_reconnect(self):
         try:
