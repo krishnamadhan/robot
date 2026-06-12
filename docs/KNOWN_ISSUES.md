@@ -210,7 +210,7 @@
 - **Priority:** Fix before wiring OLED eyes — collisions guaranteed once both sensor polling and display rendering are live
 
 ### KI-020: Spatial memory write is not atomic — power loss mid-write corrupts JSON
-- **Status:** Open — low priority
+- **Status:** ✅ Resolved (verified 2026-06-12) — spatial.py:206-208 already uses the temp-file + `os.replace` pattern from the fix sketch.
 - **Service:** core/memory/spatial.py line ~200
 - **Symptom:** `SPATIAL_PATH.write_text(json.dumps(data))` truncates the file before writing. If the Pi loses power mid-write (UPS HAT limits this but doesn't eliminate it), `spatial.json` is left as an empty or partial file. Next boot: `json.JSONDecodeError` in spatial memory load, Cosmo loses all room fingerprints permanently.
 - **Root cause:** `Path.write_text()` is not atomic across all conditions. No temp-file pattern used.
@@ -231,7 +231,7 @@
 - **Priority:** Must fix before connecting XT60 pigtail / enabling real motor driver
 
 ### KI-022: Working memory has no automatic expiry loop — _store grows unbounded
-- **Status:** Open — low priority
+- **Status:** ✅ Resolved 2026-06-12 — `wm.start()` cleanup loop existed and was wired in tools/cosmo_demo.py; now also wired in main.py, and the task holds a strong reference (bare create_task could be GC'd).
 - **Service:** core/memory/working.py line ~80
 - **Symptom:** `purge_expired()` exists and correctly deletes expired entries, but it's only called when `snapshot()` is triggered manually. If nothing calls `snapshot()`, expired entries accumulate in `_store` indefinitely. Slow heap growth over days of runtime.
 - **Root cause:** No background cleanup task wired up.
@@ -247,14 +247,14 @@
 - **Priority:** Low — entries are small, growth is slow. Fix when next touching working.py.
 
 ### KI-023: Ollama timeout set to 90s — longer than worst-case cold start
-- **Status:** Open — low priority
+- **Status:** ✅ Resolved (verified 2026-06-12) — `OLLAMA_TIMEOUT_S` is already 60.0 in cognition/llm.py.
 - **Service:** cognition/llm.py — `OLLAMA_TIMEOUT_S = 90.0`
 - **Symptom:** Ollama cold start is ~51s. Timeout is 90s — so a hung/unresponsive Ollama blocks the fallback path for up to 90s before giving up. During that window the robot is silent.
 - **Fix:** Lower `OLLAMA_TIMEOUT_S` to 60 — covers cold start with 9s margin, halves worst-case hang time.
 - **Priority:** Low — Ollama is already the fallback-of-last-resort. Claude Haiku is primary.
 
 ### KI-018: State machine silently accepts transitions to unregistered states
-- **Status:** Open — low urgency
+- **Status:** ✅ Obsolete 2026-06-12 — core/state_machine.py was archived (OQ-4, now archive/state_machine.py); behavior tree is the sole decision authority, so this code path no longer runs.
 - **Service:** core/state_machine.py line ~244
 - **Symptom:** When `transition_to()` is called with a state not in the registered transitions map, the state machine falls through to a permissive catch-all that allows the transition anyway and logs nothing. Silent state corruption — HSM ends up in a state with no registered exit transitions, breaking the whole behaviour loop.
 - **Root cause:** Permissive fallback in transition guard. Should be an error.

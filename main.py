@@ -59,7 +59,9 @@ class CosmoRobot:
         # ── Memory system ─────────────────────────────────────────────────────
         from core.memory.episodic import episodic
         from core.memory.spatial import spatial
+        from core.memory.working import wm
         await episodic.initialize()
+        await wm.start()
         log.info("cosmo.subsystem_ok", name="memory")
 
         # ── Personality engine ────────────────────────────────────────────────

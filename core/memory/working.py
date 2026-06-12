@@ -85,7 +85,8 @@ class WorkingMemory:
         self._conversation.clear()
 
     async def start(self) -> None:
-        asyncio.create_task(self._cleanup_loop())
+        # Strong ref — a bare create_task can be garbage-collected mid-flight
+        self._cleanup_task = asyncio.create_task(self._cleanup_loop())
 
     async def _cleanup_loop(self) -> None:
         while True:
