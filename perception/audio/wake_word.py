@@ -212,12 +212,21 @@ async def publish_wake_word(word: str, confidence: float = 1.0) -> bool:
     return True
 
 
-# ── Singletons — loaded in priority order ────────────────────────────────────
+# ── Singletons ────────────────────────────────────────────────────────────────
 
 porcupine_detector   = PorcupineDetector()
 oww_detector         = OpenWakeWordDetector()
 wake_word_detector   = WakeWordDetector()
 
-porcupine_detector.load()   # no-op if no PICOVOICE_KEY
-if not porcupine_detector.is_available:
-    oww_detector.load()     # always succeeds if openwakeword is installed
+
+def load_detectors() -> str:
+    """Load detectors in priority order; returns the active backend name.
+    Idempotent — safe to call on every pipeline start. Deferred from import
+    time so merely importing this module doesn't pull model weights into RAM."""
+    if not porcupine_detector.is_available:
+        porcupine_detector.load()   # no-op if no PICOVOICE_KEY
+    if porcupine_detector.is_available:
+        return "porcupine"
+    if not oww_detector.is_available:
+        oww_detector.load()         # succeeds if openwakeword is installed
+    return "oww" if oww_detector.is_available else "stt"

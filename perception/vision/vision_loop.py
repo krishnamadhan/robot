@@ -136,6 +136,10 @@ class VisionLoop:
 
             frame_obj = camera.latest_frame
             if frame_obj is None or frame_obj.is_stale(500) or frame_obj is last_frame_obj:
+                # Genuinely stale frames mean the camera loop is lagging —
+                # count them so it's visible; None / same-frame is normal pacing
+                if frame_obj is not None and frame_obj.is_stale(500):
+                    telemetry.increment("vision.frame_stale_drop")
                 await asyncio.sleep(interval)
                 continue
 

@@ -23,7 +23,7 @@ from perception.audio.stt import stt
 from perception.audio.vad import vad
 from perception.audio.wake_word import (
     oww_detector, porcupine_detector, wake_word_detector,
-    publish_wake_word, WakeWordDetector,
+    publish_wake_word, load_detectors, WakeWordDetector,
 )
 from utils.logger import get_logger
 
@@ -52,17 +52,14 @@ class ListeningPipeline:
         self._current_person: Optional[str] = None
         self._current_emotion: Optional[str] = None
 
-        # Determine which wake word backend is active
-        if porcupine_detector.is_available:
-            self._wake_backend = "porcupine"
-        elif oww_detector.is_available:
-            self._wake_backend = "oww"
-        else:
-            self._wake_backend = "stt"
+        # Backend resolved in start() — detectors load lazily, not at import
+        self._wake_backend = "stt"
 
     async def start(self) -> bool:
         if self._running:
             return True
+
+        self._wake_backend = load_detectors()
 
         # Load STT (needed for LISTENING→THINKING and for STT fallback wake)
         if not stt.is_available:
