@@ -15,7 +15,11 @@ ESP32 → Pi  {"t":"s","id":"ultra","v":23.4}
             {"t":"s","id":"vibe","v":1}
             {"t":"s","id":"imu","ax":0,"ay":0,"az":9.8,"gx":0,"gy":0,"gz":0}
             {"t":"ack","cmd":"move","ok":true}
+            {"t":"ack","cmd":"move","ok":false,"why":"cliff"}   (reflex hold)
             {"t":"hb","up":12345}
+
+Safety: cliff pins fire Pin.irq → motors brake locally (no Pi round-trip);
+move commands are refused while a cliff is active or within 500ms of one.
 
 Pin map (all 3.3V logic):
   Motors  AIN1=GPIO15  AIN2=GPIO16  PWMA=GPIO17  (left)
@@ -49,10 +53,20 @@ SENSORS = {
 }
 
 # ── Output queue (send to Pi) ─────────────────────────────────────────────────
-_outq = []
+# Bounded (OQ-2): if the Pi stalls, evict oldest non-critical entries instead
+# of growing without bound. Heartbeats and cliff events are never evicted.
+_OUTQ_MAX = 100
+_outq = []   # list of (line, critical)
 
-def _send(obj):
-    _outq.append(json.dumps(obj) + "\n")
+def _send(obj, critical=False):
+    if len(_outq) >= _OUTQ_MAX:
+        for i in range(len(_outq)):
+            if not _outq[i][1]:
+                _outq.pop(i)
+                break
+        else:
+            _outq.pop(0)
+    _outq.append((json.dumps(obj) + "\n", critical))
 
 # ── Motor driver ──────────────────────────────────────────────────────────────
 _motors = None
@@ -64,6 +78,18 @@ _motor_cmd = {"l": 0.0, "r": 0.0}
 _last_motor_cmd_ms = utime.ticks_ms()
 _MOTOR_WATCHDOG_MS = 1000  # stop motors if no command for 1s
 
+# ── Cliff reflex (OQ-1) ──────────────────────────────────────────────────────
+# Local Pin.irq stop — no Pi round-trip. v=0 (LOW, no reflectance) = cliff.
+_CLIFF_HOLD_MS = 500       # refuse move commands this long after a cliff edge
+_cliff_reflex_until = 0
+
+def _cliff_active():
+    if utime.ticks_diff(_cliff_reflex_until, utime.ticks_ms()) > 0:
+        return True
+    if SENSORS["cliff"]:
+        return _cliff_l.value() == 0 or _cliff_r.value() == 0
+    return False
+
 # ── Sensor hardware init ──────────────────────────────────────────────────────
 if SENSORS["ultra"]:
     from machine import time_pulse_us
@@ -72,24 +98,46 @@ if SENSORS["ultra"]:
 
 if SENSORS["pir"]:
     _pir = Pin(12, Pin.IN)
-    _pir_last = 0
+    _pir.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING,
+             handler=lambda p: _send({"t":"s","id":"pir","v": p.value()}))
 
 if SENSORS["cliff"]:
+    def _cliff_irq(pin):
+        global _cliff_reflex_until
+        v = pin.value()
+        if v == 0:  # cliff! stop right here, don't wait for the Pi
+            if _motors:
+                _motors.stop()
+            _cliff_reflex_until = utime.ticks_add(utime.ticks_ms(), _CLIFF_HOLD_MS)
+        side = "l" if pin is _cliff_l else "r"
+        _send({"t":"s","id":"cliff","side": side,"v": v}, critical=True)
+
     _cliff_l = Pin(13, Pin.IN, Pin.PULL_UP)
     _cliff_r = Pin(14, Pin.IN, Pin.PULL_UP)
-    _cliff_last = [1, 1]
+    _cliff_l.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=_cliff_irq)
+    _cliff_r.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=_cliff_irq)
 
 if SENSORS["touch"]:
     _touch_pins = [Pin(p, Pin.IN) for p in [1, 2, 3, 4]]
-    _touch_last = [0, 0, 0, 0]
+    for _i, _tp in enumerate(_touch_pins):
+        _tp.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING,
+                handler=lambda p, n=_i: _send({"t":"s","id":"touch","n": n,"v": p.value()}))
 
 if SENSORS["sound"]:
     _sound_adc = ADC(Pin(5), atten=ADC.ATTN_11DB)
     _SOUND_THRESHOLD = 2000  # 0-4095
 
 if SENSORS["vibe"]:
+    # SW-420 chatters — rising edges only, min 50ms apart
+    _vibe_last_ms = 0
+    def _vibe_irq(p):
+        global _vibe_last_ms
+        now = utime.ticks_ms()
+        if utime.ticks_diff(now, _vibe_last_ms) > 50:
+            _vibe_last_ms = now
+            _send({"t":"s","id":"vibe","v": 1})
     _vibe = Pin(6, Pin.IN)
-    _vibe_last = 0
+    _vibe.irq(trigger=Pin.IRQ_RISING, handler=_vibe_irq)
 
 if SENSORS["imu"]:
     _i2c = I2C(0, sda=Pin(8), scl=Pin(9), freq=400000)
@@ -135,8 +183,9 @@ def _mock_sensors():
     data = []
     data.append({"t":"s","id":"ultra","v": 80.0 + (_mock_tick % 20)})
     data.append({"t":"s","id":"pir","v": 0})
-    data.append({"t":"s","id":"cliff","side":"l","v": 0})
-    data.append({"t":"s","id":"cliff","side":"r","v": 0})
+    # v=1 (reflectance HIGH) = surface present; v=0 would mean cliff
+    data.append({"t":"s","id":"cliff","side":"l","v": 1})
+    data.append({"t":"s","id":"cliff","side":"r","v": 1})
     data.append({"t":"s","id":"sound","v": 100 + (_mock_tick % 50)})
     data.append({"t":"s","id":"vibe","v": 0})
     data.append({"t":"s","id":"imu",
@@ -161,38 +210,12 @@ async def sensor_task():
                 if d is not None:
                     _send({"t":"s","id":"ultra","v": d})
 
-            if SENSORS["pir"]:
-                global _pir_last
-                v = _pir.value()
-                if v != _pir_last:
-                    _send({"t":"s","id":"pir","v": v})
-                    _pir_last = v
-
-            if SENSORS["cliff"]:
-                for i, (pin, last) in enumerate(zip([_cliff_l, _cliff_r], _cliff_last)):
-                    v = pin.value()
-                    if v != last:
-                        _send({"t":"s","id":"cliff","side":"lr"[i],"v": v})
-                        _cliff_last[i] = v
-
-            if SENSORS["touch"]:
-                for i, pin in enumerate(_touch_pins):
-                    v = pin.value()
-                    if v != _touch_last[i]:
-                        _send({"t":"s","id":"touch","n": i,"v": v})
-                        _touch_last[i] = v
+            # pir/cliff/touch/vibe are IRQ-driven — no polling here
 
             if SENSORS["sound"]:
                 v = _sound_adc.read_u16() >> 4  # 16→12 bit
                 if v > _SOUND_THRESHOLD:
                     _send({"t":"s","id":"sound","v": v})
-
-            if SENSORS["vibe"]:
-                global _vibe_last
-                v = _vibe.value()
-                if v != _vibe_last:
-                    _send({"t":"s","id":"vibe","v": v})
-                    _vibe_last = v
 
             if SENSORS["imu"]:
                 _send({"t":"s","id":"imu"} | _read_imu())
@@ -224,12 +247,19 @@ async def command_reader_task():
             c = cmd.get("cmd","")
 
             if c == "move":
-                _motor_cmd["l"] = float(cmd.get("l", 0))
-                _motor_cmd["r"] = float(cmd.get("r", 0))
-                _last_motor_cmd_ms = utime.ticks_ms()
-                if SENSORS["motors"] and _motors:
-                    _motors.set(_motor_cmd["l"], _motor_cmd["r"])
-                _send({"t":"ack","cmd":"move","ok": True})
+                if _cliff_active():
+                    _motor_cmd["l"] = 0.0
+                    _motor_cmd["r"] = 0.0
+                    if SENSORS["motors"] and _motors:
+                        _motors.stop()
+                    _send({"t":"ack","cmd":"move","ok": False,"why":"cliff"})
+                else:
+                    _motor_cmd["l"] = float(cmd.get("l", 0))
+                    _motor_cmd["r"] = float(cmd.get("r", 0))
+                    _last_motor_cmd_ms = utime.ticks_ms()
+                    if SENSORS["motors"] and _motors:
+                        _motors.set(_motor_cmd["l"], _motor_cmd["r"])
+                    _send({"t":"ack","cmd":"move","ok": True})
 
             elif c == "stop":
                 _motor_cmd["l"] = 0.0
@@ -262,7 +292,7 @@ async def serial_writer_task():
     writer = asyncio.StreamWriter(sys.stdout, {})
     while True:
         if _outq:
-            line = _outq.pop(0)
+            line, _ = _outq.pop(0)
             writer.write(line.encode())
             await writer.drain()
         else:
@@ -272,7 +302,7 @@ async def serial_writer_task():
 async def heartbeat_task():
     while True:
         _send({"t":"hb","up": utime.ticks_ms() // 1000,
-               "sensors": {k: v for k, v in SENSORS.items()}})
+               "sensors": {k: v for k, v in SENSORS.items()}}, critical=True)
         await asyncio.sleep_ms(1000)
 
 

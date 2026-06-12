@@ -60,8 +60,8 @@
 
 | # | Question | Stakes |
 |---|----------|--------|
-| OQ-1 | ESP32 has no local cliff reflex — all sensor→action round-trips through Pi. If Pi is busy, cliff-stop latency is unbounded. Implement `Pin.irq` on cliff pins in esp32/main.py for immediate local stop. | Safety |
-| OQ-2 | `_outq` in esp32/main.py is an unbounded plain list. At 10 Hz polling with Pi busy, it grows without bound. Add bounded deque with drop-oldest policy. | Reliability |
+| ~~OQ-1~~ | ✅ Resolved 2026-06-12 (3.1) — cliff `Pin.irq` brakes motors locally + 500ms move-refusal hold (`_cliff_active`); pir/touch/vibe also IRQ-driven (vibe debounced 50ms). Deploy to ESP32 at wiring time. | Safety |
+| ~~OQ-2~~ | ✅ Resolved 2026-06-12 (3.1) — `_outq` bounded at 100, drop-oldest non-critical; heartbeats + cliff events never evicted. | Reliability |
 | ~~OQ-3~~ | ✅ Resolved 2026-06-11 — event_bus dispatches via `create_task` (strong refs + done-callback error logging; sync handlers tolerated; drained on stop). | Latency |
 | ~~OQ-4~~ | ✅ Resolved 2026-06-11 — HSM archived (archive/state_machine.py); BT is sole decision authority, router sole actuator. | Architecture |
 | ~~OQ-5~~ | ✅ Resolved 2026-06-11 — single TokenBudget; persists per-day total to memory_meta via atomic increment UPSERT; resumes on restart. Tests isolated via tests/conftest.py. | Reliability |
