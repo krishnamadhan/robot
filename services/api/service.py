@@ -1015,6 +1015,58 @@ async def trigger_emotion_happy():
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+# ── Phase 5: WhatsApp control surface (!cosmo in banteragent proxies here) ───
+
+@app.get("/caps")
+async def caps():
+    """Capability registry snapshot — what Cosmo can do right now."""
+    try:
+        from core.capabilities import registry
+        return registry.snapshot()
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/cosmo/sim")
+async def cosmo_sim(payload: dict):
+    """Force a capability into SIMULATED state (dev/testing via WhatsApp)."""
+    from core.capabilities import Capability, registry
+    name = str((payload or {}).get("cap", "")).strip().lower()
+    try:
+        cap = Capability(name)
+    except ValueError:
+        return JSONResponse(status_code=400, content={
+            "error": f"unknown capability '{name}'",
+            "valid": [c.value for c in Capability],
+        })
+    registry.simulate(cap, "whatsapp !cosmo sim")
+    return {"ok": True, "cap": cap.value, "state": registry.state(cap).value}
+
+
+@app.post("/cosmo/say")
+async def cosmo_say(payload: dict):
+    """Speak the given text through Cosmo's TTS."""
+    text = str((payload or {}).get("text", "")).strip()
+    if not text:
+        return JSONResponse(status_code=400, content={"error": "no text"})
+    if len(text) > 300:
+        text = text[:300]
+    try:
+        from expression.speech import tts
+        asyncio.create_task(tts.speak(text))
+        return {"ok": True, "text": text}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/cosmo/last")
+async def cosmo_last(n: int = 5):
+    """Last N events Cosmo reacted to."""
+    n = max(1, min(n, 20))
+    return {"events": list(_events_ref)[-n:],
+            "last_response": _state_ref.get("last_response", "—")}
+
+
 # ── Server lifecycle ──────────────────────────────────────────────────────────
 
 _server: uvicorn.Server | None = None

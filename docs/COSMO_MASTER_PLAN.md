@@ -102,5 +102,5 @@ Before Phase 1 reports done:
 
 ## PHASE 5 — WhatsApp control surface
 
-- [ ] `!cosmo status|caps|sim|start|stop|say|mood|last|log` in banteragent (owner path; NO auth changes, NO restart of banteragent)
+- [x] `!cosmo status|caps|sim|start|stop|say|mood|last|log` in banteragent (owner path; NO auth changes, NO restart of banteragent — proxy lands dormant in src/router.ts, activates at next natural restart; real logic = robot API endpoints /caps /cosmo/sim /cosmo/say /cosmo/last on port 8000)
 - [ ] **STOP — report**
