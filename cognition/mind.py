@@ -162,6 +162,10 @@ class CosmoMind:
             conf     = event.data.get("confidence", 0.0)
             if conf < 0.55:
                 return
+            # Anonymous face (person_id=None) — don't address speech to the
+            # active person based on a stranger's expression
+            if not event.data.get("person_id"):
+                return
             trigger_map = {
                 "happy":     "emotion_happy",
                 "sad":       "emotion_sad",

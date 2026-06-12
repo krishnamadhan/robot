@@ -244,7 +244,11 @@ async def setup_event_handlers() -> None:
         emotion = event.data.get("emotion", "?")
         conf = event.data.get("confidence", 0)
         _state["emotion"] = f"{emotion} ({conf:.0%})"
-        conversation.set_emotion(emotion)
+        # Only let a *confirmed* person's emotion color the conversation —
+        # an anonymous face shouldn't overwrite the active person's state
+        pid = event.data.get("person_id")
+        if pid and pid == conversation._active_person_id:
+            conversation.set_emotion(emotion)
         cosmo_bb.emotion = emotion
 
         # Only react if emotion actually changed

@@ -12,8 +12,8 @@ CPU-bound work so they never block the event loop or each other.
 Shared mutable state is safe under CPython GIL for simple attribute writes.
 
 Emits to event bus:
-  PERSON_DETECTED      — person enters frame
   PERSON_LOST          — person leaves frame (5s grace)
+  (PERSON_DETECTED is owned by perception/vision/person.py — YOLO tracker)
   FACE_RECOGNIZED      — known person confirmed (CONFIRM_FRAMES consecutive)
   FACE_UNKNOWN         — unrecognized face
   EMOTION_DETECTED     — smoothed emotion reading
@@ -165,15 +165,13 @@ class VisionLoop:
                 self._was_alone = False
 
                 if just_arrived:
+                    # PERSON_DETECTED is owned by person_detector (YOLO) —
+                    # its payload carries bbox/track data subscribers need.
+                    # Here we only apply the personality side-effects.
                     personality.process_event("person_arrived")
                     if alone_duration > self.PERSON_ARRIVAL_ALONE_S:
                         personality.state.arousal = min(1.0, personality.state.arousal + 0.2)
-                    await bus.publish(Event(
-                        type=EventType.PERSON_DETECTED,
-                        data={"alone_duration_s": round(alone_duration, 1)},
-                        source="vision_loop",
-                    ))
-                    telemetry.increment("vision.person_detected")
+                    telemetry.increment("vision.person_arrived")
             else:
                 now = time.monotonic()
                 if not self._was_alone and (now - self._last_person_seen) > 5.0:
