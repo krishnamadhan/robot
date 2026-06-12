@@ -90,9 +90,9 @@ Before Phase 1 reports done:
 
 ## PHASE 3 — Movement, safely (firmware now, wiring later)
 
-- [ ] 3.1 ESP32 firmware: local cliff reflex (Pin.irq, immediate stop, no Pi round-trip); irq for touch/vibration/PIR; bound _outq (deque ~100, drop-oldest, never drop heartbeats)
-- [ ] 3.2 Pi-side: coalesce stale move commands; heartbeat watchdog (3s → bridge offline, eyes "body offline")
-- [ ] 3.3 Behaviors gated on LOCOMOTION: APPROACH/FLEE/WANDER/FOLLOW/COME against reg.simulate
+- [x] 3.1 ESP32 firmware: local cliff reflex (Pin.irq, immediate stop, no Pi round-trip); irq for touch/vibration/PIR; bound _outq (deque ~100, drop-oldest, never drop heartbeats)
+- [x] 3.2 Pi-side: coalesce stale move commands; heartbeat watchdog (3s → bridge offline, eyes "body offline")
+- [x] 3.3 Behaviors gated on LOCOMOTION: APPROACH/FLEE/WANDER/FOLLOW/COME against reg.simulate
 - [ ] **STOP — report**
 
 ## PHASE 4 — docs/HARDWARE_PLAN.md (doc only)
