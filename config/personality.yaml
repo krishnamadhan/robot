@@ -117,3 +117,7 @@ personality:
     bad_interaction:  { mood: -0.1,  attachment: -0.03 }
     picked_up:        { arousal: +0.4, mood: +0.1 }
     battery_low:      { mood: -0.1,  energy: -0.1 }
+    # Co-presence (cognition/activity.py): just being together, quietly
+    co_settle:        { arousal: -0.15, mood: +0.05 }
+    co_presence:      { mood: +0.01, attachment: +0.015 }
+    tv_moment:        { arousal: +0.12 }

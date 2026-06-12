@@ -57,6 +57,12 @@ class CosmoBlackboard:
     # Audio state (written by state_watcher in cosmo_demo.py)
     audio_speaking:         bool  = False  # True while TTS is outputting — gate ambient sounds
 
+    # Ambient activity (written by cognition/activity.py ActivityMonitor)
+    activity:               str   = "none"   # watching_tv | quiet_company | hangout | none
+    activity_since:         float = 0.0
+    settled:                bool  = False    # True once co-presence settle ran this session
+    tv_moment:              float = 0.0      # monotonic ts of last loud TV spike
+
     # Anti-spam state (written by action nodes)
     last_greeted:           Dict[str, float] = field(default_factory=dict)
     last_emotion_reacted:   str   = ""
@@ -156,6 +162,17 @@ class CapUsable(Behaviour):
     def update(self) -> Status:
         from core.capabilities import registry
         return Status.SUCCESS if registry.has_all(self._caps) else Status.FAILURE
+
+
+class ActivityIs(Behaviour):
+    """Succeeds when the ambient activity matches one of the given names."""
+
+    def __init__(self, *activities: str, name: str = "ActivityIs"):
+        super().__init__(name=name)
+        self._activities = activities
+
+    def update(self) -> Status:
+        return Status.SUCCESS if bb.activity in self._activities else Status.FAILURE
 
 
 class SafetyTriggered(Behaviour):
@@ -302,6 +319,83 @@ class DoEngagePresence(_AsyncAction):
         if random.random() < 0.3:
             eye_engine.set_expression(EyeExpression.CURIOUS, duration=2.0)
             self._fire(sounds.play("chirp_curious"))
+        return Status.SUCCESS
+
+
+class DoCoPresence(_AsyncAction):
+    """
+    Shared-activity companionship: when the household is watching TV or
+    quietly working, come over, settle nearby, and *be together* —
+    glance at the person now and then, startle at loud TV moments,
+    very occasionally murmur a comment. Pet on the sofa, not a chatbot.
+    """
+    _last_glance:     float = 0.0
+    _last_tv_react:   float = 0.0
+    _tv_react_for:    float = 0.0   # which bb.tv_moment we already reacted to
+    _last_comment_try: float = 0.0
+
+    GLANCE_GAP_S      = 45.0
+    TV_REACT_COOLDOWN = 20.0
+    COMMENT_TRY_GAP_S = 300.0   # attempt cadence; mind enforces its own 900s cooldown
+
+    def update(self) -> Status:
+        from core.action_router import router
+        from core.intents import Intent
+        from expression.eyes import EyeExpression, eye_engine
+        from expression.sounds import sounds
+        import random
+
+        now = time.monotonic()
+        watching = bb.activity == "watching_tv"
+
+        # ── Settle once per session: come over and get comfortable ───────────
+        if not bb.settled:
+            bb.settled = True
+            DoCoPresence._last_glance = now
+            router.emit(Intent.APPROACH, source="bt_copresence", speed=0.4)
+            eye_engine.set_expression(EyeExpression.LOVING, duration=4.0)
+            if watching and not bb.audio_speaking:
+                self._fire(sounds.play("purr"))
+            log.info("bt.co_presence_settle", activity=bb.activity,
+                     person=bb.person_name)
+            return Status.SUCCESS
+
+        # ── React to loud TV moments (explosion / goal / laugh surge) ────────
+        if (watching and bb.tv_moment > DoCoPresence._tv_react_for
+                and now - DoCoPresence._last_tv_react > self.TV_REACT_COOLDOWN):
+            DoCoPresence._tv_react_for = bb.tv_moment
+            DoCoPresence._last_tv_react = now
+            eye_engine.set_expression(EyeExpression.SURPRISED, duration=2.5)
+            if not bb.audio_speaking and random.random() < 0.5:
+                self._fire(sounds.play("chirp_curious"))
+            try:
+                from core.personality import personality
+                personality.process_event("tv_moment")
+            except Exception:
+                pass
+            log.info("bt.tv_moment_react")
+            return Status.SUCCESS
+
+        # ── Occasional slow glance at the person, then back ──────────────────
+        if now - DoCoPresence._last_glance > self.GLANCE_GAP_S * random.uniform(0.7, 1.4):
+            DoCoPresence._last_glance = now
+
+            async def _glance():
+                eye_engine.set_pupil(random.choice((-0.6, 0.6)), 0.1)
+                await asyncio.sleep(random.uniform(1.5, 3.0))
+                eye_engine.set_pupil(0.0, 0.0)
+
+            self._fire(_glance())
+
+        # ── Rare murmured comment — TV only, heavily rate-limited ────────────
+        if (watching and bb.person_name
+                and now - DoCoPresence._last_comment_try > self.COMMENT_TRY_GAP_S):
+            DoCoPresence._last_comment_try = now
+            if random.random() < 0.35:
+                from cognition.mind import cosmo_mind
+                self._fire(cosmo_mind._maybe_speak(
+                    "co_watch", bb.person_name, person_id=bb.person_id or None))
+
         return Status.SUCCESS
 
 
@@ -471,6 +565,15 @@ def build_tree() -> Behaviour:
         DoEmotionReact(name="DoEmotionReact"),
     ])
 
+    # CO_PRESENCE — shared activity (TV / quiet company). No PersonVisible
+    # gate: the person may be on the sofa outside camera view; ActivityMonitor
+    # already requires a recently-seen person before setting these activities.
+    co_presence_seq = py_trees.composites.Sequence(name="CO_PRESENCE", memory=False)
+    co_presence_seq.add_children([
+        ActivityIs("watching_tv", "quiet_company", name="ActivityShared"),
+        DoCoPresence(name="DoCoPresence"),
+    ])
+
     presence_seq = py_trees.composites.Sequence(name="PERSON_PRESENT", memory=False)
     presence_seq.add_children([
         PersonVisible(name="PersonVisible_P"),
@@ -478,7 +581,7 @@ def build_tree() -> Behaviour:
     ])
 
     social = py_trees.composites.Selector(name="SOCIAL", memory=False)
-    social.add_children([gesture_gated, greet_seq, emotion_seq, presence_seq])
+    social.add_children([gesture_gated, greet_seq, emotion_seq, co_presence_seq, presence_seq])
 
     # ── AUTONOMOUS ────────────────────────────────────────────────────────────
     enter_sleep = py_trees.composites.Sequence(name="ENTER_SLEEP", memory=False)

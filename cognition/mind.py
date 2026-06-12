@@ -44,6 +44,7 @@ _TRIGGER_COOLDOWNS = {
     "curiosity":       300,   # re-homed behavior_engine curiosity engine
     "memory_ref":      600,   # re-homed behavior_engine memory bring-up
     "wonder":          1200,  # re-homed behavior_engine wonder-aloud
+    "co_watch":        900,   # rare cozy TV comment — companionship, not commentary
 }
 
 # D4: ambient triggers → Ollama-first; everything else → Claude direct
@@ -64,6 +65,7 @@ _SPEAK_PROMPTS = {
     "curiosity":       lambda name: f"[Ask {name or 'them'} one short, friendly question about their day or plans. 1 sentence.]",
     "memory_ref":      lambda name: f"[Bring up one of your memories of {name or 'them'} naturally, like a friend would. 1 sentence.]",
     "wonder":          lambda _:    "[You're alone and your mind is drifting. Wonder aloud about something — playful or philosophical, 1 sentence.]",
+    "co_watch":        lambda name: f"[You're curled up next to {name or 'your human'} watching TV together. Murmur one short cozy comment — about the show or just being happy to be here. 1 sentence, low-key.]",
 }
 
 # Language styles for Claude-direct (person-facing) speech — config speech.language

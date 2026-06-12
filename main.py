@@ -64,6 +64,10 @@ class CosmoRobot:
         await wm.start()
         log.info("cosmo.subsystem_ok", name="memory")
 
+        from cognition.activity import activity_monitor
+        await activity_monitor.start()
+        log.info("cosmo.subsystem_ok", name="activity_monitor")
+
         # ── Personality engine ────────────────────────────────────────────────
         from core.personality import personality
         await personality.start()

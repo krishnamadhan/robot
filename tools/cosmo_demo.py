@@ -527,6 +527,9 @@ async def main() -> None:
     console.print("[green]✓ Attention system[/green]")
 
     await cosmo_mind.start()
+    from cognition.activity import activity_monitor
+    await activity_monitor.start()
+    console.print("[green]✓ Activity monitor (TV / quiet-company inference)[/green]")
     console.print("[green]✓ Cosmo Mind (rule engine)[/green]")
 
     behavior_tree.setup()

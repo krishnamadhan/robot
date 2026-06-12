@@ -73,6 +73,7 @@ class EventType(str, Enum):
     ENERGY_CHANGED = "state.energy.changed"
     BEHAVIOR_CHANGED = "state.behavior.changed"
     STATE_CHANGED = "state.changed"
+    ACTIVITY_CHANGED = "state.activity.changed"   # ambient household activity (TV, quiet)
 
     # ── Interaction ───────────────────────────────────────────────────────────
     CONVERSATION_START = "interaction.conversation.start"

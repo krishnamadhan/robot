@@ -55,6 +55,14 @@ class ListeningPipeline:
         # Backend resolved in start() — detectors load lazily, not at import
         self._wake_backend = "stt"
 
+        # Ambient loudness: per-second RMS buckets (ts, level 0–1), ~2 min.
+        # Feeds cognition/activity.py (TV vs quiet-room inference).
+        from collections import deque
+        self._amb_buckets: "deque" = deque(maxlen=120)
+        self._amb_acc = 0.0
+        self._amb_n = 0
+        self._amb_bucket_start = 0.0
+
     async def start(self) -> bool:
         if self._running:
             return True
@@ -103,12 +111,47 @@ class ListeningPipeline:
                 await asyncio.sleep(0.1)
                 continue
 
+            self._note_ambient(chunk)
+
             if self._state != ListenState.PASSIVE:
                 continue   # don't stack wake-word checks while busy
 
             detected = await self._check_wake_word(chunk)
             if detected:
                 await self._handle_wake()
+
+    # ── Ambient loudness ──────────────────────────────────────────────────────
+
+    def _note_ambient(self, chunk: bytes) -> None:
+        """Accumulate per-second RMS levels (normalized 0–1) from mic chunks."""
+        try:
+            import numpy as np
+            samples = np.frombuffer(chunk, dtype=np.int16)
+            if samples.size == 0:
+                return
+            rms = float(np.sqrt(np.mean(samples.astype(np.float32) ** 2)))
+            level = min(1.0, rms / 8000.0)
+        except Exception:
+            return
+
+        now = time.monotonic()
+        if now - self._amb_bucket_start >= 1.0:
+            if self._amb_n:
+                self._amb_buckets.append(
+                    (self._amb_bucket_start, self._amb_acc / self._amb_n))
+            self._amb_bucket_start = now
+            self._amb_acc = 0.0
+            self._amb_n = 0
+        self._amb_acc += level
+        self._amb_n += 1
+
+    def ambient_stats(self, window_s: float = 60.0) -> dict:
+        """Avg + peak normalized loudness over the trailing window."""
+        cutoff = time.monotonic() - window_s
+        levels = [lvl for ts, lvl in self._amb_buckets if ts >= cutoff]
+        if not levels:
+            return {"avg": 0.0, "peak": 0.0, "n": 0}
+        return {"avg": sum(levels) / len(levels), "peak": max(levels), "n": len(levels)}
 
     # ── Wake word detection ───────────────────────────────────────────────────
 

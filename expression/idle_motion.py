@@ -87,7 +87,17 @@ class IdleMotion:
         arousal = personality.state.arousal
         # curious + aroused → glances every few seconds; placid → rare
         factor = max(0.25, 1.6 - curiosity - 0.5 * arousal)
+        if self._settled():
+            factor *= 3.0   # co-presence: calm pet on the sofa, sparse glances
         return self.GLANCE_BASE_S * factor * random.uniform(0.6, 1.4)
+
+    @staticmethod
+    def _settled() -> bool:
+        try:
+            from core.behavior_tree import bb
+            return bb.settled
+        except Exception:
+            return False
 
     def _micro_react(self, x: float, y: float) -> None:
         if not self._active():
@@ -120,7 +130,7 @@ class IdleMotion:
         # Boredom fidget — look down-away + double blink when energy sags
         elif now >= self._next_fidget:
             self._next_fidget = now + self.FIDGET_BASE_S * random.uniform(0.6, 1.6)
-            if s.energy < 0.55 and s.arousal < 0.5:
+            if s.energy < 0.55 and s.arousal < 0.5 and not self._settled():
                 eye_engine.set_pupil(random.choice((-0.5, 0.5)), 0.5)
                 eye_engine._next_blink = now   # provoke an immediate blink
                 self._hold_until = now + 1.5

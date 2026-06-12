@@ -44,6 +44,18 @@ def make_mind(idle_s: float = 10.0):
     return mind
 
 
+@pytest.fixture(autouse=True)
+def _restore_bt_module():
+    # fake_bb swaps core.behavior_tree in sys.modules; without restore the
+    # mock leaks into later test files (test_activity reads the real bb)
+    saved = sys.modules.get("core.behavior_tree")
+    yield
+    if saved is not None:
+        sys.modules["core.behavior_tree"] = saved
+    else:
+        sys.modules.pop("core.behavior_tree", None)
+
+
 def fake_bb(person_visible: bool, alone_s: float = 0.0, name=None):
     """Install a fake core.behavior_tree module with a blackboard."""
     mod = MagicMock()
