@@ -952,11 +952,16 @@ async def budget_status():
 @app.get("/logs/tail")
 async def logs_tail(lines: int = 20):
     """Return last N lines from PM2 log or cosmo-out.log."""
-    log_paths = [
-        Path.home() / ".robot" / "logs" / "cosmo-out.log",
-        Path.home() / ".pm2" / "logs" / "cosmo_demo-out.log",
-        Path.home() / ".pm2" / "logs" / "cosmo-out.log",
-    ]
+    # PM2 suffixes the app id when merge_logs is false (cosmo-out-6.log),
+    # so glob and sort by mtime instead of hardcoding names
+    log_paths = sorted(
+        [
+            *(Path.home() / ".robot" / "logs").glob("cosmo-out*.log"),
+            *(Path.home() / ".pm2" / "logs").glob("cosmo*-out*.log"),
+        ],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
     for lp in log_paths:
         if lp.exists():
             try:
