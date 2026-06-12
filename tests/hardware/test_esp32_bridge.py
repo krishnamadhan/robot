@@ -67,13 +67,14 @@ class TestProtocolParsing:
         bridge._last_hb = 0.0
         bridge._esp_uptime = 0
         bridge._sensor_flags = {}
+        bridge._mock = True
 
         msg = {"t": "hb", "up": 42, "sensors": {"ultra": False, "pir": False}}
 
         async def run():
             await bridge._handle_line(json.dumps(msg).encode())
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
         assert bridge._esp_uptime == 42
         assert bridge._sensor_flags == {"ultra": False, "pir": False}
 
@@ -87,7 +88,7 @@ class TestProtocolParsing:
         async def run():
             await bridge._handle_line(b"not json {{{")
 
-        asyncio.get_event_loop().run_until_complete(run())  # must not raise
+        asyncio.run(run())  # must not raise
 
     def test_unknown_type_ignored(self):
         from hardware.esp32_bridge import ESP32Bridge
@@ -99,7 +100,7 @@ class TestProtocolParsing:
         async def run():
             await bridge._handle_line(json.dumps({"t": "unknown_future_type"}).encode())
 
-        asyncio.get_event_loop().run_until_complete(run())  # must not raise
+        asyncio.run(run())  # must not raise
 
 
 # ── Sensor dispatch tests ─────────────────────────────────────────────────────
@@ -112,6 +113,7 @@ class TestSensorDispatch:
         b._last_hb = 0.0
         b._esp_uptime = 0
         b._sensor_flags = {}
+        b._mock = True
         return b
 
     def test_ultrasonic_normal_publishes_distance(self, mock_bus):
@@ -121,7 +123,7 @@ class TestSensorDispatch:
         async def run():
             await bridge._dispatch_sensor({"id": "ultra", "v": 55.0})
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
         assert any(e.data.get("distance_cm") == 55.0 for e in published)
 
     def test_ultrasonic_critical_publishes_obstacle(self, mock_bus):
@@ -131,7 +133,7 @@ class TestSensorDispatch:
         async def run():
             await bridge._dispatch_sensor({"id": "ultra", "v": 15.0})
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
         from core.event_bus import EventType
         types = [e.type for e in published]
         assert EventType.OBSTACLE_CRITICAL in types
@@ -143,7 +145,7 @@ class TestSensorDispatch:
         async def run():
             await bridge._dispatch_sensor({"id": "ultra", "v": 35.0})
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
         from core.event_bus import EventType
         types = [e.type for e in published]
         assert EventType.OBSTACLE_WARNING in types
@@ -156,7 +158,7 @@ class TestSensorDispatch:
         async def run():
             await bridge._dispatch_sensor({"id": "pir", "v": 1})
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
         from core.event_bus import EventType
         assert any(e.type == EventType.MOTION_DETECTED for e in published)
 
@@ -167,7 +169,7 @@ class TestSensorDispatch:
         async def run():
             await bridge._dispatch_sensor({"id": "pir", "v": 0})
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
         assert len(published) == 0
 
     def test_cliff_left_detected(self, mock_bus):
@@ -177,7 +179,7 @@ class TestSensorDispatch:
         async def run():
             await bridge._dispatch_sensor({"id": "cliff", "side": "l", "v": 0})
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
         from core.event_bus import EventType
         assert any(e.type == EventType.CLIFF_DETECTED for e in published)
         assert any(e.data.get("side") == "l" for e in published)
@@ -189,7 +191,7 @@ class TestSensorDispatch:
         async def run():
             await bridge._dispatch_sensor({"id": "touch", "n": 0, "v": 1})
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
         from core.event_bus import EventType
         assert any(e.type == EventType.TOUCH_DETECTED for e in published)
         assert any(e.data.get("zone") == "head" for e in published)
@@ -211,7 +213,7 @@ class TestSensorDispatch:
                                            "ax": 3.0, "ay": 3.0, "az": 3.0,
                                            "gx": 0.0, "gy": 0.0, "gz": 0.0})
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
         from core.event_bus import EventType
         assert any(e.type == EventType.PICKUP_DETECTED for e in published)
 
@@ -226,7 +228,7 @@ class TestSensorDispatch:
                                            "ax": 0.0, "ay": 0.0, "az": 1.0,
                                            "gx": 0.0, "gy": 0.0, "gz": 0.0})
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
         from core.event_bus import EventType
         assert not any(e.type == EventType.PICKUP_DETECTED for e in published)
 
@@ -254,7 +256,7 @@ class TestMotorCommands:
             assert cmd["l"] == 0.6
             assert cmd["r"] == 0.6
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
     def test_send_stop(self):
         bridge = self._make_bridge_with_queue()
@@ -264,7 +266,7 @@ class TestMotorCommands:
             cmd = bridge._send_queue.get_nowait()
             assert cmd["cmd"] == "stop"
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
     def test_send_stby_enable(self):
         bridge = self._make_bridge_with_queue()
@@ -275,7 +277,7 @@ class TestMotorCommands:
             assert cmd["cmd"] == "stby"
             assert cmd["v"] == 1
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
     def test_motor_speed_clamped_to_1(self):
         bridge = self._make_bridge_with_queue()
@@ -286,7 +288,7 @@ class TestMotorCommands:
             # Bridge passes through; clamping is motors.py responsibility
             assert cmd["l"] == 2.0   # bridge doesn't clamp, motors.py does
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
     def test_json_round_trip(self):
         """Every command must survive JSON encode/decode."""

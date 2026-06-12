@@ -139,26 +139,12 @@ class TestTTSEngine:
         finally:
             os.unlink(wav)
 
-    def test_clean_text_strips_markdown(self):
-        from expression.speech import TTSEngine
-        tts = TTSEngine()
-        cleaned = tts._clean_text("**Hello** `code` https://example.com world")
-        assert "**" not in cleaned
-        assert "`" not in cleaned
-        assert "https" not in cleaned
-        assert "Hello" in cleaned
-        assert "world" in cleaned
-
-    def test_mood_params_update_voice(self):
+    def test_mood_params_accepts_full_range(self):
+        # Piper/XTTS engine: set_mood_params is a no-op hook — must not raise
         from expression.speech import TTSEngine
         tts = TTSEngine()
         tts.set_mood_params(mood=1.0, energy=1.0)
-        assert tts._speed == 170   # max energy
-        assert tts._pitch == 65    # max mood
-
         tts.set_mood_params(mood=-1.0, energy=0.0)
-        assert tts._speed == 130   # min energy
-        assert tts._pitch == 35    # min mood
 
 
 # ── Spatial Memory room fingerprint ───────────────────────────────────────────

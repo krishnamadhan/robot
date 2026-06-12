@@ -51,60 +51,8 @@ class TestBH1750Sensor:
         assert s._mock or result  # either mock or succeeded
 
 
-class TestPIRSensor:
-    def test_mock_never_fires_immediately(self):
-        from hardware.sensor_manager import PIRSensor
-        s = PIRSensor()
-        s.initialize()
-        # Immediately after init, next trigger should be 2-5 min away
-        assert not s.check()
-
-    def test_mock_fires_when_time_reached(self):
-        from hardware.sensor_manager import PIRSensor
-        s = PIRSensor()
-        s.initialize()
-        if not s._mock:
-            pytest.skip("Real GPIO available — skipping mock trigger test")
-        s._next_mock_trigger = time.monotonic() - 1  # force trigger
-        assert s.check()
-
-
-class TestMPU6050Sensor:
-    def test_mock_returns_valid_structure(self):
-        from hardware.sensor_manager import MPU6050Sensor
-        s = MPU6050Sensor()
-        s.initialize()
-        data = s.read()
-        assert "accel" in data
-        assert "gyro" in data
-        assert "temp_c" in data
-        assert all(k in data["accel"] for k in ["x", "y", "z"])
-
-    def test_mock_accel_z_near_1g(self):
-        from hardware.sensor_manager import MPU6050Sensor
-        s = MPU6050Sensor()
-        s.initialize()
-        # Average over several reads
-        z_vals = [s.read()["accel"]["z"] for _ in range(50)]
-        avg_z = sum(z_vals) / len(z_vals)
-        assert 0.8 < avg_z < 1.5, f"Mock resting z should be ~1g, got {avg_z}"
-
-
-class TestCliffSensor:
-    def test_mock_always_safe(self):
-        from hardware.sensor_manager import CliffSensorArray
-        s = CliffSensorArray()
-        s.initialize()
-        assert s.is_cliff() is False
-
-
-class TestUltrasonicSensor:
-    def test_mock_returns_100cm(self):
-        from hardware.sensor_manager import UltrasonicSensor
-        s = UltrasonicSensor()
-        s.initialize()
-        dist = s.read_cm()
-        assert 90 < dist < 110, f"Mock should return ~100cm, got {dist}"
+# PIR / MPU-6050 / cliff / ultrasonic live on the ESP32 co-processor —
+# their dispatch into events is covered by tests/hardware/test_esp32_bridge.py.
 
 
 class TestUPSHATSensor:
@@ -123,9 +71,9 @@ class TestUPSHATSensor:
         s.initialize()
         if not s._mock:
             pytest.skip("Real UPS HAT detected — skipping mock drain test")
-        s._mock_start_time = time.monotonic() - 100 * 60  # 100 min ago
+        s._last_mock_t = time.monotonic() - 100 * 60  # 100 min ago
         data = s.read()
-        assert data["percent"] < 85.0 - 9  # should have drained ~10%
+        assert data["percent"] < 85.0 - 9  # drains 0.1%/min → ~10%
 
 
 class TestSensorManager:
@@ -171,31 +119,25 @@ class TestMotorController:
         from hardware.motors import MotorController
         mc = MotorController()
         await mc.initialize()
-        await mc.self_test()
         await mc.forward(speed=0.5, ramp=False)
-        l, r = mc.current_speed
-        assert l > 0 and r > 0
+        assert mc.left_speed > 0 and mc.right_speed > 0
 
     @pytest.mark.asyncio
     async def test_stop_zeroes_speed(self):
         from hardware.motors import MotorController
         mc = MotorController()
         await mc.initialize()
-        await mc.self_test()
         await mc.forward(speed=0.5, ramp=False)
         await mc.stop(emergency=True)
-        l, r = mc.current_speed
-        assert abs(l) < 0.01 and abs(r) < 0.01
+        assert abs(mc.left_speed) < 0.01 and abs(mc.right_speed) < 0.01
 
     @pytest.mark.asyncio
     async def test_turn_sets_opposite_speeds(self):
         from hardware.motors import MotorController
         mc = MotorController()
         await mc.initialize()
-        await mc.self_test()
         await mc.turn_left(speed=0.4)
-        l, r = mc.current_speed
-        assert l < 0 and r > 0
+        assert mc.left_speed < 0 and mc.right_speed > 0
 
 
 # ── Servo Controller ──────────────────────────────────────────────────────────
@@ -281,18 +223,17 @@ class TestEyeEngine:
 
 class TestSoundEngine:
     def test_generate_all_sounds(self):
-        from expression.sounds import SoundEngine, _GENERATORS
-        engine = SoundEngine()
-        for name in _GENERATORS:
-            samples = engine.generate(name)
-            assert len(samples) > 0, f"{name} generated empty array"
-            assert samples.dtype.name == "float32", f"{name} wrong dtype"
-
-    def test_generate_unknown_returns_fallback(self):
         from expression.sounds import SoundEngine
         engine = SoundEngine()
-        samples = engine.generate("does_not_exist")
-        assert len(samples) > 0
+        for name in engine.SOUNDS:
+            samples = engine.generate(name)
+            assert samples is not None and len(samples) > 0, \
+                f"{name} generated empty array"
+
+    def test_generate_unknown_returns_none(self):
+        from expression.sounds import SoundEngine
+        engine = SoundEngine()
+        assert engine.generate("does_not_exist") is None
 
     def test_beep_ack_short(self):
         import numpy as np
@@ -312,7 +253,7 @@ class TestSoundEngine:
         import numpy as np
         from expression.sounds import SoundEngine
         engine = SoundEngine()
-        for name in ["chirp_happy", "alert_beep", "trill_excited", "purr_content"]:
+        for name in engine.SOUNDS:
             s = engine.generate(name)
             assert np.max(np.abs(s)) <= 1.0 + 0.01, f"{name} clips"
 

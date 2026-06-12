@@ -157,12 +157,23 @@ class TestMindRuleEngineSafety:
 class TestMotorStby:
     """STBY pin must go LOW on emergency stop; AIN1+AIN2 never both HIGH."""
 
-    def test_motor_safety_error_on_both_high(self):
-        """MotorSafetyError raised if code attempts AIN1=HIGH AIN2=HIGH."""
-        from hardware.motors import MotorSafetyError
-        # The error class must exist and be raisable
-        with pytest.raises(MotorSafetyError):
-            raise MotorSafetyError("both HIGH — test")
+    def test_emergency_stop_blocks_further_motion(self):
+        """After stop(emergency=True), movement commands must be refused
+        until heartbeat() re-arms — the Pi-side safety latch.
+        (AIN1+AIN2 truth-table protection lives in esp32/driver_tb6612.py.)"""
+        from hardware.motors import MotorController
+
+        async def _run():
+            mc = MotorController()
+            await mc.initialize()
+            await mc.stop(emergency=True)
+            await mc.forward(speed=0.5, ramp=False)
+            assert mc.left_speed == 0.0 and mc.right_speed == 0.0
+            await mc.heartbeat()  # re-arm
+            await mc.forward(speed=0.5, ramp=False)
+            assert mc.left_speed > 0
+
+        asyncio.run(_run())
 
     def test_mock_mode_stop_does_not_raise(self):
         """In mock mode, motor_controller.stop() must complete without error."""
