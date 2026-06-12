@@ -183,7 +183,7 @@
 - **Priority:** Low — only triggers under simultaneous recognition + conversation writes. Upgrade to aiosqlite when touching episodic.py next.
 
 ### KI-017: Claude API budget check in conversation.py not inside async lock — concurrent calls can double-spend
-- **Status:** Open — low urgency (requires concurrent voice invocations)
+- **Status:** ✅ Resolved 2026-06-12 — `TokenBudget.try_reserve()/release()` reservation counter (cognition/llm.py). No lock needed: asyncio is single-threaded and check+reserve has no await between them, so it is atomic. `_call_claude` and `generate_streaming` reserve EST_CALL_TOKENS=2000 before the awaited API call and release in `finally`; actual spend recorded via `record()`. `claude_allowed()` now accounts for in-flight reservations. Tests: TestBudgetReservation in tests/unit/test_token_budget.py (incl. double-spend scenario).
 - **Service:** cognition/conversation.py
 - **Symptom:** Budget check (read daily_tokens → compare → allow) and budget update (write daily_tokens + spend) are not inside the same asyncio.Lock. Two concurrent `respond()` calls (e.g., two people speaking at once, or wake word + proactive speech race) can both pass the budget check before either records its spend. This can overdraw the 100K daily token budget.
 - **Root cause:** Read-check-write is not atomic.

@@ -40,12 +40,15 @@ class TokenBudget:
     - Per-call logging for cost visibility.
     """
 
+    # Headroom reserved per in-flight Claude call (KI-017)
+    EST_CALL_TOKENS = 2000
+
     def __init__(self, daily_limit: int = 100_000) -> None:
         self._limit = daily_limit
         self._day: Optional[str] = None
         self._total = 0
         self._call_count = 0
-        self._lock = asyncio.Lock()
+        self._reserved = 0   # in-flight reservations (KI-017 double-spend guard)
         self._conn = None   # lazy sqlite; False = persistence unavailable
 
     # ── Persistence (OQ-5: memory_meta table, atomic increment UPSERT) ──────
@@ -117,7 +120,25 @@ class TokenBudget:
     def claude_allowed(self) -> bool:
         """Returns False when daily Claude budget is exhausted."""
         self._reset_if_new_day()
-        return self._total < self._limit
+        return self._total + self._reserved < self._limit
+
+    def try_reserve(self, estimated: int = EST_CALL_TOKENS) -> bool:
+        """
+        Atomically check + reserve budget headroom for one Claude call (KI-017).
+
+        Sync on purpose: all callers run on the asyncio event loop thread and
+        there is no await between check and reserve, so check-then-reserve
+        cannot interleave. Pair every successful reserve with release().
+        """
+        self._reset_if_new_day()
+        if self._total + self._reserved + estimated > self._limit:
+            return False
+        self._reserved += estimated
+        return True
+
+    def release(self, estimated: int = EST_CALL_TOKENS) -> None:
+        """Release a reservation taken by try_reserve (actual spend via record)."""
+        self._reserved = max(0, self._reserved - estimated)
 
     def over_limit(self) -> bool:
         return not self.claude_allowed()
@@ -424,15 +445,20 @@ class LLMInterface:
                 raise RuntimeError("ANTHROPIC_API_KEY not set")
             self._anthropic_client = anthropic.AsyncAnthropic(api_key=api_key)
 
-        response = await asyncio.wait_for(
-            self._anthropic_client.messages.create(
-                model=self._claude_model,
-                max_tokens=max_tokens or self.MAX_TOKENS,
-                system=_system_to_blocks(system),
-                messages=messages,
-            ),
-            timeout=self.CLAUDE_TIMEOUT_S,
-        )
+        if not token_budget.try_reserve():
+            raise RuntimeError("claude budget exhausted (KI-017 reservation)")
+        try:
+            response = await asyncio.wait_for(
+                self._anthropic_client.messages.create(
+                    model=self._claude_model,
+                    max_tokens=max_tokens or self.MAX_TOKENS,
+                    system=_system_to_blocks(system),
+                    messages=messages,
+                ),
+                timeout=self.CLAUDE_TIMEOUT_S,
+            )
+        finally:
+            token_budget.release()
         text = response.content[0].text.strip()
         used = response.usage.input_tokens + response.usage.output_tokens
         token_budget.record(used)
@@ -490,7 +516,7 @@ class LLMInterface:
         if not api_key:
             return
 
-        if not token_budget.claude_allowed():
+        if not token_budget.try_reserve():
             log.warning("llm.stream_budget_exhausted",
                         day_total=token_budget.day_total)
             return
@@ -534,13 +560,16 @@ class LLMInterface:
                     log.warning("llm.stream_usage_unrecorded", error=str(e)[:80])
         except Exception as e:
             log.warning("llm.stream_failed", error=str(e)[:80])
-            # Fall back to non-streaming
+            # Fall back to non-streaming (_call_claude takes its own reservation;
+            # ours is released in finally — briefly double-reserved, conservative)
             try:
                 result = await self._call_claude(system_prompt, messages)
                 if result and result.get("text"):
                     yield result["text"]
             except Exception:
                 pass
+        finally:
+            token_budget.release()
 
     async def is_ollama_ready(self) -> bool:
         ready = await self._check_ollama()

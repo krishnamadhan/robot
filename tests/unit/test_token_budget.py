@@ -74,6 +74,61 @@ class TestTokenBudget:
         assert not b.over_limit()
 
 
+class TestBudgetReservation:
+    """KI-017 — atomic try_reserve/release closes the concurrent double-spend
+    window between claude_allowed() and record()."""
+
+    def test_try_reserve_succeeds_with_headroom(self):
+        b = TokenBudget(100_000)
+        assert b.try_reserve()
+        assert b._reserved == TokenBudget.EST_CALL_TOKENS
+
+    def test_try_reserve_fails_at_limit(self):
+        b = TokenBudget(100_000)
+        b.record(100_000)
+        assert not b.try_reserve()
+
+    def test_try_reserve_fails_when_estimate_exceeds_headroom(self):
+        b = TokenBudget(100_000)
+        b.record(99_000)  # 1000 left < EST_CALL_TOKENS
+        assert not b.try_reserve()
+
+    def test_double_spend_closed(self):
+        # Remaining 3000 with est 2000: only one concurrent call may pass.
+        b = TokenBudget(100_000)
+        b.record(97_000)
+        assert b.try_reserve()
+        assert not b.try_reserve()
+
+    def test_release_restores_headroom(self):
+        b = TokenBudget(100_000)
+        b.record(97_000)
+        assert b.try_reserve()
+        assert not b.try_reserve()
+        b.release()
+        assert b.try_reserve()
+
+    def test_release_never_goes_negative(self):
+        b = TokenBudget(100_000)
+        b.release()
+        assert b._reserved == 0
+
+    def test_claude_allowed_accounts_for_reservations(self):
+        b = TokenBudget(100_000)
+        b.record(99_000)
+        assert b.claude_allowed()
+        assert b.try_reserve(1000)
+        assert not b.claude_allowed()
+
+    def test_record_after_release_accounting(self):
+        b = TokenBudget(100_000)
+        assert b.try_reserve()
+        b.release()
+        b.record(1500)
+        assert b._reserved == 0
+        assert b.day_total == 1500
+
+
 class TestCosmoMindBudgetGate:
     """CosmoMind._maybe_speak must skip the LLM for claude-direct triggers
     when the shared budget is exhausted."""
