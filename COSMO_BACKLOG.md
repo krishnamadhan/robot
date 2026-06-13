@@ -43,7 +43,7 @@
 - [x] **Touch → attachment boost** — TOUCH_DETECTED → personality.process_event("touch_gentle") + episodic.upsert_person(relationship_delta=0.04) *(done 2026-06-13)*
 - [x] **Activity → movement response** — co_presence settle: stop wander + async approach; hangout: follow_mode(60s) every 2min *(done 2026-06-13)*
 - [x] **Smart home integration stub** — EventType.SMARTHOME_* (5 types); POST /smarthome/event; mind.py reacts to tv_on/lights_off/presence *(done 2026-06-13)*
-- [ ] **Dashboard motor controls need token** — dashboard JS sends motor commands without auth header; add ROBOT_API_TOKEN to dashboard fetch calls or create a separate unauthenticated dashboard-only motor route
+- [x] **Dashboard motor controls need token** — dashboard injects token at serve time; postCmd/motorCmd send Bearer header; motor duration fix via _timed_move wrapper *(done 2026-06-13)*
 - [ ] **Home Assistant webhook** — configure HA webhook → POST http://pi-tailscale-ip:8000/smarthome/event for TV on/off, lights, presence automations
 - [ ] Re-enroll Indhu face: 20 samples, good light (currently ~75% — target 90%+) → `python3 tools/enroll_face.py`
 - [ ] Prompt caching (ADR-018): add ephemeral cache headers to Claude calls — after OLED + face tests
