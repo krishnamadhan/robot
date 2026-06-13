@@ -203,10 +203,16 @@ def _get_tailscale_ip() -> Optional[str]:
         return None
 
 
-def _encode_frame(frame_bgr: np.ndarray) -> Optional[bytes]:
+BLUR_KERNEL = 5  # 0 = off, odd number = Gaussian blur kernel size
+
+
+def _encode_frame(frame_bgr: np.ndarray, blur: bool = False) -> Optional[bytes]:
     try:
+        img = frame_bgr
+        if blur and BLUR_KERNEL > 0:
+            img = cv2.GaussianBlur(img, (BLUR_KERNEL, BLUR_KERNEL), 0)
         ret, buf = cv2.imencode(
-            ".jpg", frame_bgr,
+            ".jpg", img,
             [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY]
         )
         return buf.tobytes() if ret else None
@@ -342,7 +348,7 @@ class StreamServer:
         if frame_obj is None or frame_obj.is_stale(3000):
             return web.Response(status=503, text="No frame available")
         loop = asyncio.get_event_loop()
-        jpg = await loop.run_in_executor(None, _encode_frame, frame_obj.image)
+        jpg = await loop.run_in_executor(None, _encode_frame, frame_obj.image, True)
         if jpg is None:
             return web.Response(status=500, text="Encode failed")
 
@@ -363,6 +369,10 @@ class StreamServer:
         return web.Response(status=500, text="send failed")
 
     async def _handle_record_send(self, request: web.Request) -> web.Response:
+        frame_check = camera.latest_frame
+        if frame_check is None or frame_check.is_stale(3000):
+            return web.Response(status=503, text="No frame available")
+
         fd, raw_path = tempfile.mkstemp(suffix=".avi", prefix="cosmo_raw_")
         os.close(fd)
         fd2, out_path = tempfile.mkstemp(suffix=".mp4", prefix="cosmo_rec_")
@@ -406,8 +416,13 @@ class StreamServer:
         return web.Response(status=500, text="send failed")
 
     def _record_clip(self, path: str) -> bool:
+        # Determine actual frame size from live camera feed
+        probe = camera.latest_frame
+        if probe is None:
+            return False
+        h, w = probe.image.shape[:2]
         fourcc = cv2.VideoWriter_fourcc(*"MJPG")
-        out = cv2.VideoWriter(path, fourcc, RECORD_FPS, (640, 480))
+        out = cv2.VideoWriter(path, fourcc, RECORD_FPS, (w, h))
         if not out.isOpened():
             return False
         deadline = time.monotonic() + RECORD_SECONDS
@@ -417,7 +432,10 @@ class StreamServer:
                 t0 = time.monotonic()
                 frame_obj = camera.latest_frame
                 if frame_obj is not None and not frame_obj.is_stale(2000):
-                    out.write(frame_obj.image)
+                    img = frame_obj.image
+                    if BLUR_KERNEL > 0:
+                        img = cv2.GaussianBlur(img, (BLUR_KERNEL, BLUR_KERNEL), 0)
+                    out.write(img)
                 elapsed = time.monotonic() - t0
                 remaining = interval - elapsed
                 if remaining > 0:

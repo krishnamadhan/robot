@@ -271,13 +271,19 @@ class CameraPipeline:
     async def _capture_loop(self) -> None:
         consecutive_errors = 0
         target_interval = 1.0 / self._cfg.fps
+        read_timeout = max(5.0, 3.0 / self._cfg.fps)  # 5s min; 3 missed frames
 
         while self._running:
             t_start = time.monotonic()
 
-            success, image = await asyncio.get_event_loop().run_in_executor(
-                None, self._backend.read
-            )
+            try:
+                success, image = await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(None, self._backend.read),
+                    timeout=read_timeout,
+                )
+            except asyncio.TimeoutError:
+                log.error("camera.read_timeout", timeout_s=read_timeout)
+                success, image = False, None
 
             if not success:
                 consecutive_errors += 1
