@@ -54,13 +54,28 @@ class _Picamera2Backend:
     def open(self) -> bool:
         try:
             from picamera2 import Picamera2
-            cam = Picamera2()
+            import time as _time
+            # imx708_wide.json has incomplete calibration — AWB produces a heavy
+            # blue cast. imx708.json (standard lens tuning) has correct CCM/AWB.
+            try:
+                tuning = Picamera2.load_tuning_file("imx708.json")
+                cam = Picamera2(tuning=tuning)
+                log.info("camera.tuning", file="imx708.json")
+            except Exception:
+                cam = Picamera2()
+                log.warning("camera.tuning_fallback", reason="imx708.json load failed")
             config = cam.create_video_configuration(
                 main={"size": (self._width, self._height), "format": "BGR888"},
-                controls={"FrameRate": float(self._fps)},
+                controls={
+                    "FrameRate": float(self._fps),
+                    "AwbEnable": True,
+                    "AeEnable": True,
+                },
             )
             cam.configure(config)
             cam.start()
+            # Let AWB + AE settle before serving frames
+            _time.sleep(2.5)
             self._cam = cam
             return True
         except Exception as e:
@@ -71,8 +86,7 @@ class _Picamera2Backend:
         if not self._cam:
             return False, None
         try:
-            frame = self._cam.capture_array()
-            return True, frame
+            return True, self._cam.capture_array()
         except Exception:
             return False, None
 
