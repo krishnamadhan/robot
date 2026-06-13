@@ -38,15 +38,17 @@
 - [x] Exploration memory + anti-revisit wander bias (behavior/exploration.py) *(done 2026-06-13)*
 - [x] Discovery behavior: wander detects new obstacles → DoDiscovery BT node → speak/notify *(done 2026-06-13)*
 - [x] "Missing you" WhatsApp nudge when alone >20min + attachment >0.6 *(done 2026-06-13)*
-- [ ] **Port 8000 API auth** — add Bearer token (from robot.env) to all FastAPI endpoints; anyone on LAN can call `/cosmo/say` right now
-- [ ] **Personalized curiosity questions** — replace generic "[Ask them about their day]" prompt with episodic-recall context: pull last 2 topics from episodic DB and ask something specific
-- [ ] **Touch → attachment boost** — wire TOUCH_DETECTED event to personality.process_event("touch_gentle") + attachment += 0.05 per person_id (currently touch only fires audio/eye reaction)
-- [ ] **Activity → movement response** — when activity changes to quiet_company/watching_tv: stop wander, approach person's last known position, settle; follow_mode when hangout starts
+- [x] **Port 8000 API auth** — Bearer token via ROBOT_API_TOKEN env var; motor/mind/sound/trigger endpoints gated *(done 2026-06-13)*
+- [x] **Personalized curiosity questions** — _build_curiosity_prompt() pulls episodic memories and asks specific questions *(done 2026-06-13)*
+- [x] **Touch → attachment boost** — TOUCH_DETECTED → personality.process_event("touch_gentle") + episodic.upsert_person(relationship_delta=0.04) *(done 2026-06-13)*
+- [x] **Activity → movement response** — co_presence settle: stop wander + async approach; hangout: follow_mode(60s) every 2min *(done 2026-06-13)*
+- [x] **Smart home integration stub** — EventType.SMARTHOME_* (5 types); POST /smarthome/event; mind.py reacts to tv_on/lights_off/presence *(done 2026-06-13)*
+- [ ] **Dashboard motor controls need token** — dashboard JS sends motor commands without auth header; add ROBOT_API_TOKEN to dashboard fetch calls or create a separate unauthenticated dashboard-only motor route
+- [ ] **Home Assistant webhook** — configure HA webhook → POST http://pi-tailscale-ip:8000/smarthome/event for TV on/off, lights, presence automations
 - [ ] Re-enroll Indhu face: 20 samples, good light (currently ~75% — target 90%+) → `python3 tools/enroll_face.py`
 - [ ] Prompt caching (ADR-018): add ephemeral cache headers to Claude calls — after OLED + face tests
 - [ ] Test Piper Kitten Micro 25MB vs current lessac-medium 61MB (ADR-016)
 - [ ] Test FER 5-class vs current DeepFace 7-class emotion detection (ADR-014)
-- [ ] **Smart home integration stub** — define EventType.SMARTHOME_* events + MQTT/HTTP listener; no actuators yet, just ingestion layer
 
 ---
 

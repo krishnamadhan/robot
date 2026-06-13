@@ -11,12 +11,14 @@ Endpoints:
 
 import asyncio
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
+from typing import Optional
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse, HTMLResponse
 
 from utils.logger import get_logger
@@ -24,6 +26,24 @@ from utils.logger import get_logger
 log = get_logger(__name__)
 
 app = FastAPI(title="Cosmo Debug API", docs_url="/docs")
+
+
+def _require_token(authorization: Optional[str] = Header(default=None)) -> None:
+    """Bearer-token guard for mutation endpoints.
+
+    If ROBOT_API_TOKEN env var is not set, all requests pass (dev mode).
+    If set, requests must include `Authorization: Bearer <token>`.
+    """
+    expected = os.environ.get("ROBOT_API_TOKEN", "")
+    if not expected:
+        return  # dev mode — no token required
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authorization header required")
+    if authorization[len("Bearer "):].strip() != expected:
+        raise HTTPException(status_code=403, detail="Invalid token")
+
+
+_AuthRequired = Depends(_require_token)
 _start_time = time.monotonic()
 
 # Injected at startup by wire_state()
@@ -274,7 +294,7 @@ async def trigger_describe():
 # ── /mind/on · /mind/off ─────────────────────────────────────────────────────
 
 @app.post("/mind/on")
-async def mind_on():
+async def mind_on(_: None = _AuthRequired):
     try:
         from cognition.mind import cosmo_mind
         cosmo_mind.enable()
@@ -284,7 +304,7 @@ async def mind_on():
 
 
 @app.post("/mind/off")
-async def mind_off():
+async def mind_off(_: None = _AuthRequired):
     try:
         from cognition.mind import cosmo_mind
         cosmo_mind.disable()
@@ -856,7 +876,7 @@ setInterval(refresh, 3000);
 # ── /sound/mute · /sound/unmute ──────────────────────────────────────────────
 
 @app.post("/sound/mute")
-async def sound_mute(seconds: int = 3600):
+async def sound_mute(seconds: int = 3600, _: None = _AuthRequired):
     """Mute Cosmo's sounds for N seconds (default 1 hour)."""
     try:
         from expression.sounds import sounds
@@ -867,7 +887,7 @@ async def sound_mute(seconds: int = 3600):
 
 
 @app.post("/sound/unmute")
-async def sound_unmute():
+async def sound_unmute(_: None = _AuthRequired):
     """Unmute Cosmo immediately."""
     try:
         from expression.sounds import sounds
@@ -880,7 +900,7 @@ async def sound_unmute():
 # ── Motor controls ───────────────────────────────────────────────────────────
 
 @app.post("/motor/forward")
-async def motor_forward(speed: float = 0.4, duration: float = 1.0):
+async def motor_forward(speed: float = 0.4, duration: float = 1.0, _: None = _AuthRequired):
     try:
         from hardware.motors import motor_controller
         asyncio.create_task(motor_controller.forward(speed=speed, duration=duration))
@@ -890,7 +910,7 @@ async def motor_forward(speed: float = 0.4, duration: float = 1.0):
 
 
 @app.post("/motor/back")
-async def motor_back(speed: float = 0.3, duration: float = 1.0):
+async def motor_back(speed: float = 0.3, duration: float = 1.0, _: None = _AuthRequired):
     try:
         from hardware.motors import motor_controller
         asyncio.create_task(motor_controller.backward(speed=speed, duration=duration))
@@ -900,7 +920,7 @@ async def motor_back(speed: float = 0.3, duration: float = 1.0):
 
 
 @app.post("/motor/left")
-async def motor_left(speed: float = 0.35, duration: float = 0.6):
+async def motor_left(speed: float = 0.35, duration: float = 0.6, _: None = _AuthRequired):
     try:
         from hardware.motors import motor_controller
         asyncio.create_task(motor_controller.turn_left(speed=speed, duration=duration))
@@ -910,7 +930,7 @@ async def motor_left(speed: float = 0.35, duration: float = 0.6):
 
 
 @app.post("/motor/right")
-async def motor_right(speed: float = 0.35, duration: float = 0.6):
+async def motor_right(speed: float = 0.35, duration: float = 0.6, _: None = _AuthRequired):
     try:
         from hardware.motors import motor_controller
         asyncio.create_task(motor_controller.turn_right(speed=speed, duration=duration))
@@ -920,7 +940,7 @@ async def motor_right(speed: float = 0.35, duration: float = 0.6):
 
 
 @app.post("/motor/stop")
-async def motor_stop():
+async def motor_stop(_: None = _AuthRequired):
     try:
         from hardware.motors import motor_controller
         await motor_controller.stop()
@@ -991,7 +1011,7 @@ async def logs_tail(lines: int = 20):
 # ── Brain event triggers ──────────────────────────────────────────────────────
 
 @app.post("/trigger/face_seen")
-async def trigger_face_seen():
+async def trigger_face_seen(_: None = _AuthRequired):
     try:
         from cognition.mind import cosmo_mind
         asyncio.create_task(cosmo_mind._maybe_speak("face_seen", "Madhan"))
@@ -1001,7 +1021,7 @@ async def trigger_face_seen():
 
 
 @app.post("/trigger/touched")
-async def trigger_touched():
+async def trigger_touched(_: None = _AuthRequired):
     try:
         from cognition.mind import cosmo_mind
         asyncio.create_task(cosmo_mind._maybe_speak("touched", None))
@@ -1011,13 +1031,48 @@ async def trigger_touched():
 
 
 @app.post("/trigger/emotion_happy")
-async def trigger_emotion_happy():
+async def trigger_emotion_happy(_: None = _AuthRequired):
     try:
         from cognition.mind import cosmo_mind
         asyncio.create_task(cosmo_mind._maybe_speak("emotion_happy", "Madhan"))
         return {"ok": True, "trigger": "emotion_happy"}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ── Smart home ingestion ─────────────────────────────────────────────────────
+
+@app.post("/smarthome/event")
+async def smarthome_event(payload: dict):
+    """Ingest a smart home event and publish it onto the robot event bus.
+
+    Caller: Home Assistant webhook / MQTT bridge / any local service.
+    Body: { "type": "device_on|device_off|motion|presence|scene",
+            "device": "<name>", "state": "<value>", ... }
+
+    No auth required from local network — events are informational, not actuating.
+    """
+    from core.event_bus import bus, Event, EventType
+
+    etype_map = {
+        "device_on":  EventType.SMARTHOME_DEVICE_ON,
+        "device_off": EventType.SMARTHOME_DEVICE_OFF,
+        "motion":     EventType.SMARTHOME_MOTION,
+        "presence":   EventType.SMARTHOME_PRESENCE,
+        "scene":      EventType.SMARTHOME_SCENE,
+    }
+
+    raw_type = str((payload or {}).get("type", "")).lower()
+    etype = etype_map.get(raw_type)
+    if etype is None:
+        return JSONResponse(status_code=400, content={
+            "error": f"unknown type '{raw_type}'",
+            "valid": list(etype_map.keys()),
+        })
+
+    await bus.publish(Event(type=etype, data=payload))
+    log.info("smarthome.event_ingested", type=raw_type, device=payload.get("device"))
+    return {"ok": True, "event": etype.value}
 
 
 # ── Phase 5: WhatsApp control surface (!cosmo in banteragent proxies here) ───

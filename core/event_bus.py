@@ -91,6 +91,13 @@ class EventType(str, Enum):
     ATTENTION_SHIFTED = "attention.shifted"   # new target acquired
     ATTENTION_LOST    = "attention.lost"      # attention faded, no target
 
+    # ── Smart home ────────────────────────────────────────────────────────────
+    SMARTHOME_DEVICE_ON  = "smarthome.device.on"   # e.g. TV turned on
+    SMARTHOME_DEVICE_OFF = "smarthome.device.off"  # e.g. lights off
+    SMARTHOME_MOTION     = "smarthome.motion"       # motion sensor from HA/MQTT
+    SMARTHOME_PRESENCE   = "smarthome.presence"     # someone home / left (phone GPS)
+    SMARTHOME_SCENE      = "smarthome.scene"        # scene activated (movie, bedtime…)
+
     # ── Internal ──────────────────────────────────────────────────────────────
     TICK = "internal.tick"              # periodic heartbeat
     SHUTDOWN = "internal.shutdown"

@@ -19,7 +19,7 @@ import time
 from typing import List, Optional
 
 from core.attention import attention
-from core.event_bus import bus, Event, EventType
+from core.event_bus import bus, Event, EventType  # includes SMARTHOME_* events
 from core.action_router import router
 from core.intents import Intent
 from expression.speech import tts
@@ -62,7 +62,7 @@ _SPEAK_PROMPTS = {
     "touched":         lambda name: f"[{name or 'someone'} just touched you. React with surprise or delight, 1 sentence.]",
     "obstacle":        lambda _:    "[You almost bumped into something. React with surprise or annoyance, 1 sentence, English.]",
     "dark_room":       lambda _:    "[You just entered a dark room. React a little scared, 1 sentence, English.]",
-    "curiosity":       lambda name: f"[Ask {name or 'them'} one short, friendly question about their day or plans. 1 sentence.]",
+    "curiosity":       None,   # replaced by _build_curiosity_prompt() — uses episodic context
     "memory_ref":      lambda name: f"[Bring up one of your memories of {name or 'them'} naturally, like a friend would. 1 sentence.]",
     "wonder":          lambda _:    "[You're alone and your mind is drifting. Wonder aloud about something — playful or philosophical, 1 sentence.]",
     "co_watch":        lambda name: f"[You're curled up next to {name or 'your human'} watching TV together. Murmur one short cozy comment — about the show or just being happy to be here. 1 sentence, low-key.]",
@@ -188,9 +188,13 @@ class CosmoMind:
             try:
                 from cognition.conversation import conversation
                 name = conversation._active_person_name or None
+                person_id = conversation._active_person_id or None
             except Exception:
                 name = None
+                person_id = None
             await self._maybe_speak("touched", name)
+            # Touch boosts attachment — physical contact is more meaningful than speech
+            await self._apply_touch_attachment(person_id)
 
         @bus.on(EventType.LIGHT_CHANGED)
         async def _on_light(event: Event) -> None:
@@ -201,6 +205,45 @@ class CosmoMind:
         @bus.on(EventType.OBSTACLE_CRITICAL)
         async def _on_obstacle(event: Event) -> None:
             await self._maybe_speak("obstacle", None)
+
+        @bus.on(EventType.SMARTHOME_DEVICE_ON)
+        async def _on_device_on(event: Event) -> None:
+            device = event.data.get("device", "something")
+            if "tv" in device.lower() or "screen" in device.lower():
+                # TV turning on — get excited, switch to co-presence mode
+                try:
+                    from core.personality import personality
+                    personality.process_event("excited")
+                except Exception:
+                    pass
+                log.info("cosmo_mind.smarthome", action="tv_on")
+
+        @bus.on(EventType.SMARTHOME_DEVICE_OFF)
+        async def _on_device_off(event: Event) -> None:
+            device = event.data.get("device", "")
+            if "light" in device.lower():
+                # Lights off — trigger dark-room response
+                try:
+                    from core.personality import personality
+                    personality.process_event("nervous")
+                except Exception:
+                    pass
+
+        @bus.on(EventType.SMARTHOME_PRESENCE)
+        async def _on_presence(event: Event) -> None:
+            state = event.data.get("state", "")
+            if state == "home":
+                # Someone arrived home — get excited
+                try:
+                    from core.personality import personality
+                    personality.process_event("person_arrived")
+                    from core.behavior_tree import bb as cosmo_bb
+                    cosmo_bb.alone_since = time.monotonic()  # reset alone timer
+                except Exception:
+                    pass
+                log.info("cosmo_mind.smarthome", action="person_home")
+            elif state == "away":
+                log.info("cosmo_mind.smarthome", action="person_away")
 
     # ── rule engine (free, runs every 5s) ────────────────────────────────────
 
@@ -292,6 +335,26 @@ class CosmoMind:
 
         # ── Missing you: WhatsApp nudge when alone a long time + attached ──
         await self._maybe_notify_missing(alone_s)
+
+    # ── Touch → attachment boost ─────────────────────────────────────────────
+
+    _TOUCH_ATTACHMENT_DELTA = 0.04   # per touch event; caps at 1.0
+    _TOUCH_MOOD_DELTA       = 0.08
+
+    @staticmethod
+    async def _apply_touch_attachment(person_id: str | None) -> None:
+        try:
+            from core.personality import personality
+            personality.process_event("touch_gentle")   # mood + arousal bump
+            if person_id:
+                # Grow per-person relationship quality via touch
+                from core.memory.episodic import episodic
+                await episodic.upsert_person(
+                    person_id, relationship_delta=CosmoMind._TOUCH_ATTACHMENT_DELTA
+                )
+            log.info("cosmo_mind.touch_attachment", person_id=person_id)
+        except Exception as e:
+            log.debug("cosmo_mind.touch_attachment_error", error=str(e)[:80])
 
     # ── Outbound WhatsApp nudge ───────────────────────────────────────────────
 
@@ -422,6 +485,35 @@ Response rules:
 - Sometimes ask a question instead of just responding
 - Never mention being an AI unless directly asked"""
 
+    # ── Personalized curiosity prompt builder ────────────────────────────────
+
+    async def _build_curiosity_prompt(
+        self, name: Optional[str], person_id: Optional[str]
+    ) -> str:
+        """Build a curiosity question prompt grounded in episodic memory.
+
+        Without memory: generic "ask about their day".
+        With memory: ask something specific derived from the last few episodes.
+        """
+        name_str = name or "them"
+        if not person_id:
+            return f"[Ask {name_str} one short, curious question about their day or something they care about. 1 sentence.]"
+        try:
+            from core.memory.episodic import episodic
+            mem = await episodic.get_context_for_person(person_id, limit=4)
+            memories = mem.get("memories", [])
+            total = mem.get("total_interactions", 0)
+            if not memories or total < 3:
+                return f"[Ask {name_str} one short, curious question about their day. 1 sentence.]"
+            recent = "; ".join(memories[:3])
+            return (
+                f"[You know {name_str} well. Recent memories: {recent[:300]}. "
+                f"Ask ONE short, specific curiosity question based on something they've mentioned before. "
+                f"Make it feel personal, not generic. 1 sentence.]"
+            )
+        except Exception:
+            return f"[Ask {name_str} one short curious question. 1 sentence.]"
+
     # ── Compact memory context for short prompts ─────────────────────────────
 
     async def _memory_context(self, person_id: Optional[str] = None) -> str:
@@ -507,8 +599,11 @@ Response rules:
                 await asyncio.sleep(random.uniform(0.2, 0.5))
 
             # ── Build prompt ──────────────────────────────────────────────────
-            prompt_fn = _SPEAK_PROMPTS.get(trigger, lambda n: "[Say something short in English.]")
-            prompt = prompt_fn(name)
+            if trigger == "curiosity":
+                prompt = await self._build_curiosity_prompt(name, person_id)
+            else:
+                prompt_fn = _SPEAK_PROMPTS.get(trigger) or (lambda n: "[Say something short in English.]")
+                prompt = prompt_fn(name)
 
             try:
                 from cognition.conversation import conversation as _conv

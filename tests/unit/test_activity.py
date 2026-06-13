@@ -124,7 +124,8 @@ class TestCoPresenceBranch:
             t.tick_once()
         assert bb.settled is True
         intents = [c.args[0].value for c in mock_router.emit.call_args_list]
-        assert "approach" in intents
+        # On settle: stop wander first, then approach (async via _fire)
+        assert "stop" in intents
 
     def test_tv_moment_triggers_surprise(self):
         bb.activity = "watching_tv"

@@ -307,12 +307,18 @@ class DoEmotionReact(_AsyncAction):
 
 
 class DoEngagePresence(_AsyncAction):
-    """Periodic light engagement while person is present."""
+    """Periodic light engagement while person is present.
+
+    Also starts brief follow-mode when activity is 'hangout' (direct interaction)
+    — Cosmo follows the person around while they're actively engaging.
+    """
     _last_engage: float = 0.0
+    _last_follow: float = 0.0
+    _FOLLOW_COOLDOWN_S = 120.0   # 2 min between follow activations
 
     def update(self) -> Status:
         if bb.audio_speaking:
-            return Status.SUCCESS  # don't chirp over TTS
+            return Status.SUCCESS
         now = time.monotonic()
         if now - DoEngagePresence._last_engage < ENGAGE_INTERVAL_S:
             return Status.SUCCESS
@@ -321,6 +327,15 @@ class DoEngagePresence(_AsyncAction):
         from expression.eyes import EyeExpression, eye_engine
         from expression.sounds import sounds
         import random
+
+        # Follow-mode when actively hanging out
+        if (bb.activity == "hangout"
+                and now - DoEngagePresence._last_follow > self._FOLLOW_COOLDOWN_S):
+            DoEngagePresence._last_follow = now
+            from behavior.navigation import navigation
+            self._fire(navigation.follow_mode(duration=60))
+            log.info("bt.follow_mode_started")
+            return Status.SUCCESS
 
         if random.random() < 0.3:
             eye_engine.set_expression(EyeExpression.CURIOUS, duration=2.0)
@@ -354,11 +369,19 @@ class DoCoPresence(_AsyncAction):
         now = time.monotonic()
         watching = bb.activity == "watching_tv"
 
-        # ── Settle once per session: come over and get comfortable ───────────
+        # ── Settle once per session: stop wandering, come over, get comfortable ─
         if not bb.settled:
             bb.settled = True
             DoCoPresence._last_glance = now
-            router.emit(Intent.APPROACH, source="bt_copresence", speed=0.4)
+            # Stop autonomous wander — presence trumps exploration
+            router.emit(Intent.STOP, source="bt_copresence")
+            # Brief pause then approach
+            async def _settle_approach():
+                import asyncio as _aio
+                await _aio.sleep(0.8)
+                from behavior.navigation import navigation
+                await navigation.approach_person()
+            self._fire(_settle_approach())
             eye_engine.set_expression(EyeExpression.LOVING, duration=4.0)
             if watching and not bb.audio_speaking:
                 self._fire(sounds.play("purr"))
