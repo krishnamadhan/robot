@@ -312,6 +312,15 @@ class CosmoMind:
             self._wound_down = False   # reset for next night
             return
 
+        # ── Dark room (polled — supplements the LIGHT_CHANGED event path) ──
+        if lux < 50 and not self._was_dark:
+            self._was_dark = True
+            router.emit(Intent.EXPRESS_FEAR, source="mind_rule")
+            log.info("cosmo_mind.rule", action="dark_room", lux=round(lux, 1))
+            return
+        elif lux > 150 and self._was_dark:
+            self._was_dark = False
+
         # ── Wind-down: goodnight once per night at 23:00 (re-homed) ──
         if hour == 23 and not self._wound_down:
             self._wound_down = True
