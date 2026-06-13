@@ -389,7 +389,9 @@ async def git_log():
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard():
     """Phone-friendly live dashboard. No frames sent off-device."""
-    return HTMLResponse(content=_DASHBOARD_HTML)
+    token = os.environ.get("ROBOT_API_TOKEN", "")
+    html = _DASHBOARD_HTML.replace("__ROBOT_TOKEN__", token)
+    return HTMLResponse(content=html)
 
 
 
@@ -649,6 +651,8 @@ button.blue:hover { background: #1a4080; }
 
 <script>
 const BASE = '';
+const ROBOT_TOKEN = '__ROBOT_TOKEN__';
+const AUTH_HDR = ROBOT_TOKEN ? {'Authorization': 'Bearer ' + ROBOT_TOKEN, 'Content-Type': 'application/json'} : {'Content-Type': 'application/json'};
 let camHost = window.location.hostname;
 
 // Set camera stream src once
@@ -843,9 +847,11 @@ function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-async function postCmd(path) {
+async function postCmd(path, body) {
   try {
-    const r = await fetch(BASE + path, {method:'POST'});
+    const opts = {method:'POST', headers: AUTH_HDR};
+    if (body) opts.body = JSON.stringify(body);
+    const r = await fetch(BASE + path, opts);
     const j = await r.json();
     const msg = j.ok ? '✅ ' + (j.action || 'done') : '❌ ' + JSON.stringify(j);
     document.getElementById('motor-status').textContent = msg;
@@ -899,11 +905,18 @@ async def sound_unmute(_: None = _AuthRequired):
 
 # ── Motor controls ───────────────────────────────────────────────────────────
 
+async def _timed_move(coro, duration: float) -> None:
+    await coro
+    await asyncio.sleep(duration)
+    from hardware.motors import motor_controller
+    await motor_controller.stop()
+
+
 @app.post("/motor/forward")
 async def motor_forward(speed: float = 0.4, duration: float = 1.0, _: None = _AuthRequired):
     try:
         from hardware.motors import motor_controller
-        asyncio.create_task(motor_controller.forward(speed=speed, duration=duration))
+        asyncio.create_task(_timed_move(motor_controller.forward(speed=speed), duration))
         return {"ok": True, "action": "forward"}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -913,7 +926,7 @@ async def motor_forward(speed: float = 0.4, duration: float = 1.0, _: None = _Au
 async def motor_back(speed: float = 0.3, duration: float = 1.0, _: None = _AuthRequired):
     try:
         from hardware.motors import motor_controller
-        asyncio.create_task(motor_controller.backward(speed=speed, duration=duration))
+        asyncio.create_task(_timed_move(motor_controller.backward(speed=speed), duration))
         return {"ok": True, "action": "back"}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
