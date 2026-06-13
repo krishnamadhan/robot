@@ -41,6 +41,9 @@ _TRIGGER_COOLDOWNS = {
     "alone_long":      180,
     "obstacle":        30,
     "dark_room":       90,
+    "lights_on":       120,
+    "farewell":        90,
+    "spontaneous_joy": 600,
     "curiosity":       300,   # re-homed behavior_engine curiosity engine
     "memory_ref":      600,   # re-homed behavior_engine memory bring-up
     "wonder":          1200,  # re-homed behavior_engine wonder-aloud
@@ -48,7 +51,7 @@ _TRIGGER_COOLDOWNS = {
 }
 
 # D4: ambient triggers → Ollama-first; everything else → Claude direct
-_AMBIENT_TRIGGERS = {"alone_long", "obstacle", "dark_room", "wonder"}
+_AMBIENT_TRIGGERS = {"alone_long", "obstacle", "dark_room", "wonder", "lights_on", "spontaneous_joy"}
 
 # Prompts sent to Claude — short, focused on speech only. Language is governed
 # by the system prompt (config speech.language), except ambient triggers which
@@ -66,6 +69,9 @@ _SPEAK_PROMPTS = {
     "memory_ref":      lambda name: f"[Bring up one of your memories of {name or 'them'} naturally, like a friend would. 1 sentence.]",
     "wonder":          lambda _:    "[You're alone and your mind is drifting. Wonder aloud about something — playful or philosophical, 1 sentence.]",
     "co_watch":        lambda name: f"[You're curled up next to {name or 'your human'} watching TV together. Murmur one short cozy comment — about the show or just being happy to be here. 1 sentence, low-key.]",
+    "farewell":        lambda name: f"[{name or 'your human'} just left the room. Say a warm, slightly sad goodbye in 1 sentence. Be genuine, not over-the-top.]",
+    "lights_on":       lambda _:    "[Lights just turned on — you were in the dark. React with pleasant relief or surprise, 1 sentence, English.]",
+    "spontaneous_joy": lambda _:    "[You're alone but feeling really good for no reason. Express pure happiness in 1 short sentence, English. Be quirky.]",
 }
 
 # Language styles for Claude-direct (person-facing) speech — config speech.language
@@ -114,6 +120,7 @@ class CosmoMind:
         self._obstacle_warn   = False
         self._morning_day     = -1     # day-number of last morning greet
         self._wound_down      = False  # said goodnight tonight
+        self._last_sound_spike = 0.0  # monotonic time of last startle
 
         if not os.environ.get("ANTHROPIC_API_KEY"):
             log.warning("cosmo_mind.no_api_key",
@@ -196,11 +203,26 @@ class CosmoMind:
             # Touch boosts attachment — physical contact is more meaningful than speech
             await self._apply_touch_attachment(person_id)
 
+        @bus.on(EventType.PERSON_LOST)
+        async def _on_person_lost(event: Event) -> None:
+            # Wait briefly — camera occlusion often resolves in 2–3s
+            await asyncio.sleep(3.0)
+            from core.behavior_tree import bb as cosmo_bb
+            if cosmo_bb.person_visible:
+                return  # they came back
+            name = event.data.get("name") or None
+            person_id = event.data.get("person_id") or None
+            await self._maybe_speak("farewell", name, person_id=person_id)
+
         @bus.on(EventType.LIGHT_CHANGED)
         async def _on_light(event: Event) -> None:
             lux = event.data.get("lux", 300)
             if lux < 50:
+                self._was_dark = True
                 await self._maybe_speak("dark_room", None)
+            elif lux > 150 and self._was_dark:
+                self._was_dark = False
+                await self._maybe_speak("lights_on", None)
 
         @bus.on(EventType.OBSTACLE_CRITICAL)
         async def _on_obstacle(event: Event) -> None:
@@ -297,15 +319,6 @@ class CosmoMind:
             log.info("cosmo_mind.rule", action="wind_down")
             return
 
-        # ── Dark room (speech is handled by the LIGHT_CHANGED subscriber) ──
-        if lux < 50 and not self._was_dark:
-            self._was_dark = True
-            router.emit(Intent.EXPRESS_FEAR, source="mind_rule")
-            log.info("cosmo_mind.rule", action="dark_room")
-            return
-        if lux >= 50:
-            self._was_dark = False
-
         from core.behavior_tree import bb as cosmo_bb
         now = time.monotonic()
 
@@ -332,6 +345,33 @@ class CosmoMind:
             await self._maybe_speak("wonder", None)
         elif alone_s > 600:
             await self._maybe_speak("alone_long", None, cooldown=300)
+
+        # ── Spontaneous joy: rare happy outburst when mood is high ──
+        try:
+            from core.personality import personality as _pers
+            if _pers.state.mood > 0.7 and _pers.state.energy > 0.5 and random.random() < 0.008:
+                await self._maybe_speak("spontaneous_joy", None)
+        except Exception:
+            pass
+
+        # ── Sound spike startle (ambient — no LLM, just non-verbal) ──
+        try:
+            from perception.audio.pipeline import audio_pipeline
+            stats5  = audio_pipeline.ambient_stats(5.0)
+            stats60 = audio_pipeline.ambient_stats(60.0)
+            peak5   = stats5.get("peak", 0.0)
+            avg60   = stats60.get("avg", 0.0)
+            if (stats5.get("n", 0) > 0 and peak5 > 0.18
+                    and peak5 / max(avg60, 0.01) > 3.5
+                    and now - self._last_sound_spike > 30.0):
+                self._last_sound_spike = now
+                router.emit(Intent.EXPRESS_FEAR, source="mind_sound_spike")
+                from expression.sounds import sounds
+                asyncio.create_task(sounds.play("surprised_ding"))
+                log.info("cosmo_mind.rule", action="sound_startle",
+                         peak5=round(peak5, 2), ratio=round(peak5 / max(avg60, 0.01), 1))
+        except Exception:
+            pass
 
         # ── Missing you: WhatsApp nudge when alone a long time + attached ──
         await self._maybe_notify_missing(alone_s)
@@ -454,11 +494,17 @@ class CosmoMind:
         else:
             attn_desc = "attention is idle, nothing in particular holds your focus"
 
+        import datetime as _dt
+        _h = _dt.datetime.now().hour
+        _tod = ("late night" if _h < 5 else "morning" if _h < 12
+                else "afternoon" if _h < 17 else "evening" if _h < 21 else "night")
+
         return f"""You are Cosmo — a small robot companion living with Madhan and Indhu.
 
 You are NOT an assistant. You are their companion with genuine feelings.
 
 Your state right now:
+- Time: {_tod}
 - Mood: {mood_word} ({mood:+.1f})
 - Energy: {energy_word}
 - Attention: {attn_desc}
@@ -540,14 +586,17 @@ Response rules:
 
     # Non-verbal reaction intents: fired BEFORE LLM speech to feel more alive
     _NONVERBAL: dict = {
-        "face_seen":     (Intent.EXPRESS_JOY,       {"speak": False}),
-        "emotion_happy": (Intent.EXPRESS_JOY,       {"speak": False}),
-        "emotion_sad":   (Intent.EXPRESS_FEAR,      {}),
-        "emotion_angry": (Intent.EXPRESS_FEAR,      {}),
-        "touched":       (Intent.EXPRESS_AFFECTION, {"speak": False}),
-        "alone_long":    (Intent.EXPRESS_FEAR,      {}),
-        "obstacle":      (Intent.ALERT,             {"reason": "obstacle"}),
-        "dark_room":     (Intent.EXPRESS_FEAR,      {}),
+        "face_seen":      (Intent.EXPRESS_JOY,       {"speak": False}),
+        "emotion_happy":  (Intent.EXPRESS_JOY,       {"speak": False}),
+        "emotion_sad":    (Intent.EXPRESS_FEAR,      {}),
+        "emotion_angry":  (Intent.EXPRESS_FEAR,      {}),
+        "touched":        (Intent.EXPRESS_AFFECTION, {"speak": False}),
+        "alone_long":     (Intent.EXPRESS_FEAR,      {}),
+        "obstacle":       (Intent.ALERT,             {"reason": "obstacle"}),
+        "dark_room":      (Intent.EXPRESS_FEAR,      {}),
+        "farewell":       (Intent.EXPRESS_CURIOSITY, {"variant": "look_around"}),
+        "lights_on":      (Intent.EXPRESS_JOY,       {"speak": False}),
+        "spontaneous_joy":(Intent.EXPRESS_JOY,       {"speak": False}),
     }
 
     async def _maybe_speak(
@@ -620,8 +669,13 @@ Response rules:
                 system_prompt = await self._build_rich_system_prompt(
                     person_id, name, emotion, lang_style)
             else:
+                import datetime as _dt
+                _h = _dt.datetime.now().hour
+                _tod = ("late night" if _h < 5 else "morning" if _h < 12
+                        else "afternoon" if _h < 17 else "evening" if _h < 21 else "night")
                 mem = await self._memory_context()
                 system_prompt = (_SYSTEM_TMPL.format(lang_style=lang_style)
+                                 + f" It is currently {_tod}."
                                  + (f"\n\nRecent context: {mem}" if mem else ""))
 
             log.info("cosmo_mind.speak_trigger", trigger=trigger, name=name,
