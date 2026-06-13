@@ -24,6 +24,10 @@ from core.event_bus import Event, EventPriority, EventType, bus
 from hardware.motors import motor_controller
 from utils.logger import get_logger
 
+_DISCOVERY_NEAR_CM    = 25.0   # obstacle below this triggers discovery check
+_DISCOVERY_CLEAR_WAS  = 50.0   # must have been clear before to count as new
+_DISCOVERY_CONFIRM_S  = 0.8    # must stay close this long (not just a transient)
+
 log = get_logger(__name__)
 
 
@@ -194,31 +198,89 @@ class NavigationEngine:
         log.info("nav.wander_start", duration=duration)
 
     async def _wander_loop(self, duration: float) -> None:
-        end_time = time.monotonic() + duration
+        from behavior.exploration import exploration_memory
+        from core.behavior_tree import bb
+
+        end_time  = time.monotonic() + duration
         self._state = NavState.WANDERING
+        dominant_dir = "straight"
+        prev_clear   = True           # was path clear on last tick?
+        near_since: Optional[float] = None  # monotonic ts when obstacle went close
+
         try:
             while time.monotonic() < end_time:
-                if self._is_blocked() or not self._is_path_clear():
+                if self._is_blocked():
                     await self.stop(_cancel_wander=False)
                     await asyncio.sleep(1.0)
                     continue
 
+                # ── Discovery detection ────────────────────────────────────
+                currently_near = self._obstacle_cm < _DISCOVERY_NEAR_CM
+                if currently_near and prev_clear:
+                    near_since = time.monotonic()
+                elif not currently_near:
+                    near_since = None
+                prev_clear = not currently_near
+
+                if (near_since is not None
+                        and time.monotonic() - near_since >= _DISCOVERY_CONFIRM_S
+                        and not bb.discovery_pending):
+                    # Sustained close obstacle — record discovery
+                    lux = getattr(bb, "light_lux", -1.0)
+                    event = exploration_memory.record_discovery(
+                        distance_cm=self._obstacle_cm,
+                        light_lux=lux,
+                        person_present=bb.person_visible,
+                    )
+                    bb.discovery_pending = event
+                    near_since = None  # don't re-trigger immediately
+                    log.info("nav.discovery_triggered", dist_cm=self._obstacle_cm)
+                    # Brief retreat + scan
+                    await self.stop(_cancel_wander=False)
+                    await self.backward(self.RETREAT_SPEED, duration=0.8)
+                    await self.turn_left(speed=0.3, duration=0.4)
+                    await asyncio.sleep(0.3)
+                    await self.turn_right(speed=0.3, duration=0.8)
+                    await asyncio.sleep(0.3)
+                    continue
+
+                # ── Blocked by obstacle — avoid ────────────────────────────
+                if not self._is_path_clear():
+                    await self.stop(_cancel_wander=False)
+                    await asyncio.sleep(1.0)
+                    continue
+
+                # ── Exploration-biased movement ────────────────────────────
+                fw, lw, rw, pw = exploration_memory.wander_weights()
                 action = random.choices(
                     ["forward", "slight_left", "slight_right", "pause"],
-                    weights=[0.50, 0.20, 0.20, 0.10],
+                    weights=[fw, lw, rw, pw],
                 )[0]
 
                 if action == "forward":
+                    dominant_dir = "straight"
                     await self.forward(self.WANDER_SPEED,
                                        duration=random.uniform(1, 3))
                 elif action == "slight_left":
+                    dominant_dir = "left"
+                    exploration_memory.record_turn("left")
                     await self.turn_left(speed=0.3,
                                          duration=random.uniform(0.3, 0.8))
                 elif action == "slight_right":
+                    dominant_dir = "right"
+                    exploration_memory.record_turn("right")
                     await self.turn_right(speed=0.3,
                                           duration=random.uniform(0.3, 0.8))
                 elif action == "pause":
                     await asyncio.sleep(random.uniform(1, 3))
+
+                # ── Periodic room snapshot ─────────────────────────────────
+                lux = getattr(bb, "light_lux", -1.0)
+                exploration_memory.maybe_record_snapshot(
+                    light_lux=lux,
+                    person_present=bb.person_visible,
+                    dominant_dir=dominant_dir,
+                )
 
                 await motor_controller.heartbeat()
         finally:

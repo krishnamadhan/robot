@@ -19,6 +19,7 @@
 
 ## P1 — Wire hardware (waiting on parcels or XT60)
 
+- [ ] **Fix Pi camera**: seat CSI ribbon cable firmly (blue tab toward USB ports) → `rpicam-hello --list-cameras` to verify → update cosmo_demo.py camera startup (replace cv2.VideoCapture with picamera2)
 - [ ] Wire OLED eyes (0x3C + 0x3D) → verify with `i2cdetect` → switch eyes.py to oled mode (KI-019 mutex done 2026-06-12 — software ready)
 - [ ] Wire motors: rewire TB6612FNG from Pi GPIO → ESP32 GPIO 15–21 — **BLOCKED on XT60 pigtail + capacitors arriving**
 - [ ] Wire PIR HC-SR501 → ESP32 GPIO12, set `SENSORS["pir"] = True` in esp32/main.py
@@ -33,10 +34,19 @@
 ## P2 — Code improvements
 
 - [x] KI-016: migrate episodic memory to aiosqlite *(done 2026-06-12 — async lifecycle: `await episodic.initialize()/close()`)*
+- [x] Outbound WhatsApp notifications (cognition/notifications.py + banteragent /cosmo-notify) *(done 2026-06-13)*
+- [x] Exploration memory + anti-revisit wander bias (behavior/exploration.py) *(done 2026-06-13)*
+- [x] Discovery behavior: wander detects new obstacles → DoDiscovery BT node → speak/notify *(done 2026-06-13)*
+- [x] "Missing you" WhatsApp nudge when alone >20min + attachment >0.6 *(done 2026-06-13)*
+- [ ] **Port 8000 API auth** — add Bearer token (from robot.env) to all FastAPI endpoints; anyone on LAN can call `/cosmo/say` right now
+- [ ] **Personalized curiosity questions** — replace generic "[Ask them about their day]" prompt with episodic-recall context: pull last 2 topics from episodic DB and ask something specific
+- [ ] **Touch → attachment boost** — wire TOUCH_DETECTED event to personality.process_event("touch_gentle") + attachment += 0.05 per person_id (currently touch only fires audio/eye reaction)
+- [ ] **Activity → movement response** — when activity changes to quiet_company/watching_tv: stop wander, approach person's last known position, settle; follow_mode when hangout starts
 - [ ] Re-enroll Indhu face: 20 samples, good light (currently ~75% — target 90%+) → `python3 tools/enroll_face.py`
 - [ ] Prompt caching (ADR-018): add ephemeral cache headers to Claude calls — after OLED + face tests
 - [ ] Test Piper Kitten Micro 25MB vs current lessac-medium 61MB (ADR-016)
 - [ ] Test FER 5-class vs current DeepFace 7-class emotion detection (ADR-014)
+- [ ] **Smart home integration stub** — define EventType.SMARTHOME_* events + MQTT/HTTP listener; no actuators yet, just ingestion layer
 
 ---
 

@@ -290,6 +290,39 @@ class CosmoMind:
         elif alone_s > 600:
             await self._maybe_speak("alone_long", None, cooldown=300)
 
+        # ── Missing you: WhatsApp nudge when alone a long time + attached ──
+        await self._maybe_notify_missing(alone_s)
+
+    # ── Outbound WhatsApp nudge ───────────────────────────────────────────────
+
+    _MISSING_ALONE_THRESH  = 20 * 60  # 20 min alone before nudging
+    _MISSING_ATTACH_THRESH = 0.6      # only nudge if attachment is meaningful
+
+    async def _maybe_notify_missing(self, alone_s: float) -> None:
+        if alone_s < self._MISSING_ALONE_THRESH:
+            return
+        from cognition.notifications import notifications
+        if not notifications.can_send("missing_you"):
+            return
+        try:
+            from core.personality import personality
+            attachment = personality.state.attachment
+        except Exception:
+            attachment = 0.0
+        if attachment < self._MISSING_ATTACH_THRESH:
+            return
+
+        mood = getattr(personality.state, "mood", 0.5)
+        mins = int(alone_s / 60)
+        if mood < 0.3:
+            msg = f"🤖 Cosmo here... been alone for {mins} mins. Miss you da 😔"
+        elif mood > 0.6:
+            msg = f"🤖 Cosmo here! {mins} mins of solo adventures 😅 Come see me?"
+        else:
+            msg = f"🤖 Hey, it's Cosmo. Been {mins} mins. Where are you? 🐾"
+
+        await notifications.send("missing_you", msg)
+
     # ── System prompt builder ────────────────────────────────────────────────
 
     async def _build_rich_system_prompt(

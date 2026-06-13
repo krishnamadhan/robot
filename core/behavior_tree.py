@@ -63,6 +63,12 @@ class CosmoBlackboard:
     settled:                bool  = False    # True once co-presence settle ran this session
     tv_moment:              float = 0.0      # monotonic ts of last loud TV spike
 
+    # Sensor readings (updated by sensor_manager event handlers)
+    light_lux:              float = -1.0   # BH1750; -1 = unavailable
+
+    # Discovery (set by navigation wander loop when new obstacle confirmed)
+    discovery_pending:      object = None  # behavior.exploration.DiscoveryEvent | None
+
     # Anti-spam state (written by action nodes)
     last_greeted:           Dict[str, float] = field(default_factory=dict)
     last_emotion_reacted:   str   = ""
@@ -485,6 +491,59 @@ class DoIdleSound(_AsyncAction):
         return Status.SUCCESS
 
 
+class DiscoveryPending(Behaviour):
+    """Succeeds when navigation has flagged an unhandled discovery event."""
+    def update(self) -> Status:
+        return Status.SUCCESS if bb.discovery_pending is not None else Status.FAILURE
+
+
+class DoDiscovery(_AsyncAction):
+    """React to a newly discovered obstacle: eyes + speech + optional WhatsApp notify."""
+
+    def update(self) -> Status:
+        event = bb.discovery_pending
+        if event is None:
+            return Status.FAILURE
+
+        from core.action_router import router
+        from core.intents import Intent
+        from expression.eyes import EyeExpression, eye_engine
+        from utils.action_log import action_log
+
+        action_log.set_context("behavior_discovery", f"dist={event.distance_cm:.0f}cm")
+        eye_engine.set_expression(EyeExpression.CURIOUS, duration=4.0)
+
+        if bb.person_visible:
+            # Person can see — speak in-person
+            router.emit(Intent.SPEAK_AMBIENT, source="bt",
+                        trigger="found_something",
+                        hint=f"You found something {event.distance_cm:.0f}cm away. "
+                              "Say one short curious sentence about it in Tanglish.")
+        else:
+            # Alone — schedule WhatsApp notification
+            asyncio.get_event_loop().create_task(self._notify_owner(event))
+
+        # Clear pending only after handling
+        bb.discovery_pending = None
+        from behavior.exploration import exploration_memory
+        exploration_memory.mark_reported(event)
+        log.info("bt.discovery_handled", dist_cm=event.distance_cm,
+                 person=bb.person_visible)
+        return Status.SUCCESS
+
+    @staticmethod
+    async def _notify_owner(event) -> None:
+        import datetime
+        from cognition.notifications import notifications
+        ts = datetime.datetime.fromtimestamp(event.ts).strftime("%H:%M")
+        msg = (
+            f"🤖 Cosmo here! I found something interesting at {ts} "
+            f"(about {event.distance_cm:.0f}cm away). "
+            "Come check it out? 👀"
+        )
+        await notifications.send("found_something", msg)
+
+
 class DoIdle(Behaviour):
     """Always-succeeding background idle — occasional attention blinks."""
     _last_blink: float = 0.0
@@ -590,6 +649,13 @@ def build_tree() -> Behaviour:
         DoEnterSleep(name="DoEnterSleep"),
     ])
 
+    # DISCOVERY — highest priority in autonomous (gates on DiscoveryPending)
+    discovery_seq = py_trees.composites.Sequence(name="DISCOVERY", memory=False)
+    discovery_seq.add_children([
+        DiscoveryPending(name="DiscoveryPending"),
+        DoDiscovery(name="DoDiscovery"),
+    ])
+
     bored_high = py_trees.composites.Sequence(name="BORED_HIGH", memory=False)
     bored_high.add_children([
         AloneLong(threshold_s=ALONE_HIGH_S, name="AloneLong_180"),
@@ -604,7 +670,7 @@ def build_tree() -> Behaviour:
     ])
 
     autonomous = py_trees.composites.Selector(name="AUTONOMOUS", memory=False)
-    autonomous.add_children([enter_sleep, bored_high, bored_med, DoIdle(name="IDLE")])
+    autonomous.add_children([discovery_seq, enter_sleep, bored_high, bored_med, DoIdle(name="IDLE")])
 
     root.add_children([safety, sleep_active, wake_from_sleep, social, autonomous])
     return root

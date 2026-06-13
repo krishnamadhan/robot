@@ -466,6 +466,14 @@ async def main() -> None:
     await wm.start()
     await personality.start()
 
+    from cognition.notifications import notifications
+    await notifications.initialize()
+    console.print("[green]✓ Notifications (outbound WhatsApp)[/green]")
+
+    from behavior.exploration import exploration_memory
+    exploration_memory.load()
+    console.print("[green]✓ Exploration memory[/green]")
+
     import os as _os
     _llm_key = _os.environ.get("ANTHROPIC_API_KEY", "")
     if _llm_key:
@@ -619,6 +627,8 @@ async def main() -> None:
         await person_detector.stop()
         await camera.stop()
         await personality.stop()
+        from cognition.notifications import notifications
+        await notifications.close()
         await bus.stop()
         console.print("[dim]Goodbye.[/dim]")
 
