@@ -1,6 +1,6 @@
 # Cosmo — STATE.md
 > Single source of truth for session continuity. Updated at end of every session; read at start.
-> Last updated: 2026-06-13 (WhatsApp !cosmo commands + dashboard token + motor duration fix)
+> Last updated: 2026-06-13 (camera bugs + blur filter; camera now WORKING with picamera2/IMX708)
 
 ---
 
@@ -22,9 +22,9 @@
 | Discovery behavior | ✅ | ⚠️ Needs motors | wander detects obstacle <25cm sustained → DoDiscovery BT node; speak+eyes if person; WhatsApp if alone |
 | API auth | ✅ | N/A | Bearer token via ROBOT_API_TOKEN env var; motor/mind/sound/trigger endpoints gated; /cosmo/say open for banteragent compat |
 | Smart home | ✅ Stub | N/A | EventType.SMARTHOME_* (5 types); POST /smarthome/event ingestion; mind.py reacts to tv_on, lights_off, presence_home |
-| Vision pipeline | ✅ | ⚠️ Camera not detected | C920 retired → Pi camera (CSI); **not yet detected** — camera_auto_detect=1 in config.txt but cable needs seating |
-| Face recognition | ✅ | ⚠️ Camera not detected | SFace — Madhan ~95%, Indhu ~75% (re-enroll needed) |
-| Emotion detection | ✅ | ⚠️ Camera not detected | DeepFace 7-emotion |
+| Vision pipeline | ✅ | ✅ Working | IMX708 Wide CSI via picamera2; imx708.json tuning (fixes AWB blue cast); 320×240 @ 30fps |
+| Face recognition | ✅ | ✅ Working | SFace — Madhan ~95%, Indhu ~75% (re-enroll needed when present) |
+| Emotion detection | ✅ | ✅ Working | DeepFace 7-emotion |
 | Audio pipeline | ✅ | ✅ Active | hey_jarvis → STT → Claude → TTS → JBL Flip 5 |
 | Token budget | ✅ Unified | N/A | Single TokenBudget (cognition/llm.py); persists to memory_meta SQLite, survives restarts (OQ-5 ✅) |
 | LLM routing | ✅ Unified | N/A | LLMInterface only; D4 two-tier (ambient→Ollama-first, person→Claude direct); LLMRouter + mind direct client deleted (OQ-6 ✅) |
