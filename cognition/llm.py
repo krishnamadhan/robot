@@ -401,16 +401,35 @@ class LLMInterface:
             log.warning("llm.once_claude_failed", error=str(e)[:80])
             return {"text": "", "backend": "unavailable", "latency_ms": 0, "tokens": 0}
 
+    @staticmethod
+    def _free_ram_mb() -> int:
+        """Available RAM in MB (MemAvailable from /proc/meminfo)."""
+        try:
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemAvailable:"):
+                        return int(line.split()[1]) // 1024
+        except Exception:
+            pass
+        return 9999  # assume ok if unreadable
+
+    # Ollama model (~800MB) needs ~1.2GB headroom to load safely
+    OLLAMA_MIN_FREE_MB = 1200
+
     async def _call_ollama(
         self, system: str, messages: List[Dict[str, str]],
         max_tokens: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
+        free_mb = self._free_ram_mb()
+        if free_mb < self.OLLAMA_MIN_FREE_MB:
+            log.warning("llm.ollama_skipped_low_ram", free_mb=free_mb, threshold=self.OLLAMA_MIN_FREE_MB)
+            return None
         import httpx
         payload = {
             "model": self._ollama_model,
             "messages": [{"role": "system", "content": system}] + messages,
             "stream": False,
-            "keep_alive": "1h",   # keep model loaded in RAM between calls
+            "keep_alive": "5m",   # unload after 5 min idle to free ~800MB RAM
             "options": {
                 "temperature": 0.8,
                 "num_predict": max_tokens or self.MAX_TOKENS,

@@ -167,6 +167,7 @@ class CameraPipeline:
 
     BUFFER_SIZE = 5
     MAX_CONSECUTIVE_ERRORS = 10
+    RECONNECT_DELAY_S = 30.0    # wait before attempting camera reopen after failure
 
     def __init__(self) -> None:
         self._cfg = cfg.hardware.camera
@@ -237,6 +238,22 @@ class CameraPipeline:
                 pass
         await asyncio.get_event_loop().run_in_executor(None, self._release_camera)
 
+    async def _reconnect(self) -> bool:
+        """Release and reopen the camera backend. Called after too_many_errors."""
+        await asyncio.get_event_loop().run_in_executor(None, self._release_camera)
+        log.info("camera.reconnecting", delay_s=self.RECONNECT_DELAY_S)
+        await asyncio.sleep(self.RECONNECT_DELAY_S)
+        if not self._running:
+            return False
+        success = await asyncio.get_event_loop().run_in_executor(None, self._open_camera)
+        if success:
+            log.info("camera.reconnected", backend=self._backend.name)
+            hw_registry.report_real("camera", reason=f"{self._backend.name} (reconnected)")
+        else:
+            log.error("camera.reconnect_failed")
+            hw_registry.report_error("camera", reason="reconnect failed")
+        return success
+
     async def _capture_loop(self) -> None:
         consecutive_errors = 0
         target_interval = 1.0 / self._cfg.fps
@@ -253,7 +270,10 @@ class CameraPipeline:
                 self._stats["errors"] += 1
                 if consecutive_errors >= self.MAX_CONSECUTIVE_ERRORS:
                     log.error("camera.too_many_errors", count=consecutive_errors)
-                    break
+                    if not await self._reconnect():
+                        break   # give up only if reconnect also fails
+                    consecutive_errors = 0
+                    continue
                 await asyncio.sleep(0.5)
                 continue
 
