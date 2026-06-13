@@ -159,11 +159,11 @@ battery:
     cells: 2
 
 camera:
-  device: 0               # /dev/video0 (Logitech C920 USB)
+  device: 0               # fallback USB device index (unused when picamera2 CSI is active)
   width: 320
   height: 240
   fps: 30
-  backend: opencv
+  backend: auto           # auto = try picamera2 (CSI IMX708) first, fall back to opencv (USB)
 
 audio:
   mic:

@@ -1,12 +1,9 @@
 """
-Camera capture pipeline for the Logitech USB webcam.
+Camera capture pipeline — supports Pi CSI camera (picamera2) and USB webcams (OpenCV).
 
-Runs as an async task that continuously reads frames into a thread-safe
-buffer. Downstream consumers (person detector, motion detector) pull from
-the buffer — they don't drive capture timing.
-
-Frame dropping under high CPU is intentional: it's better to process
-fewer frames than to build up a backlog that causes detection lag.
+Auto-detects the backend: tries picamera2 first (IMX708 CSI), falls back to
+OpenCV V4L2 (USB webcam). Runs capture in a thread, feeds an async frame buffer.
+Downstream consumers pull from latest_frame — they don't drive timing.
 """
 
 import asyncio
@@ -45,6 +42,116 @@ class Frame:
         return self.age_ms() > max_age_ms
 
 
+class _Picamera2Backend:
+    """Wraps picamera2 for the CSI Pi camera module."""
+
+    def __init__(self, width: int, height: int, fps: int) -> None:
+        self._width = width
+        self._height = height
+        self._fps = fps
+        self._cam = None
+
+    def open(self) -> bool:
+        try:
+            from picamera2 import Picamera2
+            cam = Picamera2()
+            config = cam.create_video_configuration(
+                main={"size": (self._width, self._height), "format": "BGR888"},
+                controls={"FrameRate": float(self._fps)},
+            )
+            cam.configure(config)
+            cam.start()
+            self._cam = cam
+            return True
+        except Exception as e:
+            log.warning("camera.picamera2_open_failed", error=str(e))
+            return False
+
+    def read(self) -> Tuple[bool, Optional[np.ndarray]]:
+        if not self._cam:
+            return False, None
+        try:
+            frame = self._cam.capture_array()
+            return True, frame
+        except Exception:
+            return False, None
+
+    def release(self) -> None:
+        if self._cam:
+            try:
+                self._cam.stop()
+                self._cam.close()
+            except Exception:
+                pass
+            self._cam = None
+
+    @property
+    def name(self) -> str:
+        return "picamera2(CSI)"
+
+
+class _OpenCVBackend:
+    """Wraps cv2.VideoCapture for USB webcams."""
+
+    def __init__(self, device: int, width: int, height: int, fps: int) -> None:
+        self._device = device
+        self._width = width
+        self._height = height
+        self._fps = fps
+        self._cap: Optional[cv2.VideoCapture] = None
+
+    def open(self) -> bool:
+        cap = cv2.VideoCapture(self._device)
+        if not cap.isOpened():
+            cap.release()
+            found = self._find_usb_camera()
+            if found is None:
+                return False
+            self._device = found
+            cap = cv2.VideoCapture(self._device)
+            if not cap.isOpened():
+                cap.release()
+                return False
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
+        cap.set(cv2.CAP_PROP_FPS, self._fps)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        self._cap = cap
+        return True
+
+    def _find_usb_camera(self) -> Optional[int]:
+        import subprocess, os
+        for idx in range(19):
+            path = f"/dev/video{idx}"
+            if not os.path.exists(path):
+                continue
+            try:
+                result = subprocess.run(
+                    ["v4l2-ctl", "--device", path, "--list-formats"],
+                    capture_output=True, timeout=1,
+                )
+                if b"MJPEG" in result.stdout or b"YUYV" in result.stdout:
+                    return idx
+            except Exception:
+                continue
+        return None
+
+    def read(self) -> Tuple[bool, Optional[np.ndarray]]:
+        if not self._cap:
+            return False, None
+        ret, frame = self._cap.read()
+        return ret, frame if ret else None
+
+    def release(self) -> None:
+        if self._cap:
+            self._cap.release()
+            self._cap = None
+
+    @property
+    def name(self) -> str:
+        return f"opencv(USB /dev/video{self._device})"
+
+
 class CameraPipeline:
     """
     Async camera capture and frame distribution.
@@ -58,12 +165,12 @@ class CameraPipeline:
         await cam.stop()
     """
 
-    BUFFER_SIZE = 5          # drop oldest frames when full
+    BUFFER_SIZE = 5
     MAX_CONSECUTIVE_ERRORS = 10
 
     def __init__(self) -> None:
         self._cfg = cfg.hardware.camera
-        self._cap: Optional[cv2.VideoCapture] = None
+        self._backend = None
         self._frame_buffer: Deque[Frame] = deque(maxlen=self.BUFFER_SIZE)
         self._frame_id = 0
         self._running = False
@@ -77,22 +184,47 @@ class CameraPipeline:
         }
         self._fps_window: Deque[float] = deque(maxlen=30)
 
+    def _open_camera(self) -> bool:
+        w, h, fps = self._cfg.width, self._cfg.height, self._cfg.fps
+
+        # Try picamera2 (CSI) first unless config explicitly says opencv
+        backend_pref = getattr(self._cfg, "backend", "auto")
+        if backend_pref != "opencv":
+            b = _Picamera2Backend(w, h, fps)
+            if b.open():
+                self._backend = b
+                log.info("camera.backend_selected", backend=b.name)
+                return True
+
+        # Fall back to OpenCV (USB webcam)
+        b = _OpenCVBackend(self._cfg.device, w, h, fps)
+        if b.open():
+            self._backend = b
+            log.info("camera.backend_selected", backend=b.name)
+            return True
+
+        return False
+
+    def _release_camera(self) -> None:
+        if self._backend:
+            self._backend.release()
+            self._backend = None
+
     async def start(self) -> bool:
         if self._running:
             return True
 
         success = await asyncio.get_event_loop().run_in_executor(None, self._open_camera)
         if not success:
-            log.error("camera.failed_to_open", device=self._cfg.device)
-            hw_registry.report_error("camera", reason=f"failed to open /dev/video{self._cfg.device}")
+            log.error("camera.failed_to_open")
+            hw_registry.report_error("camera", reason="no usable camera found (tried picamera2 + opencv)")
             return False
 
         self._running = True
         self._capture_task = asyncio.create_task(self._capture_loop(), name="camera")
-        log.info("camera.started", device=self._cfg.device,
-                  resolution=f"{self._cfg.width}x{self._cfg.height}")
-        hw_registry.report_real("camera",
-                                reason=f"/dev/video{self._cfg.device} {self._cfg.width}x{self._cfg.height}@{self._cfg.fps}fps")
+        log.info("camera.started", backend=self._backend.name,
+                 resolution=f"{self._cfg.width}x{self._cfg.height}")
+        hw_registry.report_real("camera", reason=f"{self._backend.name} {self._cfg.width}x{self._cfg.height}@{self._cfg.fps}fps")
         return True
 
     async def stop(self) -> None:
@@ -105,59 +237,6 @@ class CameraPipeline:
                 pass
         await asyncio.get_event_loop().run_in_executor(None, self._release_camera)
 
-    def _find_usb_camera(self) -> Optional[int]:
-        """Scan /dev/video0..18 for a real USB capture device.
-
-        Pi 5's internal ISP pipeline occupies video19+. A USB webcam
-        (C920) will appear in the 0-18 range when plugged in.
-        """
-        import subprocess
-        for idx in range(19):
-            path = f"/dev/video{idx}"
-            try:
-                import os
-                if not os.path.exists(path):
-                    continue
-                # Quick v4l2 caps check — rejects meta/ISP nodes
-                result = subprocess.run(
-                    ["v4l2-ctl", "--device", path, "--list-formats"],
-                    capture_output=True, timeout=1,
-                )
-                if b"MJPEG" in result.stdout or b"YUYV" in result.stdout:
-                    return idx
-            except Exception:
-                continue
-        return None
-
-    def _open_camera(self) -> bool:
-        device = self._cfg.device
-        cap = cv2.VideoCapture(device)
-        if not cap.isOpened():
-            cap.release()
-            log.info("camera.trying_auto_detect", configured=device)
-            found = self._find_usb_camera()
-            if found is None:
-                return False
-            log.info("camera.auto_detected", device=found)
-            device = found
-            cap = cv2.VideoCapture(device)
-            if not cap.isOpened():
-                cap.release()
-                return False
-            self._cfg.device = device  # update so logs reflect reality
-
-        self._cap = cap
-        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._cfg.width)
-        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._cfg.height)
-        self._cap.set(cv2.CAP_PROP_FPS, self._cfg.fps)
-        self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # minimize capture latency
-        return True
-
-    def _release_camera(self) -> None:
-        if self._cap:
-            self._cap.release()
-            self._cap = None
-
     async def _capture_loop(self) -> None:
         consecutive_errors = 0
         target_interval = 1.0 / self._cfg.fps
@@ -166,7 +245,7 @@ class CameraPipeline:
             t_start = time.monotonic()
 
             success, image = await asyncio.get_event_loop().run_in_executor(
-                None, self._read_frame
+                None, self._backend.read
             )
 
             if not success:
@@ -186,7 +265,6 @@ class CameraPipeline:
                 self._frame_buffer.append(frame)
             self._stats["frames_captured"] += 1
 
-            # FPS tracking
             now = time.monotonic()
             self._fps_window.append(now)
             if len(self._fps_window) >= 2:
@@ -196,17 +274,10 @@ class CameraPipeline:
             telemetry.gauge("camera.fps", self._stats["fps"])
             telemetry.increment("camera.frames")
 
-            # Sleep to hit target FPS without busy-looping
             elapsed = time.monotonic() - t_start
             sleep_time = target_interval - elapsed
             if sleep_time > 0:
                 await asyncio.sleep(sleep_time)
-
-    def _read_frame(self) -> Tuple[bool, Optional[np.ndarray]]:
-        if not self._cap:
-            return False, None
-        ret, frame = self._cap.read()
-        return ret, frame if ret else None
 
     @property
     def latest_frame(self) -> Optional[Frame]:
@@ -214,7 +285,6 @@ class CameraPipeline:
             return self._frame_buffer[-1] if self._frame_buffer else None
 
     def frames_since(self, frame_id: int) -> list:
-        """Get all frames newer than frame_id."""
         with self._lock:
             return [f for f in self._frame_buffer if f.frame_id > frame_id]
 
@@ -233,6 +303,7 @@ class CameraPipeline:
             "buffer_depth": len(self._frame_buffer),
             "latest_frame_age_ms": latest.age_ms() if latest else -1,
             "resolution": f"{self._cfg.width}x{self._cfg.height}",
+            "backend": self._backend.name if self._backend else "none",
         }
 
 

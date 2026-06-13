@@ -19,7 +19,7 @@
 
 ## P1 — Wire hardware (waiting on parcels or XT60)
 
-- [ ] **Fix Pi camera**: seat CSI ribbon cable firmly (blue tab toward USB ports) → `rpicam-hello --list-cameras` to verify → update cosmo_demo.py camera startup (replace cv2.VideoCapture with picamera2)
+- [x] **Fix Pi camera**: migrated to picamera2 (IMX708 CSI) — auto-detects CSI first, falls back to USB; camera ✓ on startup (2026-06-13)
 - [ ] Wire OLED eyes (0x3C + 0x3D) → verify with `i2cdetect` → switch eyes.py to oled mode (KI-019 mutex done 2026-06-12 — software ready)
 - [ ] Wire motors: rewire TB6612FNG from Pi GPIO → ESP32 GPIO 15–21 — **BLOCKED on XT60 pigtail + capacitors arriving**
 - [ ] Wire PIR HC-SR501 → ESP32 GPIO12, set `SENSORS["pir"] = True` in esp32/main.py
