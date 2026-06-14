@@ -104,9 +104,8 @@ _HTML_PAGE = """\
     }}
 
     function moveKnob(nx, ny) {{
-      // nx, ny in -1..1
       const px = nx * (R - 36);
-      const py = ny * (R - 36);
+      const py = -ny * (R - 36);   // negate: ny>0 (fwd) → knob moves UP
       knob.style.transform = `translate(calc(-50% + ${{px}}px), calc(-50% + ${{py}}px))`;
     }}
 
@@ -472,22 +471,20 @@ class StreamServer:
             return web.Response(status=400, text="bad json")
 
         mc = motor_controller
-        if not mc._left:
+        if mc.is_mock:
             return web.Response(text="ok")
 
-        mc._safety_stop = False
         mc._web_drive = True
         await mc.heartbeat()
         left  = max(-1.0, min(1.0, y + x))
         right = max(-1.0, min(1.0, y - x))
-        mc._left.set(left,  mc.LEFT_TRIM)
-        mc._right.set(right, mc.RIGHT_TRIM)
-        mc._safety_stop = False
+        await mc.ramp_to(left * mc.LEFT_TRIM, right * mc.RIGHT_TRIM, ramp=False)
         return web.Response(text="ok")
 
     async def _handle_drive_stop(self, request: web.Request) -> web.Response:
-        motor_controller._web_drive = False
-        await motor_controller.stop(emergency=True)
+        mc = motor_controller
+        mc._web_drive = False
+        await mc.stop()
         return web.Response(text="ok")
 
 
