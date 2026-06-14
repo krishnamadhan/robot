@@ -397,6 +397,9 @@ class LLMInterface:
             result = await self._call_claude(system, messages, max_tokens)
             result["latency_ms"] = int((time.monotonic() - t0) * 1000)
             return result
+        except asyncio.TimeoutError:
+            log.warning("llm.once_claude_timeout", timeout_s=self.CLAUDE_TIMEOUT_S)
+            return {"text": "", "backend": "unavailable", "latency_ms": 0, "tokens": 0}
         except Exception as e:
             log.warning("llm.once_claude_failed", error=str(e)[:80])
             return {"text": "", "backend": "unavailable", "latency_ms": 0, "tokens": 0}

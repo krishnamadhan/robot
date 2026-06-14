@@ -9,6 +9,7 @@ Downstream consumers pull from latest_frame — they don't drive timing.
 import asyncio
 import threading
 import time
+import concurrent.futures
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Deque, Dict, Optional, Tuple
@@ -65,7 +66,7 @@ class _Picamera2Backend:
                 cam = Picamera2()
                 log.warning("camera.tuning_fallback", reason="imx708.json load failed")
             config = cam.create_video_configuration(
-                main={"size": (self._width, self._height), "format": "BGR888"},
+                main={"size": (self._width, self._height), "format": "RGB888"},
                 controls={
                     "FrameRate": float(self._fps),
                     "AwbEnable": True,
@@ -83,21 +84,30 @@ class _Picamera2Backend:
             return False
 
     def read(self) -> Tuple[bool, Optional[np.ndarray]]:
-        if not self._cam:
+        cam = self._cam
+        if not cam:
             return False, None
         try:
-            return True, self._cam.capture_array()
+            return True, cv2.cvtColor(cam.capture_array(), cv2.COLOR_RGB2BGR)
         except Exception:
             return False, None
 
     def release(self) -> None:
-        if self._cam:
-            try:
-                self._cam.stop()
-                self._cam.close()
-            except Exception:
-                pass
-            self._cam = None
+        cam = self._cam
+        self._cam = None  # null out first — concurrent read() calls return False immediately
+        if cam:
+            def _close():
+                try:
+                    cam.stop()
+                except Exception:
+                    pass
+                try:
+                    cam.close()
+                except Exception:
+                    pass
+            t = threading.Thread(target=_close, daemon=True)
+            t.start()
+            t.join(timeout=3.0)  # don't block reconnect if capture_array() is still stuck
 
     @property
     def name(self) -> str:

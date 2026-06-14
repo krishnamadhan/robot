@@ -342,10 +342,13 @@ class CosmoMind:
                 log.info("cosmo_mind.rule", action="morning_greet", name=name)
                 return
             # ── Curiosity question / memory bring-up (re-homed) ──
-            if now - self._trigger_last.get("curiosity", 0.0) >= _TRIGGER_COOLDOWNS["curiosity"]:
-                await self._maybe_speak("curiosity", name)
-            elif now - self._trigger_last.get("memory_ref", 0.0) >= _TRIGGER_COOLDOWNS["memory_ref"]:
-                await self._maybe_speak("memory_ref", name)
+            # Requires a recognized name — both triggers use episodic memory via Claude;
+            # calling Claude with no person context wastes budget and produces generic output.
+            if name:
+                if now - self._trigger_last.get("curiosity", 0.0) >= _TRIGGER_COOLDOWNS["curiosity"]:
+                    await self._maybe_speak("curiosity", name)
+                elif now - self._trigger_last.get("memory_ref", 0.0) >= _TRIGGER_COOLDOWNS["memory_ref"]:
+                    await self._maybe_speak("memory_ref", name)
             return
 
         # ── Alone: wonder aloud (rare) or lonely speech (re-homed) ──
