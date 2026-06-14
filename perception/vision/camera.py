@@ -9,7 +9,6 @@ Downstream consumers pull from latest_frame — they don't drive timing.
 import asyncio
 import threading
 import time
-import concurrent.futures
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Deque, Dict, Optional, Tuple
