@@ -111,6 +111,7 @@ async def battery():
             "percent":  data.get("percent"),
             "voltage":  data.get("voltage"),
             "charging": data.get("charging", False),
+            "mock":     data.get("mock", False),
             "source":   "sensor_manager",
         }
     except Exception as e:

@@ -116,19 +116,16 @@ class UPSHATSensor:
 
     def read(self) -> Dict[str, Any]:
         if self._mock:
-            now = time.monotonic()
-            self._mock_pct = max(0, self._mock_pct - 0.1 * (now - self._last_mock_t) / 60)
-            self._last_mock_t = now
-            return {"percent": round(self._mock_pct, 1), "voltage": 7.4, "charging": False}
+            return {"percent": 100.0, "voltage": 0.0, "charging": False, "mock": True}
         try:
             with i2c_lock:
                 raw = _i2c_bus().read_i2c_block_data(self.ADDR, 0x04, 2)
                 raw_v = _i2c_bus().read_i2c_block_data(self.ADDR, 0x02, 2)
             pct = min(100.0, ((raw[0] << 8) | raw[1]) >> 4) * 0.02441
             volts = ((raw_v[0] << 8) | raw_v[1]) * 1.25 / 1000 / 16
-            return {"percent": round(pct, 1), "voltage": round(volts, 2), "charging": False}
+            return {"percent": round(pct, 1), "voltage": round(volts, 2), "charging": False, "mock": False}
         except Exception:
-            return {"percent": 0.0, "voltage": 0.0, "charging": False}
+            return {"percent": 0.0, "voltage": 0.0, "charging": False, "mock": False}
 
 
 # ── Sensor Manager ────────────────────────────────────────────────────────────

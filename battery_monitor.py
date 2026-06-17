@@ -55,11 +55,14 @@ def read_battery():
 
     Primary: read from cosmo's HTTP API (avoids I2C EAGAIN on Pi 5 RP1).
     Fallback: direct smbus2 read with 3 retries if API is unavailable.
+    Returns None, None if UPS HAT is not connected (mock mode).
     """
     # Primary path — cosmo holds the shared I2C bus singleton
     try:
         with urllib.request.urlopen(COSMO_BATTERY_URL, timeout=3) as resp:
             data = json.loads(resp.read())
+        if data.get("mock"):
+            return None, None  # UPS HAT not connected — skip all alerts
         pct = data.get("percent")
         volt = data.get("voltage")
         if pct is not None and volt is not None and float(volt) > 0:
@@ -210,6 +213,10 @@ while True:
     voltage = soc = vstatus = None
     try:
         voltage, soc = read_battery()
+        if voltage is None:
+            log.debug("Battery chip not connected (mock) — skipping alerts")
+            save_state(state)
+            continue
         vstatus = voltage_status(voltage)
         log.info(
             f"{voltage:.3f}V  {soc:.1f}%  {vstatus}  "
