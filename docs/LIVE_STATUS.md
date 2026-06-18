@@ -1,15 +1,15 @@
 # Cosmo Live Status
-> Auto-generated: 2026-06-17 06:00:01
+> Auto-generated: 2026-06-18 06:00:01
 > Run `tools/update_docs.sh` to refresh
 
 ## System Health
 | Metric | Value |
 |--------|-------|
-| Uptime | 21h 53m |
-| CPU Temp | 53.8°C |
-| Free RAM | 4765 MB |
-| Mood | 0.81 |
-| Energy | 0.34 |
+| Uptime | 6h 3m |
+| CPU Temp | 59.3°C |
+| Free RAM | 5062 MB |
+| Mood | 0.94 |
+| Energy | 0.82 |
 
 ## Hardware Components
 | Component | Status | Reason |
