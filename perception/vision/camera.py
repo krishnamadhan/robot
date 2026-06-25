@@ -7,6 +7,7 @@ Downstream consumers pull from latest_frame — they don't drive timing.
 """
 
 import asyncio
+import concurrent.futures
 import threading
 import time
 from collections import deque
@@ -55,15 +56,17 @@ class _Picamera2Backend:
         try:
             from picamera2 import Picamera2
             import time as _time
-            # imx708_wide.json has incomplete calibration — AWB produces a heavy
-            # blue cast. imx708.json (standard lens tuning) has correct CCM/AWB.
+            # Use imx708_wide.json — the correct CCM for this wide lens.
+            # imx708.json (standard lens) has wrong CCM cross-talk that suppresses
+            # red even when gains are boosted. Wide tuning has correct CCM;
+            # we just lock its AWB to indoor-warm values to kill the cold-cast.
             try:
-                tuning = Picamera2.load_tuning_file("imx708.json")
+                tuning = Picamera2.load_tuning_file("imx708_wide.json")
                 cam = Picamera2(tuning=tuning)
-                log.info("camera.tuning", file="imx708.json")
+                log.info("camera.tuning", file="imx708_wide.json")
             except Exception:
                 cam = Picamera2()
-                log.warning("camera.tuning_fallback", reason="imx708.json load failed")
+                log.warning("camera.tuning_fallback", reason="imx708_wide.json not found")
             config = cam.create_video_configuration(
                 main={"size": (self._width, self._height), "format": "RGB888"},
                 controls={
@@ -74,8 +77,15 @@ class _Picamera2Backend:
             )
             cam.configure(config)
             cam.start()
-            # Let AWB + AE settle before serving frames
-            _time.sleep(2.5)
+            # Let AE settle fully, then lock AWB to indoor-warm gains.
+            # Wide tuning auto-AWB drifts cold (blue); forcing r=2.4, b=1.4
+            # targets ~4000K indoor LED/tungsten without CCM cross-talk.
+            _time.sleep(3.0)
+            try:
+                cam.set_controls({"AwbEnable": False, "ColourGains": (2.4, 1.4)})
+                log.info("camera.colour_gains_locked", red=2.4, blue=1.4)
+            except Exception as e:
+                log.warning("camera.colour_gains_lock_failed", error=str(e))
             self._cam = cam
             return True
         except Exception as e:
@@ -87,7 +97,13 @@ class _Picamera2Backend:
         if not cam:
             return False, None
         try:
-            return True, cv2.cvtColor(cam.capture_array(), cv2.COLOR_RGB2BGR)
+            rgb = cam.capture_array()
+            # ISP pipeline leaves a blue-green cast indoors regardless of AWB
+            # gains. Correct in software: boost R, reduce B to neutral.
+            f = rgb.astype("float32")
+            f[:, :, 0] = np.clip(f[:, :, 0] * 1.85, 0, 255)  # R up
+            f[:, :, 2] = np.clip(f[:, :, 2] * 0.85, 0, 255)  # B down
+            return True, cv2.cvtColor(f.astype("uint8"), cv2.COLOR_RGB2BGR)
         except Exception:
             return False, None
 
@@ -207,6 +223,13 @@ class CameraPipeline:
             "fps": 0.0,
         }
         self._fps_window: Deque[float] = deque(maxlen=30)
+        # Dedicated single-thread executor for frame reads only.
+        # When capture_array() hangs, asyncio.wait_for times out but the thread
+        # stays stuck. Using a separate pool prevents stuck read threads from
+        # exhausting the default executor and deadlocking reconnect.
+        self._read_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="cam_read"
+        )
 
     def _open_camera(self) -> bool:
         w, h, fps = self._cfg.width, self._cfg.height, self._cfg.fps
@@ -287,7 +310,7 @@ class CameraPipeline:
 
             try:
                 success, image = await asyncio.wait_for(
-                    asyncio.get_event_loop().run_in_executor(None, self._backend.read),
+                    asyncio.get_event_loop().run_in_executor(self._read_executor, self._backend.read),
                     timeout=read_timeout,
                 )
             except asyncio.TimeoutError:

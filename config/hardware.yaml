@@ -160,8 +160,8 @@ battery:
 
 camera:
   device: 0               # fallback USB device index (unused when picamera2 CSI is active)
-  width: 320
-  height: 240
+  width: 640
+  height: 480
   fps: 30
   backend: auto           # auto = try picamera2 (CSI IMX708) first, fall back to opencv (USB)
 

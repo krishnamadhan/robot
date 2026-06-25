@@ -347,7 +347,7 @@ class StreamServer:
         if frame_obj is None or frame_obj.is_stale(3000):
             return web.Response(status=503, text="No frame available")
         loop = asyncio.get_event_loop()
-        jpg = await loop.run_in_executor(None, _encode_frame, frame_obj.image, True)
+        jpg = await loop.run_in_executor(None, _encode_frame, frame_obj.image, False)
         if jpg is None:
             return web.Response(status=500, text="Encode failed")
 
