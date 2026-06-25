@@ -101,8 +101,9 @@ class _Picamera2Backend:
             # ISP pipeline leaves a blue-green cast indoors regardless of AWB
             # gains. Correct in software: boost R, reduce B to neutral.
             f = rgb.astype("float32")
-            f[:, :, 0] = np.clip(f[:, :, 0] * 1.85, 0, 255)  # R up
-            f[:, :, 2] = np.clip(f[:, :, 2] * 0.85, 0, 255)  # B down
+            f[:, :, 0] = np.clip(f[:, :, 0] * 1.95, 0, 255)  # R up
+            f[:, :, 1] = np.clip(f[:, :, 1] * 0.96, 0, 255)  # G down slightly
+            f[:, :, 2] = np.clip(f[:, :, 2] * 0.80, 0, 255)  # B down
             return True, cv2.cvtColor(f.astype("uint8"), cv2.COLOR_RGB2BGR)
         except Exception:
             return False, None
