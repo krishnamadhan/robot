@@ -1,20 +1,20 @@
 # Cosmo Live Status
-> Auto-generated: 2026-06-24 06:00:01
+> Auto-generated: 2026-06-25 06:00:01
 > Run `tools/update_docs.sh` to refresh
 
 ## System Health
 | Metric | Value |
 |--------|-------|
-| Uptime | 6h 39m |
-| CPU Temp | 54.3°C |
-| Free RAM | 5611 MB |
+| Uptime | 8h 23m |
+| CPU Temp | 58.2°C |
+| Free RAM | 5283 MB |
 | Mood | 0.95 |
 | Energy | 1.0 |
 
 ## Hardware Components
 | Component | Status | Reason |
 |-----------|--------|--------|
-| camera | ✅ real | picamera2(CSI) 320x240@30fps |
+| camera | ✅ real | picamera2(CSI) 640x480@30fps |
 | sensor.bh1750 | ⚠️ mock | hardware not detected |
 | sensor.ups | ⚠️ mock | hardware not detected |
 | sensor.pir | ⚠️ mock | on ESP32 |
