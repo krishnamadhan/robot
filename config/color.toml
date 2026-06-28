@@ -1,0 +1,8 @@
+hw_r = 1.8
+hw_b = 2.0
+sw_r = 1.05
+sw_g = 0.9
+sw_b = 0.96
+saturation = 1.1
+shadow = 8.0
+ev = 0.6

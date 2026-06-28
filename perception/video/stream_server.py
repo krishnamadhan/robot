@@ -28,7 +28,7 @@ import numpy as np
 from aiohttp import web
 
 from hardware.motors import motor_controller
-from perception.vision.camera import camera
+from perception.vision.camera import camera, color_config
 from utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -52,128 +52,197 @@ _HTML_PAGE = """\
   <style>
     *{{margin:0;padding:0;box-sizing:border-box;}}
     body{{background:#111;display:flex;flex-direction:column;align-items:center;
-          justify-content:flex-start;min-height:100vh;padding:12px;gap:12px;
+          justify-content:flex-start;min-height:100vh;padding:12px;gap:10px;
           font-family:system-ui;color:#fff;touch-action:none;}}
     h1{{font-size:1rem;letter-spacing:.05em;opacity:.8;}}
     #stream-wrap{{width:100%;max-width:640px;border-radius:8px;overflow:hidden;
                   box-shadow:0 0 30px #0008;background:#000;}}
     #stream-wrap img{{width:100%;display:block;}}
     #status{{font-size:.75rem;color:#888;height:16px;}}
+
+    /* ── color panel ── */
+    #color-panel{{width:100%;max-width:640px;background:#1a1a1a;border-radius:8px;
+                  padding:12px 14px;display:flex;flex-direction:column;gap:8px;
+                  touch-action:auto;}}
+    #color-header{{display:flex;justify-content:space-between;align-items:center;cursor:pointer;}}
+    #color-header span{{font-size:.8rem;opacity:.7;letter-spacing:.05em;}}
+    #color-header button{{font-size:.7rem;background:#333;border:none;color:#aaa;
+                          padding:3px 8px;border-radius:4px;cursor:pointer;}}
+    #color-body{{display:flex;flex-direction:column;gap:6px;touch-action:auto;}}
+    .row{{display:grid;grid-template-columns:90px 1fr 38px;align-items:center;gap:6px;}}
+    .row label{{font-size:.72rem;color:#aaa;}}
+    .row input[type=range]{{width:100%;accent-color:#4af;touch-action:auto;}}
+    .row .val{{font-size:.72rem;color:#4af;text-align:right;}}
+    #color-actions{{display:flex;gap:8px;margin-top:4px;}}
+    #color-actions button{{flex:1;padding:7px;border:none;border-radius:6px;
+                           font-size:.75rem;cursor:pointer;}}
+    #btn-save{{background:#2a5;color:#fff;}}
+    #btn-reset{{background:#333;color:#aaa;}}
+    #color-msg{{font-size:.7rem;color:#4af;height:14px;text-align:center;}}
+
+    /* ── joystick ── */
     #joy-area{{width:100%;max-width:640px;display:flex;justify-content:center;
-               align-items:center;padding:10px 0;}}
-    #pad{{width:200px;height:200px;border-radius:50%;background:#222;border:2px solid #444;
+               align-items:center;padding:6px 0;}}
+    #pad{{width:180px;height:180px;border-radius:50%;background:#222;border:2px solid #444;
           position:relative;touch-action:none;cursor:pointer;flex-shrink:0;}}
-    #knob{{width:72px;height:72px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#fff,#888);
+    #knob{{width:64px;height:64px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#fff,#888);
            position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
            pointer-events:none;box-shadow:0 2px 8px #0006;transition:background .1s;}}
     #pad.active #knob{{background:radial-gradient(circle at 35% 35%,#4af,#06c);}}
-    #dpad{{display:none;}}
-    @media(max-width:400px){{#pad{{width:160px;height:160px;}}#knob{{width:58px;height:58px;}}}}
+    @media(max-width:400px){{#pad{{width:150px;height:150px;}}#knob{{width:54px;height:54px;}}}}
   </style>
 </head>
 <body>
   <h1>🤖 Cosmo Live</h1>
-  <div id="stream-wrap">
-    <img src="/stream" alt="Live feed">
-  </div>
+  <div id="stream-wrap"><img src="/stream" alt="Live feed"></div>
   <div id="status">idle</div>
-  <div id="joy-area">
-    <div id="pad">
-      <div id="knob"></div>
+
+  <div id="color-panel">
+    <div id="color-header">
+      <span>🎨 COLOR TUNING</span>
+      <button onclick="togglePanel()">hide</button>
+    </div>
+    <div id="color-body">
+      <div class="row"><label>HW Red gain</label><input type="range" id="hw_r" min="0.5" max="4.0" step="0.05" value="1.8" oninput="slide(this)"><span class="val" id="v_hw_r">1.80</span></div>
+      <div class="row"><label>HW Blue gain</label><input type="range" id="hw_b" min="0.5" max="4.0" step="0.05" value="2.0" oninput="slide(this)"><span class="val" id="v_hw_b">2.00</span></div>
+      <div class="row"><label>SW Red ×</label><input type="range" id="sw_r" min="0.5" max="2.5" step="0.01" value="1.05" oninput="slide(this)"><span class="val" id="v_sw_r">1.05</span></div>
+      <div class="row"><label>SW Green ×</label><input type="range" id="sw_g" min="0.5" max="1.5" step="0.01" value="0.90" oninput="slide(this)"><span class="val" id="v_sw_g">0.90</span></div>
+      <div class="row"><label>SW Blue ×</label><input type="range" id="sw_b" min="0.5" max="1.5" step="0.01" value="0.96" oninput="slide(this)"><span class="val" id="v_sw_b">0.96</span></div>
+      <div class="row"><label>Saturation</label><input type="range" id="saturation" min="0.0" max="3.0" step="0.05" value="1.1" oninput="slide(this)"><span class="val" id="v_saturation">1.10</span></div>
+      <div class="row"><label>Shadow fix</label><input type="range" id="shadow" min="0" max="60" step="1" value="8" oninput="slide(this)"><span class="val" id="v_shadow">8</span></div>
+      <div class="row"><label>Exposure EV</label><input type="range" id="ev" min="-2.0" max="2.0" step="0.1" value="0.0" oninput="slide(this)"><span class="val" id="v_ev">0.0</span></div>
+      <div id="color-actions">
+        <button id="btn-save" onclick="saveColor()">💾 Save</button>
+        <button id="btn-reset" onclick="resetColor()">↺ Reset</button>
+      </div>
+      <div id="color-msg"></div>
     </div>
   </div>
+
+  <div id="joy-area">
+    <div id="pad"><div id="knob"></div></div>
+  </div>
+
   <script>
+    // ── color tuning ──
+    const KEYS = ['hw_r','hw_b','sw_r','sw_g','sw_b','saturation','shadow','ev'];
+    const DEFAULTS = {{hw_r:1.8, hw_b:2.0, sw_r:1.05, sw_g:0.90, sw_b:0.96, saturation:1.1, shadow:8, ev:0.6}};
+    let debounce = null;
+
+    function slide(el) {{
+      const v = parseFloat(el.value);
+      document.getElementById('v_' + el.id).textContent = v.toFixed(el.step < 1 ? 2 : 0);
+      clearTimeout(debounce);
+      debounce = setTimeout(pushColor, 120);
+    }}
+
+    async function pushColor() {{
+      const body = {{}};
+      KEYS.forEach(k => body[k] = parseFloat(document.getElementById(k).value));
+      try {{
+        const r = await fetch('/color', {{method:'POST',
+          headers:{{'Content-Type':'application/json'}},
+          body: JSON.stringify(body)}});
+        const d = await r.json();
+        msg(d.hw_changed ? 'Applied (HW+SW)' : 'Applied (SW)', 1500);
+      }} catch(e) {{ msg('Error: ' + e, 3000); }}
+    }}
+
+    async function saveColor() {{
+      const body = {{}};
+      KEYS.forEach(k => body[k] = parseFloat(document.getElementById(k).value));
+      body.save = true;
+      try {{
+        await fetch('/color', {{method:'POST',
+          headers:{{'Content-Type':'application/json'}},
+          body: JSON.stringify(body)}});
+        msg('Saved to config ✓', 2000);
+      }} catch(e) {{ msg('Save failed', 2000); }}
+    }}
+
+    function resetColor() {{
+      KEYS.forEach(k => {{
+        const el = document.getElementById(k);
+        el.value = DEFAULTS[k];
+        document.getElementById('v_' + k).textContent =
+          parseFloat(DEFAULTS[k]).toFixed(el.step < 1 ? 2 : 0);
+      }});
+      pushColor();
+    }}
+
+    function msg(txt, ms) {{
+      const el = document.getElementById('color-msg');
+      el.textContent = txt;
+      setTimeout(() => el.textContent = '', ms);
+    }}
+
+    function togglePanel() {{
+      const body = document.getElementById('color-body');
+      const btn = document.querySelector('#color-header button');
+      const hidden = body.style.display === 'none';
+      body.style.display = hidden ? '' : 'none';
+      btn.textContent = hidden ? 'hide' : 'show';
+    }}
+
+    // load current values from server
+    fetch('/color').then(r=>r.json()).then(d => {{
+      KEYS.forEach(k => {{
+        if (d[k] === undefined) return;
+        const el = document.getElementById(k);
+        el.value = d[k];
+        document.getElementById('v_' + k).textContent =
+          parseFloat(d[k]).toFixed(el.step < 1 ? 2 : 0);
+      }});
+    }});
+
+    // ── joystick ──
     const pad = document.getElementById('pad');
     const knob = document.getElementById('knob');
     const status = document.getElementById('status');
-    const R = 100;          // pad radius
-    const DEAD = 0.12;      // deadzone
-    let active = false, cx = 0, cy = 0, hbTimer = null, driveTimer = null;
-    let lastX = 0, lastY = 0;
+    const R = 90, DEAD = 0.12;
+    let active = false, hbTimer = null, lastX = 0, lastY = 0;
 
     function padCenter() {{
       const r = pad.getBoundingClientRect();
       return [r.left + r.width/2, r.top + r.height/2];
     }}
-
-    function clamp(v, lo, hi) {{ return Math.max(lo, Math.min(hi, v)); }}
-
-    function applyDeadzone(v) {{
-      if (Math.abs(v) < DEAD) return 0;
-      return (v - Math.sign(v)*DEAD) / (1 - DEAD);
+    function clamp(v,lo,hi){{ return Math.max(lo,Math.min(hi,v)); }}
+    function applyDeadzone(v){{
+      if(Math.abs(v)<DEAD) return 0;
+      return (v-Math.sign(v)*DEAD)/(1-DEAD);
     }}
-
-    function moveKnob(nx, ny) {{
-      const px = nx * (R - 36);
-      const py = -ny * (R - 36);   // negate: ny>0 (fwd) → knob moves UP
-      knob.style.transform = `translate(calc(-50% + ${{px}}px), calc(-50% + ${{py}}px))`;
+    function moveKnob(nx,ny){{
+      knob.style.transform=`translate(calc(-50% + ${{nx*(R-32)}}px),calc(-50% + ${{-ny*(R-32)}}px))`;
     }}
-
-    async function sendDrive(x, y) {{
-      try {{
-        await fetch('/drive', {{
-          method: 'POST',
-          headers: {{'Content-Type':'application/json'}},
-          body: JSON.stringify({{x, y}})
-        }});
-      }} catch(e) {{}}
+    async function sendDrive(x,y){{
+      try{{ await fetch('/drive',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{x,y}})}});}}catch(e){{}}
     }}
-
-    async function sendStop() {{
-      try {{ await fetch('/drive/stop', {{method:'POST'}}); }} catch(e) {{}}
+    async function sendStop(){{ try{{await fetch('/drive/stop',{{method:'POST'}});}}catch(e){{}} }}
+    function startHb(){{ if(hbTimer) return; hbTimer=setInterval(()=>{{if(active)sendDrive(lastX,lastY);}},80); }}
+    function stopHb(){{ clearInterval(hbTimer); hbTimer=null; }}
+    function onStart(ex,ey){{ active=true; pad.classList.add('active'); startHb(); onMove(ex,ey); }}
+    function onMove(ex,ey){{
+      if(!active) return;
+      const [pcx,pcy]=padCenter();
+      let dx=(ex-pcx)/R, dy=-(ey-pcy)/R;
+      const mag=Math.sqrt(dx*dx+dy*dy);
+      if(mag>1){{dx/=mag;dy/=mag;}}
+      moveKnob(dx,dy);
+      lastX=applyDeadzone(clamp(dx,-1,1));
+      lastY=applyDeadzone(clamp(dy,-1,1));
+      const dir=lastY>0.1?'FWD':lastY<-0.1?'BWD':lastX>0.1?'RIGHT':lastX<-0.1?'LEFT':'STOP';
+      status.textContent=`${{dir}}  x=${{lastX.toFixed(2)}}  y=${{lastY.toFixed(2)}}`;
     }}
-
-    function startHb() {{
-      if (hbTimer) return;
-      hbTimer = setInterval(async () => {{
-        if (active) await sendDrive(lastX, lastY);
-      }}, 80);
+    function onEnd(){{
+      active=false; pad.classList.remove('active'); stopHb();
+      lastX=0; lastY=0; moveKnob(0,0); status.textContent='idle'; sendStop();
     }}
-
-    function stopHb() {{
-      clearInterval(hbTimer); hbTimer = null;
-    }}
-
-    function onStart(ex, ey) {{
-      active = true;
-      pad.classList.add('active');
-      startHb();
-      onMove(ex, ey);
-    }}
-
-    function onMove(ex, ey) {{
-      if (!active) return;
-      const [pcx, pcy] = padCenter();
-      let dx = (ex - pcx) / R;
-      let dy = -(ey - pcy) / R;
-      const mag = Math.sqrt(dx*dx + dy*dy);
-      if (mag > 1) {{ dx /= mag; dy /= mag; }}
-      moveKnob(dx, dy);
-      lastX = applyDeadzone(clamp(dx, -1, 1));
-      lastY = applyDeadzone(clamp(dy, -1, 1));
-      const dir = lastY > 0.1 ? 'FWD' : lastY < -0.1 ? 'BWD' : lastX > 0.1 ? 'RIGHT' : lastX < -0.1 ? 'LEFT' : 'STOP';
-      status.textContent = `${{dir}}  x=${{lastX.toFixed(2)}}  y=${{lastY.toFixed(2)}}`;
-    }}
-
-    function onEnd() {{
-      active = false;
-      pad.classList.remove('active');
-      stopHb();
-      lastX = 0; lastY = 0;
-      moveKnob(0, 0);
-      status.textContent = 'idle';
-      sendStop();
-    }}
-
-    // Touch
-    pad.addEventListener('touchstart', e => {{ e.preventDefault(); const t=e.touches[0]; onStart(t.clientX, t.clientY); }}, {{passive:false}});
-    pad.addEventListener('touchmove',  e => {{ e.preventDefault(); const t=e.touches[0]; onMove(t.clientX, t.clientY); }}, {{passive:false}});
-    pad.addEventListener('touchend',   e => {{ e.preventDefault(); onEnd(); }}, {{passive:false}});
-
-    // Mouse
-    pad.addEventListener('mousedown', e => {{ onStart(e.clientX, e.clientY); }});
-    window.addEventListener('mousemove', e => {{ if(active) onMove(e.clientX, e.clientY); }});
-    window.addEventListener('mouseup',   () => {{ if(active) onEnd(); }});
+    pad.addEventListener('touchstart',e=>{{e.preventDefault();const t=e.touches[0];onStart(t.clientX,t.clientY);}},{{passive:false}});
+    pad.addEventListener('touchmove', e=>{{e.preventDefault();const t=e.touches[0];onMove(t.clientX,t.clientY);}},{{passive:false}});
+    pad.addEventListener('touchend',  e=>{{e.preventDefault();onEnd();}},{{passive:false}});
+    pad.addEventListener('mousedown', e=>onStart(e.clientX,e.clientY));
+    window.addEventListener('mousemove',e=>{{if(active)onMove(e.clientX,e.clientY);}});
+    window.addEventListener('mouseup',()=>{{if(active)onEnd();}});
   </script>
 </body>
 </html>
@@ -203,6 +272,7 @@ def _get_tailscale_ip() -> Optional[str]:
 
 
 BLUR_KERNEL = 5  # 0 = off, odd number = Gaussian blur kernel size
+MAX_STREAMS = 3  # hard cap — reject connections above this
 
 
 def _encode_frame(frame_bgr: np.ndarray, blur: bool = False) -> Optional[bytes]:
@@ -234,6 +304,8 @@ class StreamServer:
         self._app.router.add_get("/",             self._handle_index)
         self._app.router.add_get("/stream",       self._handle_stream)
         self._app.router.add_get("/snap",         self._handle_snap)
+        self._app.router.add_get("/color",        self._handle_color_get)
+        self._app.router.add_post("/color",       self._handle_color_post)
         self._app.router.add_post("/snap-send",   self._handle_snap_send)
         self._app.router.add_post("/record-send", self._handle_record_send)
         self._app.router.add_post("/drive",       self._handle_drive)
@@ -271,6 +343,52 @@ class StreamServer:
     async def _handle_index(self, request: web.Request) -> web.Response:
         return web.Response(text=_HTML_PAGE, content_type="text/html")
 
+    async def _handle_color_get(self, request: web.Request) -> web.Response:
+        return web.Response(
+            text=json.dumps(color_config),
+            content_type="application/json",
+        )
+
+    async def _handle_color_post(self, request: web.Request) -> web.Response:
+        try:
+            data = await request.json()
+        except Exception:
+            return web.Response(status=400, text="bad json")
+
+        float_keys = ("hw_r", "hw_b", "sw_r", "sw_g", "sw_b", "saturation", "shadow", "ev")
+        for k in float_keys:
+            if k in data:
+                color_config[k] = float(data[k])
+
+        # Push hardware gains / exposure live to the ISP (no restart needed)
+        hw_changed = "hw_r" in data or "hw_b" in data or "ev" in data
+        if hw_changed and camera._backend is not None:
+            try:
+                camera._backend.apply_hw_gains()
+            except Exception:
+                pass
+
+        # Optionally persist to config.toml so values survive restart
+        if data.get("save"):
+            self._save_color_config()
+
+        log.info("color.updated", **{k: color_config[k] for k in float_keys})
+        return web.Response(
+            text=json.dumps({"ok": True, "hw_changed": hw_changed, **color_config}),
+            content_type="application/json",
+        )
+
+    def _save_color_config(self) -> None:
+        import pathlib
+        cfg_path = pathlib.Path("/home/pi/robot/config/color.toml")
+        lines = [f'{k} = {color_config[k]}\n' for k in
+                 ("hw_r", "hw_b", "sw_r", "sw_g", "sw_b", "saturation", "shadow", "ev")]
+        try:
+            cfg_path.write_text("".join(lines))
+            log.info("color.saved", path=str(cfg_path))
+        except Exception as e:
+            log.warning("color.save_failed", error=str(e))
+
     async def _handle_snap(self, request: web.Request) -> web.Response:
         frame_obj = camera.latest_frame
         if frame_obj is None or frame_obj.is_stale(3000):
@@ -281,6 +399,11 @@ class StreamServer:
         return web.Response(body=jpg, content_type="image/jpeg")
 
     async def _handle_stream(self, request: web.Request) -> web.StreamResponse:
+        if self._active_streams >= MAX_STREAMS:
+            log.warning("stream_server.rejected", peer=request.remote,
+                        active=self._active_streams, limit=MAX_STREAMS)
+            return web.Response(status=503, text="Too many viewers")
+
         self._active_streams += 1
         log.info("stream_server.client_connected",
                  peer=request.remote, active=self._active_streams)
@@ -293,12 +416,18 @@ class StreamServer:
             await response.prepare(request)
             last_frame_id = -1
             while True:
+                # Detect client disconnect even when no frames are flowing.
+                # Without this, a stale camera means we never hit response.write(),
+                # so a closed connection is never noticed and _active_streams leaks
+                # until MAX_STREAMS locks everyone out.
+                if request.transport is None or request.transport.is_closing():
+                    break
+
                 frame_obj = camera.latest_frame
                 if frame_obj is None or frame_obj.is_stale(2000):
                     await asyncio.sleep(0.05)
                     continue
 
-                # Only encode if we have a new frame
                 if frame_obj.frame_id == last_frame_id:
                     await asyncio.sleep(0.02)
                     continue
@@ -311,18 +440,24 @@ class StreamServer:
                 if jpg is None:
                     continue
 
-                await response.write(
-                    b"--cosmoframe\r\n"
-                    b"Content-Type: image/jpeg\r\n"
-                    b"Content-Length: " + str(len(jpg)).encode() + b"\r\n\r\n" +
-                    jpg + b"\r\n"
+                # Timeout on write: if client stops reading (backgrounded app,
+                # dropped network) the OS TCP buffer fills and write blocks.
+                # 10s timeout evicts dead connections instead of letting them pile up.
+                await asyncio.wait_for(
+                    response.write(
+                        b"--cosmoframe\r\n"
+                        b"Content-Type: image/jpeg\r\n"
+                        b"Content-Length: " + str(len(jpg)).encode() + b"\r\n\r\n" +
+                        jpg + b"\r\n"
+                    ),
+                    timeout=10.0,
                 )
                 await asyncio.sleep(FRAME_INTERVAL)
 
-        except (ConnectionResetError, asyncio.CancelledError):
+        except (ConnectionResetError, asyncio.CancelledError, asyncio.TimeoutError):
             pass
         finally:
-            self._active_streams -= 1
+            self._active_streams = max(0, self._active_streams - 1)
             log.info("stream_server.client_disconnected",
                      peer=request.remote, active=self._active_streams)
         return response
@@ -488,4 +623,22 @@ class StreamServer:
         return web.Response(text="ok")
 
 
+def _load_saved_color() -> None:
+    import pathlib
+    cfg_path = pathlib.Path("/home/pi/robot/config/color.toml")
+    if not cfg_path.exists():
+        return
+    try:
+        for line in cfg_path.read_text().splitlines():
+            line = line.strip()
+            if not line or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            k, v = k.strip(), v.strip()
+            if k in color_config:
+                color_config[k] = float(v)
+    except Exception:
+        pass
+
+_load_saved_color()
 stream_server = StreamServer()

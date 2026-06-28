@@ -24,6 +24,22 @@ from utils.telemetry import telemetry
 
 log = get_logger(__name__)
 
+# Live-tunable colour config — updated via stream_server /color endpoint.
+# Hardware gains set on the ISP; software multipliers applied per-frame.
+color_config: dict = {
+    # NOTE: ColourGains behave inversely on this imx708_wide build — a LOWER
+    # hw_r yields MORE red, a HIGHER hw_b yields LESS blue. Tuned empirically
+    # against neutral wall/floor references. config/color.toml overrides these.
+    "hw_r": 1.8,       # ColourGains red (ISP)
+    "hw_b": 2.0,       # ColourGains blue (ISP)
+    "sw_r": 1.05,      # software R multiplier
+    "sw_g": 0.90,      # software G multiplier (tames green-dominant sensor)
+    "sw_b": 0.96,      # software B multiplier
+    "saturation": 1.1, # 1.0 = neutral, >1 = more vivid, <1 = desaturate
+    "shadow": 8.0,     # shadow blue subtraction (0 = off)
+    "ev": 0.6,         # AE exposure-value compensation (stops); >0 = brighter
+}
+
 
 @dataclass
 class Frame:
@@ -82,8 +98,13 @@ class _Picamera2Backend:
             # targets ~4000K indoor LED/tungsten without CCM cross-talk.
             _time.sleep(3.0)
             try:
-                cam.set_controls({"AwbEnable": False, "ColourGains": (2.4, 1.4)})
-                log.info("camera.colour_gains_locked", red=2.4, blue=1.4)
+                cam.set_controls({
+                    "AwbEnable": False,
+                    "ColourGains": (color_config["hw_r"], color_config["hw_b"]),
+                    "ExposureValue": color_config["ev"],
+                })
+                log.info("camera.colour_gains_locked",
+                         red=color_config["hw_r"], blue=color_config["hw_b"])
             except Exception as e:
                 log.warning("camera.colour_gains_lock_failed", error=str(e))
             self._cam = cam
@@ -98,15 +119,34 @@ class _Picamera2Backend:
             return False, None
         try:
             rgb = cam.capture_array()
-            # ISP pipeline leaves a blue-green cast indoors regardless of AWB
-            # gains. Correct in software: boost R, reduce B to neutral.
+            cfg = color_config
             f = rgb.astype("float32")
-            f[:, :, 0] = np.clip(f[:, :, 0] * 1.95, 0, 255)  # R up
-            f[:, :, 1] = np.clip(f[:, :, 1] * 0.96, 0, 255)  # G down slightly
-            f[:, :, 2] = np.clip(f[:, :, 2] * 0.80, 0, 255)  # B down
+            f[:, :, 0] = np.clip(f[:, :, 0] * cfg["sw_r"], 0, 255)
+            f[:, :, 1] = np.clip(f[:, :, 1] * cfg["sw_g"], 0, 255)
+            f[:, :, 2] = np.clip(f[:, :, 2] * cfg["sw_b"], 0, 255)
+            sat = cfg["saturation"]
+            if sat != 1.0:
+                luma = f[:, :, 0] * 0.299 + f[:, :, 1] * 0.587 + f[:, :, 2] * 0.114
+                luma3 = luma[:, :, np.newaxis]
+                f = np.clip(luma3 + sat * (f - luma3), 0, 255)
+            if cfg["shadow"] > 0:
+                luma = f[:, :, 0] * 0.299 + f[:, :, 1] * 0.587 + f[:, :, 2] * 0.114
+                shadow_w = np.clip((100.0 - luma) / 100.0, 0.0, 1.0) ** 1.5
+                f[:, :, 2] = np.clip(f[:, :, 2] - shadow_w * cfg["shadow"], 0, 255)
             return True, cv2.cvtColor(f.astype("uint8"), cv2.COLOR_RGB2BGR)
         except Exception:
             return False, None
+
+    def apply_hw_gains(self) -> None:
+        cam = self._cam
+        if cam:
+            try:
+                cam.set_controls({
+                    "ColourGains": (color_config["hw_r"], color_config["hw_b"]),
+                    "ExposureValue": color_config["ev"],
+                })
+            except Exception:
+                pass
 
     def release(self) -> None:
         cam = self._cam
