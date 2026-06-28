@@ -7,6 +7,9 @@ Endpoints:
   GET  /memory/recent   → last 20 episodic memory rows
   GET  /health          → uptime, cpu_temp, free_ram_mb
   POST /trigger/describe → capture frame + LLM vision describe (logs token cost)
+  GET  /camera/snapshot  → latest frame as JPEG from the live camera pipeline
+  GET  /camera/color     → current software colour-correction config
+  POST /camera/color     → update colour-correction config live (+ writes color.toml)
 """
 
 import asyncio
@@ -18,7 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 import uvicorn
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, HTMLResponse
 
 from utils.logger import get_logger
@@ -290,6 +293,88 @@ async def trigger_describe():
         }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ── /camera/snapshot · /camera/color ─────────────────────────────────────────
+
+@app.get("/camera/snapshot")
+async def camera_snapshot():
+    """Return the latest camera frame as a JPEG image (from the live pipeline)."""
+    import base64
+    import cv2
+    try:
+        from perception.vision.camera import camera as _cam
+        frame = _cam.latest_frame
+        if frame is None:
+            return JSONResponse(status_code=503, content={"error": "No frame available — camera not running"})
+        _, buf = cv2.imencode(".jpg", frame.image, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        jpeg_b64 = base64.b64encode(buf.tobytes()).decode()
+        return {
+            "jpeg_b64": jpeg_b64,
+            "frame_id": frame.frame_id,
+            "age_ms": round(frame.age_ms(), 1),
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/camera/color")
+async def camera_color_get():
+    """Return the current software colour-correction config."""
+    try:
+        from perception.vision.camera import color_config
+        return dict(color_config)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/camera/color")
+async def camera_color_set(request: Request, _: None = _AuthRequired):
+    """
+    Update colour-correction config live and persist to config/color.toml.
+    Only recognised keys are updated; unknown keys are ignored.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "invalid JSON body"})
+    try:
+        from perception.vision.camera import color_config, camera as _cam
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+    allowed = {"hw_r", "hw_b", "sw_r", "sw_g", "sw_b", "saturation", "shadow", "ev"}
+    updated = {}
+    for k, v in body.items():
+        if k in allowed:
+            try:
+                color_config[k] = float(v)
+                updated[k] = float(v)
+            except (TypeError, ValueError):
+                pass
+
+    # Push ISP gains immediately so next frame uses them.
+    try:
+        _cam._backend.apply_hw_gains()  # type: ignore[union-attr]
+    except Exception:
+        pass
+
+    # Persist to color.toml
+    toml_path = Path(__file__).parent.parent.parent / "config" / "color.toml"
+    try:
+        import tomlkit as _tk
+        doc = _tk.document()
+        for k in allowed:
+            if k in color_config:
+                doc.add(k, color_config[k])
+        with open(toml_path, "w") as fh:
+            fh.write(_tk.dumps(doc))
+        persisted = True
+    except Exception:
+        persisted = False
+
+    log.info("api.camera_color_set", updated=updated, persisted=persisted)
+    return {"ok": True, "updated": updated, "persisted": persisted, "current": dict(color_config)}
 
 
 # ── /mind/on · /mind/off ─────────────────────────────────────────────────────
