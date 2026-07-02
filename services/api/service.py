@@ -1036,11 +1036,84 @@ async def led_control(request: Request, _: None = _AuthRequired):
 async def led_state(_: None = _AuthRequired):
     from hardware.led_strip import strip, COLORS
     try:
-        from behavior.ambilight import ambilight
+        from behavior.ambilight import LEGACY_ROI_CONFIG, ROI_CONFIG, ambilight
         tv_sync = ambilight.active
     except Exception:
         tv_sync = False
-    return {**strip.state, "tv_sync": tv_sync, "colors": list(COLORS)}
+        roi_active = False
+        roi_config = None
+    else:
+        roi_active = ROI_CONFIG.exists() or LEGACY_ROI_CONFIG.exists()
+        roi_config = str(ROI_CONFIG if ROI_CONFIG.exists() else LEGACY_ROI_CONFIG)
+    return {
+        **strip.state,
+        "tv_sync": tv_sync,
+        "roi_active": roi_active,
+        "roi_config": roi_config,
+        "colors": list(COLORS),
+    }
+
+
+@app.post("/led/calibrate")
+async def led_calibrate(_: None = _AuthRequired):
+    """Calibrate TV ROI from a full-red TV screen and save config/ambilight_roi.json."""
+    try:
+        import base64
+        import cv2
+        import numpy as np
+        from behavior.ambilight import ROI_CONFIG, _order_quad
+        from perception.vision.camera import camera
+
+        frame_obj = camera.latest_frame
+        if frame_obj is None or frame_obj.is_stale(3000):
+            return JSONResponse(status_code=503, content={"error": "no camera frame"})
+
+        img = frame_obj.image.copy()
+        h, w = img.shape[:2]
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        red_low = cv2.inRange(hsv, (0, 90, 70), (12, 255, 255))
+        red_high = cv2.inRange(hsv, (168, 90, 70), (179, 255, 255))
+        mask = cv2.morphologyEx(red_low | red_high, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return JSONResponse(status_code=422, content={"error": "no red TV rectangle found"})
+
+        contour = max(contours, key=cv2.contourArea)
+        if cv2.contourArea(contour) < 0.04 * w * h:
+            return JSONResponse(status_code=422, content={"error": "red region too small"})
+
+        peri = cv2.arcLength(contour, True)
+        approx = cv2.approxPolyDP(contour, 0.025 * peri, True)
+        if len(approx) == 4 and cv2.isContourConvex(approx):
+            pts = approx.reshape(4, 2).astype("float32")
+        else:
+            x, y, ww, hh = cv2.boundingRect(contour)
+            pad_x, pad_y = ww * 0.03, hh * 0.03
+            pts = np.float32([
+                [x + pad_x, y + pad_y],
+                [x + ww - pad_x, y + pad_y],
+                [x + ww - pad_x, y + hh - pad_y],
+                [x + pad_x, y + hh - pad_y],
+            ])
+        ordered = _order_quad(pts)
+        norm = [[round(float(x) / w, 6), round(float(y) / h, 6)] for x, y in ordered]
+
+        ROI_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+        ROI_CONFIG.write_text(json.dumps({
+            "version": 1,
+            "normalized": True,
+            "points": norm,
+            "source_shape": [w, h],
+            "note": "Calibrated from /led/calibrate full-red screen.",
+        }, indent=2) + "\n")
+
+        cv2.polylines(img, [ordered.astype(int).reshape((-1, 1, 2))], True, (0, 255, 0), 3)
+        ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 88])
+        preview = base64.b64encode(buf).decode() if ok else None
+        return {"ok": True, "roi_config": str(ROI_CONFIG), "points": norm, "preview_b64": preview}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @app.post("/led/tv")

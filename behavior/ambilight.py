@@ -40,6 +40,7 @@ VIVID_V_MIN = 0.35        # bright enough to count as TV content
 # Optional TV-screen ROI. Save with tools/ambilight_calibrate.py.
 USE_ROI = True
 ROI_CONFIG = Path(__file__).resolve().parents[1] / "config" / "ambilight_roi.json"
+LEGACY_ROI_CONFIG = Path.home() / ".robot" / "ambilight_roi.json"
 ROI_WARP_SIZE = (160, 90)  # 16:9 screen sample before downsample
 ROI_EDGE_TRIM = 0.03       # trim bezel/edge glare from calibrated screen sample
 
@@ -101,13 +102,21 @@ def _order_quad(points: Sequence[Sequence[float]]) -> np.ndarray:
 def _load_roi_points(shape: Tuple[int, int, int]) -> Optional[np.ndarray]:
     """Load cached ROI config and scale normalized points to this frame."""
     global _roi_cache_mtime, _roi_cache_points, _roi_cache_warned
-    if not USE_ROI or not ROI_CONFIG.exists():
+    if not USE_ROI:
         return None
+
+    path = ROI_CONFIG if ROI_CONFIG.exists() else LEGACY_ROI_CONFIG
+    if not path.exists():
+        return None
+
     try:
-        mtime = ROI_CONFIG.stat().st_mtime
+        mtime = path.stat().st_mtime
         if mtime != _roi_cache_mtime:
-            data = json.loads(ROI_CONFIG.read_text())
+            data = json.loads(path.read_text())
             points = data.get("points")
+            if points is None and isinstance(data.get("roi"), list) and len(data["roi"]) == 4:
+                x0, y0, x1, y1 = (float(v) for v in data["roi"])
+                points = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
             if not isinstance(points, list) or len(points) != 4:
                 raise ValueError("points must contain four [x, y] pairs")
             _roi_cache_points = tuple((float(p[0]), float(p[1])) for p in points)
@@ -115,7 +124,7 @@ def _load_roi_points(shape: Tuple[int, int, int]) -> Optional[np.ndarray]:
             _roi_cache_warned = False
     except Exception as e:
         if not _roi_cache_warned:
-            log.warning("ambilight.roi_config_invalid", path=str(ROI_CONFIG), error=str(e)[:100])
+            log.warning("ambilight.roi_config_invalid", path=str(path), error=str(e)[:100])
             _roi_cache_warned = True
         return None
 
@@ -237,7 +246,8 @@ class Ambilight:
         self._has_content = False
         self._pending = 0
         self._task = asyncio.create_task(self._loop(), name="ambilight")
-        log.info("ambilight.start", roi=str(ROI_CONFIG) if ROI_CONFIG.exists() else None)
+        roi_path = ROI_CONFIG if ROI_CONFIG.exists() else LEGACY_ROI_CONFIG
+        log.info("ambilight.start", roi=str(roi_path) if roi_path.exists() else None)
         return True
 
     async def stop(self) -> None:
