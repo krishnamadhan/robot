@@ -415,7 +415,12 @@ class StreamServer:
         try:
             await response.prepare(request)
             last_frame_id = -1
+            last_write = time.monotonic()
             while True:
+                # Watchdog: no successful frame write for 30s → assume the
+                # client is gone regardless of what the transport claims.
+                if time.monotonic() - last_write > 30.0:
+                    break
                 # Detect client disconnect even when no frames are flowing.
                 # Without this, a stale camera means we never hit response.write(),
                 # so a closed connection is never noticed and _active_streams leaks
@@ -433,10 +438,13 @@ class StreamServer:
                     continue
                 last_frame_id = frame_obj.frame_id
 
-                loop = asyncio.get_event_loop()
-                jpg = await loop.run_in_executor(
-                    None, _encode_frame, frame_obj.image
-                )
+                # Encode INLINE (like /snap, which never got stuck). The old
+                # run_in_executor(None, ...) parked this coroutine forever when
+                # the shared default executor was starved — the transport-closed
+                # check above never ran again, the slot never freed, and after
+                # MAX_STREAMS leaked handlers every viewer got 503 "Too many
+                # viewers". 320x240 JPEG encode is ~2-3ms — fine on the loop.
+                jpg = _encode_frame(frame_obj.image)
                 if jpg is None:
                     continue
 
@@ -452,6 +460,7 @@ class StreamServer:
                     ),
                     timeout=10.0,
                 )
+                last_write = time.monotonic()
                 await asyncio.sleep(FRAME_INTERVAL)
 
         except (ConnectionResetError, asyncio.CancelledError, asyncio.TimeoutError):
