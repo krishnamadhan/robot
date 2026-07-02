@@ -37,6 +37,23 @@ SAT_BOOST = 1.8           # multiply measured saturation before clamping
 VIVID_S_MIN = 0.35        # saturated enough to count as TV content
 VIVID_V_MIN = 0.35        # bright enough to count as TV content
 
+# Spatial bias — weight sampling toward the BOTTOM-RIGHT of the ROI. The camera
+# sits low-left, so the calibrated box catches the white wall pillar in its
+# top-left; the bottom-right is clean TV screen. Floor is the weight at the
+# top-left corner (0 = ignore it entirely, 1 = uniform).
+SPATIAL_BR_FLOOR = 0.20
+
+
+def _spatial_weight(h: int, w: int) -> np.ndarray:
+    ys = np.linspace(0.0, 1.0, h)[:, None]
+    xs = np.linspace(0.0, 1.0, w)[None, :]
+    fx = SPATIAL_BR_FLOOR + (1.0 - SPATIAL_BR_FLOOR) * xs
+    fy = SPATIAL_BR_FLOOR + (1.0 - SPATIAL_BR_FLOOR) * ys
+    return (fx * fy).astype(np.float32)
+
+
+_SPATIAL = _spatial_weight(ANALYZE_SIZE[1], ANALYZE_SIZE[0])
+
 # Optional TV-screen ROI. Save with tools/ambilight_calibrate.py.
 USE_ROI = True
 ROI_CONFIG = Path(__file__).resolve().parents[1] / "config" / "ambilight_roi.json"
@@ -175,7 +192,10 @@ def analyze_debug(
     v = hsv[:, :, 2].astype(np.float32) / 255.0  # 0..1
 
     vivid = (s > VIVID_S_MIN) & (v > VIVID_V_MIN)
-    vivid_frac = float(vivid.mean())
+    # Bottom-right-biased content fraction: the wall pillar (top-left) is weighted
+    # down so it neither inflates nor deflates the gate — the clean TV screen drives it.
+    sw = _SPATIAL
+    vivid_frac = float((vivid * sw).sum() / sw.sum())
     n = int(vivid.sum())
     if n < 8:
         return Analysis(
@@ -189,10 +209,11 @@ def analyze_debug(
             sample_shape=sample_bgr.shape[:2],
         )
 
-    content_v = float(v[vivid].mean())
+    # Brightness + colour from vivid pixels, biased toward the bottom-right screen.
+    content_v = float((v * vivid * sw).sum() / max((vivid * sw).sum(), 1e-6))
     bright = int(np.clip((content_v ** 0.7) * 100.0, MIN_ON_BRIGHT, 100))
 
-    weights = ((s ** 1.2) * v) * vivid
+    weights = ((s ** 1.2) * v) * vivid * sw
     wsum = float(weights.sum())
     ang = h * (math.pi / 90.0)
     x = float((weights * np.cos(ang)).sum())
@@ -255,6 +276,18 @@ class Ambilight:
         if self._task:
             self._task.cancel()
             self._task = None
+        # Turn the strip OFF on stop — otherwise it holds the last colour at full
+        # brightness, which reads as "bright even after stop".
+        try:
+            from hardware.led_strip import strip
+            await strip.power(False)
+        except Exception as e:
+            log.warning("ambilight.stop_poweroff_failed", error=str(e)[:80])
+        self._rgb = None
+        self._bright = 0.0
+        self._has_content = False
+        self._last_sent_rgb = None
+        self._last_sent_bright = -1
         log.info("ambilight.stop")
 
     async def _loop(self) -> None:
