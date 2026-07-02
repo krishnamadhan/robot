@@ -33,8 +33,8 @@ COLOR_ALPHA = 0.35        # EMA weight for color (higher = snappier)
 BRIGHT_ALPHA = 0.28       # EMA weight for brightness (lower = calmer)
 BRIGHT_MAX_RISE = 9       # max brightness increase per tick; tames flashes/strobes
 MIN_ON_BRIGHT = 15        # dimmest the strip goes while the screen is lit
-SAT_FLOOR = 0.60          # output never duller than this
-SAT_BOOST = 1.8           # multiply measured saturation before clamping
+SAT_FLOOR = 0.90          # output never duller than this (cameras mute TV colour → push hard)
+SAT_BOOST = 2.4           # multiply measured saturation before clamping
 VIVID_S_MIN = 0.35        # saturated enough to count as TV content
 VIVID_V_MIN = 0.35        # bright enough to count as TV content
 
