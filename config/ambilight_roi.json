@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "normalized": true,
+  "points": [
+    [
+      0.231578,
+      0.03
+    ],
+    [
+      0.976234,
+      0.03
+    ],
+    [
+      0.976234,
+      0.97
+    ],
+    [
+      0.231578,
+      0.97
+    ]
+  ],
+  "source_shape": [
+    640,
+    480
+  ],
+  "note": "Calibrated from /led/calibrate full-red screen."
+}
