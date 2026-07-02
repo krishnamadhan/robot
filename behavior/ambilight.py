@@ -35,6 +35,17 @@ BRIGHT_MAX_RISE = 9       # max brightness increase per tick; tames flashes/stro
 MIN_ON_BRIGHT = 15        # dimmest the strip goes while the screen is lit
 SAT_FLOOR = 0.90          # output never duller than this (cameras mute TV colour → push hard)
 SAT_BOOST = 2.4           # multiply measured saturation before clamping
+
+# Camera colour correction (derived from a paused-orange reference 2026-07-02):
+# 1. Auto-WB cools warm scenes (orange gained a blue cast, B 153→1 when locked).
+#    Lock WB warm so the camera output is predictable.
+# 2. The sensor over-reads GREEN on warm content (orange showed R≈G, hue 52°
+#    instead of ~33°). Attenuate green in software → warm colours land right.
+#    Pure green/blue hues are unaffected (R or B ≈ 0 there).
+WB_LOCK = True
+WB_LOCK_R = 2.4           # ISP red ColourGain when ambilight owns the camera
+WB_LOCK_B = 0.8           # ISP blue ColourGain (low = kill the cool cast)
+GREEN_CORRECT = 0.68      # green attenuation before hue extraction (1.0 = off)
 VIVID_S_MIN = 0.35        # saturated enough to count as TV content
 VIVID_V_MIN = 0.35        # bright enough to count as TV content
 
@@ -195,6 +206,10 @@ def analyze_debug(
     """Return a rich analysis record for tools/tests and the runtime loop."""
     sample_bgr, roi_active, used_points = _extract_roi(bgr, roi_points)
     small = cv2.resize(sample_bgr, ANALYZE_SIZE)
+    if GREEN_CORRECT != 1.0:
+        small = small.astype(np.float32)
+        small[:, :, 1] *= GREEN_CORRECT       # index 1 = green in BGR
+        small = np.clip(small, 0, 255).astype(np.uint8)
     hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
     h = hsv[:, :, 0].astype(np.float32)          # 0..179
     s = hsv[:, :, 1].astype(np.float32) / 255.0  # 0..1
@@ -283,10 +298,25 @@ class Ambilight:
         self._last_activity_ts = time.monotonic()
         self._activity_rgb = None
         self._activity_bright = 0.0
+        self._apply_wb_lock()
         self._task = asyncio.create_task(self._loop(), name="ambilight")
         roi_path = ROI_CONFIG if ROI_CONFIG.exists() else LEGACY_ROI_CONFIG
         log.info("ambilight.start", roi=str(roi_path) if roi_path.exists() else None)
         return True
+
+    def _apply_wb_lock(self) -> None:
+        """Lock camera white balance warm while ambilight owns the camera —
+        auto-WB otherwise cools warm TV scenes toward blue/magenta."""
+        if not WB_LOCK:
+            return
+        try:
+            from perception.vision.camera import color_config, camera
+            color_config["hw_r"] = WB_LOCK_R
+            color_config["hw_b"] = WB_LOCK_B
+            camera._backend.apply_hw_gains()
+            log.info("ambilight.wb_locked", r=WB_LOCK_R, b=WB_LOCK_B)
+        except Exception as e:
+            log.warning("ambilight.wb_lock_failed", error=str(e)[:80])
 
     async def stop(self) -> None:
         self._running = False
