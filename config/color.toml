@@ -1,8 +1,10 @@
-shadow = 8.0
-sw_g = 0.9
+# Reset 2026-07-02 — old values were compensating the R/B channel swap
+# (fixed in camera.py). Neutral multipliers; AWB runs in auto at boot.
+shadow = 0.0
+sw_g = 1.0
 ev = 0.6
-hw_b = 2.0
-saturation = 1.1
-sw_b = 0.88
+hw_b = 1.6
+saturation = 1.05
+sw_b = 1.0
 hw_r = 1.8
-sw_r = 1.05
+sw_r = 1.0

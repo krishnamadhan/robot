@@ -2,8 +2,9 @@
 
 person_detection:
   model: yolo11n            # YOLO11 nano — 22% faster than v8n, drop-in replacement (ADR-012)
-  weights: models/yolo11n.pt  # downloaded 2026-05-21, stored in robot/models/
-  # rollback: change model+weights back to yolov8n / models/yolov8n.pt if regression detected
+  weights_onnx: models/yolo11n.onnx  # PREFERRED — onnxruntime, no torch (~400MB RSS saved); exported 2026-07-02 imgsz=320
+  weights: models/yolo11n.pt  # ultralytics fallback only (pulls torch); downloaded 2026-05-21
+  # rollback: delete weights_onnx line to fall back to ultralytics path
   device: cpu
   conf_threshold: 0.5
   iou_threshold: 0.45

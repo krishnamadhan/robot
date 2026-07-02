@@ -337,3 +337,11 @@
 ```
 
 These files must NEVER be deleted, moved, or modified by Claude Code.
+
+## KI-025 — Face embeddings enrolled on R/B-swapped frames (2026-07-02)
+The camera shipped R/B-swapped frames until the 2026-07-02 colour fix
+(perception/vision/camera.py). SFace embeddings for Madhan (~95%) and Indhu
+(~75%) were enrolled against swapped colours — recognition confidence may drop
+now that frames are correct. **Fix: re-enroll both** with
+`python3 tools/enroll_face.py` (20 samples, good light) when each is present.
+Status: OPEN — needs humans present.

@@ -17,6 +17,7 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
@@ -64,6 +65,93 @@ class TrackedPerson:
 
     def is_lost(self, max_absent: int = 15) -> bool:
         return self.frames_absent > max_absent
+
+
+class _YOLOOnnxDetector:
+    """yolo11n via onnxruntime — no torch (~400MB RSS saved vs ultralytics).
+
+    onnxruntime is already resident for SFace + emotion, so this shares the
+    runtime. Export: `yolo export model=yolo11n.pt format=onnx imgsz=320`.
+    """
+
+    def __init__(self, model_cfg: Dict[str, Any]) -> None:
+        self._model_cfg = model_cfg
+        self._session = None
+        self._input_name = ""
+        self._input_size = int(model_cfg.get("input_size", 320))
+        self._iou = float(model_cfg.get("iou_threshold", 0.45))
+
+    def initialize(self) -> bool:
+        weights = self._model_cfg.get("weights_onnx", "models/yolo11n.onnx")
+        path = Path(weights)
+        if not path.is_absolute():
+            path = Path(__file__).resolve().parents[2] / weights
+        if not path.exists():
+            log.info("person_detector.onnx_weights_missing", path=str(path))
+            return False
+        try:
+            import onnxruntime as ort
+            self._session = ort.InferenceSession(
+                str(path), providers=["CPUExecutionProvider"]
+            )
+            self._input_name = self._session.get_inputs()[0].name
+            log.info("person_detector.yolo_onnx_loaded", path=path.name)
+            return True
+        except Exception as e:
+            log.warning("person_detector.yolo_onnx_unavailable", error=str(e))
+            return False
+
+    def detect(self, frame: np.ndarray, min_confidence: float) -> List[Detection]:
+        if self._session is None:
+            return []
+        try:
+            h0, w0 = frame.shape[:2]
+            size = self._input_size
+            # Letterbox to square, keep aspect
+            scale = min(size / w0, size / h0)
+            nw, nh = int(round(w0 * scale)), int(round(h0 * scale))
+            pad_x, pad_y = (size - nw) / 2, (size - nh) / 2
+            resized = cv2.resize(frame, (nw, nh))
+            canvas = np.full((size, size, 3), 114, dtype=np.uint8)
+            top, left = int(round(pad_y - 0.1)), int(round(pad_x - 0.1))
+            canvas[top:top + nh, left:left + nw] = resized
+
+            blob = canvas[:, :, ::-1].transpose(2, 0, 1)[None].astype(np.float32) / 255.0
+            out = self._session.run(None, {self._input_name: blob})[0]
+
+            # Output (1, 84, N): rows 0-3 = cx,cy,w,h; row 4 = person score (class 0)
+            preds = out[0]
+            boxes_xywh = preds[0:4, :]
+            person_scores = preds[4, :]
+            keep = person_scores >= min_confidence
+            if not keep.any():
+                return []
+            boxes_xywh = boxes_xywh[:, keep]
+            scores = person_scores[keep]
+
+            # xywh (letterboxed px) → xyxy in original frame coords
+            cx, cy, bw, bh = boxes_xywh
+            x1 = (cx - bw / 2 - left) / scale
+            y1 = (cy - bh / 2 - top) / scale
+            x2 = (cx + bw / 2 - left) / scale
+            y2 = (cy + bh / 2 - top) / scale
+
+            rects = [
+                [int(max(0, x1[i])), int(max(0, y1[i])),
+                 int(min(w0, x2[i]) - max(0, x1[i])), int(min(h0, y2[i]) - max(0, y1[i]))]
+                for i in range(len(scores))
+            ]
+            idxs = cv2.dnn.NMSBoxes(rects, scores.tolist(), min_confidence, self._iou)
+            detections = []
+            for i in np.array(idxs).flatten():
+                x, y, w, h = rects[int(i)]
+                detections.append(
+                    _make_detection((x, y, x + w, y + h), float(scores[int(i)]), w0, h0)
+                )
+            return detections
+        except Exception as e:
+            log.error("person_detector.yolo_onnx_error", error=str(e))
+            return []
 
 
 class _YOLODetector:
@@ -189,16 +277,21 @@ class PersonDetector:
         self._running = False
         self._task: Optional[asyncio.Task] = None
 
-        # Try YOLO first, fall back to HOG
+        # Detector preference: ONNX (no torch) → ultralytics YOLO → HOG
+        self._onnx = _YOLOOnnxDetector(self._model_cfg)
         self._yolo = _YOLODetector(self._model_cfg)
         self._hog = _HOGDetector()
+        self._use_onnx = False
         self._use_yolo = False
 
     async def start(self) -> None:
-        self._use_yolo = await asyncio.get_event_loop().run_in_executor(
-            None, self._yolo.initialize
-        )
-        if not self._use_yolo:
+        loop = asyncio.get_event_loop()
+        self._use_onnx = await loop.run_in_executor(None, self._onnx.initialize)
+        if not self._use_onnx:
+            # Avoid ultralytics unless ONNX truly unavailable — its import pulls
+            # torch (~400MB RSS) and stays resident even if the import FAILS later
+            self._use_yolo = await loop.run_in_executor(None, self._yolo.initialize)
+        if not self._use_onnx and not self._use_yolo:
             log.info("person_detector.using_hog_fallback")
         self._running = True
         self._task = asyncio.create_task(self._detect_loop(), name="person_detector")
@@ -226,6 +319,8 @@ class PersonDetector:
                 log.error("person_detector.error", error=str(e))
 
     def _run_detection(self, image: np.ndarray) -> List[Detection]:
+        if self._use_onnx:
+            return self._onnx.detect(image, self._min_conf)
         if self._use_yolo:
             return self._yolo.detect(image, self._min_conf)
         return self._hog.detect(image, self._min_conf)
@@ -330,7 +425,7 @@ class PersonDetector:
 
     def stats(self) -> Dict[str, Any]:
         return {
-            "backend": cfg.models.person_detection.get("model", "yolo") if self._use_yolo else "hog",
+            "backend": "yolo_onnx" if self._use_onnx else (cfg.models.person_detection.get("model", "yolo") if self._use_yolo else "hog"),
             "active_tracks": len(self._tracks),
             "persons_visible": self.person_count,
             "detection_interval_frames": self._detection_interval,
