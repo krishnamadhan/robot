@@ -1035,7 +1035,49 @@ async def led_control(request: Request, _: None = _AuthRequired):
 @app.get("/led")
 async def led_state(_: None = _AuthRequired):
     from hardware.led_strip import strip, COLORS
-    return {**strip.state, "colors": list(COLORS)}
+    try:
+        from behavior.ambilight import ambilight
+        tv_sync = ambilight.active
+    except Exception:
+        tv_sync = False
+    return {**strip.state, "tv_sync": tv_sync, "colors": list(COLORS)}
+
+
+@app.post("/led/tv")
+async def led_tv_sync(request: Request, _: None = _AuthRequired):
+    """Toggle camera-based TV ambilight sync.
+
+    Body: {"on": true|false}
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "invalid JSON body"})
+
+    on = bool((body or {}).get("on"))
+    try:
+        from behavior.ambilight import ROI_CONFIG, ambilight
+        from hardware.led_strip import strip
+        if on:
+            ok = await ambilight.start()
+            return {
+                "ok": ok,
+                "tv_sync": ambilight.active,
+                "roi_config": str(ROI_CONFIG),
+                "roi_active": ROI_CONFIG.exists(),
+                **strip.state,
+            }
+        await ambilight.stop()
+        await strip.power(False)
+        return {
+            "ok": True,
+            "tv_sync": ambilight.active,
+            "roi_config": str(ROI_CONFIG),
+            "roi_active": ROI_CONFIG.exists(),
+            **strip.state,
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @app.post("/motor/forward")
