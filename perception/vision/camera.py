@@ -37,7 +37,7 @@ color_config: dict = {
     "sw_r": 1.0,       # software R multiplier
     "sw_g": 1.0,       # software G multiplier
     "sw_b": 1.0,       # software B multiplier
-    "saturation": 1.05, # 1.0 = neutral, >1 = more vivid, <1 = desaturate
+    "saturation": 1.0,  # 1.0 = neutral, >1 = more vivid, <1 = desaturate
     "shadow": 0.0,     # shadow blue subtraction (0 = off; was compensating the swap)
     "ev": 0.6,         # AE exposure-value compensation (stops); >0 = brighter
 }
@@ -76,8 +76,8 @@ class _Picamera2Backend:
             import time as _time
             # Use imx708_wide.json — the correct CCM for this wide lens.
             # imx708.json (standard lens) has wrong CCM cross-talk that suppresses
-            # red even when gains are boosted. Wide tuning has correct CCM;
-            # we just lock its AWB to indoor-warm values to kill the cold-cast.
+            # red even when gains are boosted. Wide tuning + auto-AWB = accurate
+            # colour since the R/B swap fix (see read()).
             try:
                 tuning = Picamera2.load_tuning_file("imx708_wide.json")
                 cam = Picamera2(tuning=tuning)
@@ -124,6 +124,11 @@ class _Picamera2Backend:
             # downstream — the source of the persistent "blue cast".
             bgr = cam.capture_array()
             cfg = color_config
+            # Fast path: with neutral config (the post-AWB-fix default) skip the
+            # float pipeline entirely — it costs real CPU at 30fps on the Pi.
+            if (cfg["sw_r"] == 1.0 and cfg["sw_g"] == 1.0 and cfg["sw_b"] == 1.0
+                    and cfg["saturation"] == 1.0 and cfg["shadow"] <= 0):
+                return True, bgr
             f = bgr.astype("float32")
             f[:, :, 2] = np.clip(f[:, :, 2] * cfg["sw_r"], 0, 255)   # ch2 = R
             f[:, :, 1] = np.clip(f[:, :, 1] * cfg["sw_g"], 0, 255)   # ch1 = G
