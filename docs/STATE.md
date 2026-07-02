@@ -1,5 +1,11 @@
 # Cosmo — STATE.md
 > Single source of truth for session continuity. Updated at end of every session; read at start.
+> ⚠️ 2026-07-02: **cosmo REMOVED from PM2** (stopped + deleted + saved) at Madhan's
+> request — no robot hardware wired yet, so no point running it. Camera stream (:8080)
+> and LED API (:8000) are DOWN with it, so `!led` WhatsApp command + TV ambilight are
+> inactive. Strip still works standalone: `PYTHONPATH=/home/pi/robot python3 tools/led_test.py <colour>`.
+> Re-add cosmo: `pm2 start tools/cosmo_demo.py --name cosmo --interpreter python3 && pm2 save`
+> (or from docs — see CLAUDE.md). All code intact in git.
 > Last updated: 2026-07-02 (R/B channel-swap colour fix + YOLO→ONNX, torch removed; RSS down)
 
 ---
