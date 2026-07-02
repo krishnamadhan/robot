@@ -45,7 +45,18 @@ SAT_BOOST = 2.4           # multiply measured saturation before clamping
 WB_LOCK = True
 WB_LOCK_R = 2.4           # ISP red ColourGain when ambilight owns the camera
 WB_LOCK_B = 0.8           # ISP blue ColourGain (low = kill the cool cast)
-GREEN_CORRECT = 0.68      # green attenuation before hue extraction (1.0 = off)
+
+# Colour-correction matrix (CCM), auto-calibrated 2026-07-02 by casting red/green/
+# blue/white/cyan/magenta/yellow test cards to the TV and measuring the camera's
+# rendering of each. Maps camera RGB → true RGB as `true = rgb @ CCM`. ONLY valid
+# with WB locked at (WB_LOCK_R, WB_LOCK_B) — the calibration was done there.
+# Re-run tools/ambilight_calibrate_cast.py if the camera/TV/setup changes.
+CCM_ENABLED = True
+CCM = np.array([
+    [1.062, -0.069, 0.059],
+    [0.018, 1.189, 0.212],
+    [-0.017, -0.184, 1.239],
+], dtype=np.float32)
 VIVID_S_MIN = 0.35        # saturated enough to count as TV content
 VIVID_V_MIN = 0.35        # bright enough to count as TV content
 
@@ -206,10 +217,11 @@ def analyze_debug(
     """Return a rich analysis record for tools/tests and the runtime loop."""
     sample_bgr, roi_active, used_points = _extract_roi(bgr, roi_points)
     small = cv2.resize(sample_bgr, ANALYZE_SIZE)
-    if GREEN_CORRECT != 1.0:
-        small = small.astype(np.float32)
-        small[:, :, 1] *= GREEN_CORRECT       # index 1 = green in BGR
-        small = np.clip(small, 0, 255).astype(np.uint8)
+    if CCM_ENABLED:
+        # Apply the calibrated colour-correction matrix (works in RGB).
+        rgb = small[:, :, ::-1].astype(np.float32).reshape(-1, 3)
+        corr = np.clip(rgb @ CCM, 0, 255).reshape(small.shape)
+        small = corr[:, :, ::-1].astype(np.uint8)   # back to BGR
     hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
     h = hsv[:, :, 0].astype(np.float32)          # 0..179
     s = hsv[:, :, 1].astype(np.float32) / 255.0  # 0..1
