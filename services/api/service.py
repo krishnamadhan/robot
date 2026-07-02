@@ -998,6 +998,46 @@ async def _timed_move(coro, duration: float) -> None:
     await motor_controller.stop()
 
 
+@app.post("/led")
+async def led_control(request: Request, _: None = _AuthRequired):
+    """LEDDMX BLE strip control.
+
+    Body: {"cmd": "color"|"named"|"bright"|"on"|"off",
+           "value": "<name>" | [r,g,b] | <pct>}
+    """
+    try:
+        from hardware.led_strip import strip, COLORS
+        body = await request.json()
+        cmd = (body.get("cmd") or "").lower()
+        val = body.get("value")
+        if cmd == "named":
+            ok = await strip.set_named(str(val))
+        elif cmd == "color" and isinstance(val, (list, tuple)) and len(val) == 3:
+            ok = await strip.set_color(int(val[0]), int(val[1]), int(val[2]))
+        elif cmd == "bright":
+            ok = await strip.set_brightness(int(val))
+        elif cmd == "on":
+            ok = await strip.power(True)
+        elif cmd == "off":
+            ok = await strip.power(False)
+        else:
+            return JSONResponse(status_code=400, content={
+                "error": "cmd must be named/color/bright/on/off",
+                "colors": list(COLORS)})
+        if not ok:
+            return JSONResponse(status_code=503, content={
+                "error": "strip unreachable — powered? phone app disconnected?"})
+        return {"ok": True, **strip.state}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/led")
+async def led_state(_: None = _AuthRequired):
+    from hardware.led_strip import strip, COLORS
+    return {**strip.state, "colors": list(COLORS)}
+
+
 @app.post("/motor/forward")
 async def motor_forward(speed: float = 0.4, duration: float = 1.0, _: None = _AuthRequired):
     try:
