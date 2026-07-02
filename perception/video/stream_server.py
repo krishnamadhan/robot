@@ -104,10 +104,10 @@ _HTML_PAGE = """\
     </div>
     <div id="color-body">
       <div class="row"><label>HW Red gain</label><input type="range" id="hw_r" min="0.5" max="4.0" step="0.05" value="1.8" oninput="slide(this)"><span class="val" id="v_hw_r">1.80</span></div>
-      <div class="row"><label>HW Blue gain</label><input type="range" id="hw_b" min="0.5" max="4.0" step="0.05" value="2.0" oninput="slide(this)"><span class="val" id="v_hw_b">2.00</span></div>
-      <div class="row"><label>SW Red ×</label><input type="range" id="sw_r" min="0.5" max="2.5" step="0.01" value="1.05" oninput="slide(this)"><span class="val" id="v_sw_r">1.05</span></div>
+      <div class="row"><label>HW Blue gain</label><input type="range" id="hw_b" min="0.5" max="4.0" step="0.05" value="1.6" oninput="slide(this)"><span class="val" id="v_hw_b">2.00</span></div>
+      <div class="row"><label>SW Red ×</label><input type="range" id="sw_r" min="0.5" max="2.5" step="0.01" value="1.0" oninput="slide(this)"><span class="val" id="v_sw_r">1.05</span></div>
       <div class="row"><label>SW Green ×</label><input type="range" id="sw_g" min="0.5" max="1.5" step="0.01" value="0.90" oninput="slide(this)"><span class="val" id="v_sw_g">0.90</span></div>
-      <div class="row"><label>SW Blue ×</label><input type="range" id="sw_b" min="0.5" max="1.5" step="0.01" value="0.88" oninput="slide(this)"><span class="val" id="v_sw_b">0.88</span></div>
+      <div class="row"><label>SW Blue ×</label><input type="range" id="sw_b" min="0.5" max="1.5" step="0.01" value="1.0" oninput="slide(this)"><span class="val" id="v_sw_b">0.88</span></div>
       <div class="row"><label>Saturation</label><input type="range" id="saturation" min="0.0" max="3.0" step="0.05" value="1.1" oninput="slide(this)"><span class="val" id="v_saturation">1.10</span></div>
       <div class="row"><label>Shadow fix</label><input type="range" id="shadow" min="0" max="60" step="1" value="8" oninput="slide(this)"><span class="val" id="v_shadow">8</span></div>
       <div class="row"><label>Exposure EV</label><input type="range" id="ev" min="-2.0" max="2.0" step="0.1" value="0.0" oninput="slide(this)"><span class="val" id="v_ev">0.0</span></div>
@@ -126,7 +126,7 @@ _HTML_PAGE = """\
   <script>
     // ── color tuning ──
     const KEYS = ['hw_r','hw_b','sw_r','sw_g','sw_b','saturation','shadow','ev'];
-    const DEFAULTS = {{hw_r:1.8, hw_b:2.0, sw_r:1.05, sw_g:0.90, sw_b:0.88, saturation:1.1, shadow:8, ev:0.6}};
+    const DEFAULTS = {{hw_r:1.8, hw_b:1.6, sw_r:1.0, sw_g:1.0, sw_b:1.0, saturation:1.05, shadow:0, ev:0.6}};
     let debounce = null;
 
     function slide(el) {{
