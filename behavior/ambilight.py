@@ -31,14 +31,24 @@ from utils.logger import get_logger
 log = get_logger(__name__)
 
 SAMPLE_HZ = 6.0
-COLOR_ALPHA = 0.45        # EMA weight for colour (higher = snappier)
-BRIGHT_ALPHA = 0.30       # EMA weight for brightness (lower = calmer)
+COLOR_ALPHA = 0.35        # EMA weight for colour (higher = snappier)
+BRIGHT_ALPHA = 0.28       # EMA weight for brightness (lower = calmer)
 BRIGHT_MAX_RISE = 9       # max brightness increase per tick → tames flashes/strobes
-MIN_ON_BRIGHT = 12        # dimmest the strip goes while the screen is lit
-BLACK_ENTER = 0.08        # scene brightness below this → screen is "black" → dim off
-BLACK_EXIT = 0.14         # must climb above this to leave black state (hysteresis)
+MIN_ON_BRIGHT = 15        # dimmest the strip goes while the screen is lit
 SAT_FLOOR = 0.60          # vibrancy floor — output never duller than this
 SAT_BOOST = 1.8           # multiply measured saturation before clamping
+
+# Content gate — the key discriminator. "vivid fraction" = share of pixels that are
+# both saturated AND bright. Measured live: TV OFF ≈ 0.02-0.08 (wall + strip's own
+# glow), TV showing content ≈ 0.5. Whole-frame brightness FAILS because the lit wall
+# stays bright; saturation-fraction doesn't, because a wall isn't saturated.
+CONTENT_ON = 0.16         # vivid_frac above this → real content on screen
+CONTENT_OFF = 0.09        # below this → no content (TV off / reflections) → dim off
+STATE_DEBOUNCE = 2        # a new on/off state must persist this many frames to apply
+
+# Anti-flicker deadband — hold the current output unless the change is meaningful.
+COLOR_DEADBAND = 22       # sum |ΔR|+|ΔG|+|ΔB| must exceed this to repaint
+BRIGHT_DEADBAND = 4       # brightness must move at least this many % to resend
 
 
 def _resaturate(r: int, g: int, b: int, floor: float = SAT_FLOOR) -> Tuple[int, int, int]:
@@ -50,31 +60,31 @@ def _resaturate(r: int, g: int, b: int, floor: float = SAT_FLOOR) -> Tuple[int, 
     return int(out[2]), int(out[1]), int(out[0])
 
 
-def analyze(bgr: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
-    """Return (r, g, b, brightness_pct) for a frame, or None if screen is black."""
+def analyze(bgr: np.ndarray) -> Tuple[Optional[Tuple[int, int, int, int]], float]:
+    """Return ((r,g,b,brightness_pct) | None, vivid_frac).
+
+    The colour tuple is None when there's no real content (caller decides on/off
+    with hysteresis). vivid_frac is the content-gate signal.
+    """
     small = cv2.resize(bgr, (80, 60))
     hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
     h = hsv[:, :, 0].astype(np.float32)          # 0..179
     s = hsv[:, :, 1].astype(np.float32) / 255.0  # 0..1
     v = hsv[:, :, 2].astype(np.float32) / 255.0  # 0..1
 
-    # How lit is the content? High percentile ignores dark surroundings.
-    content = float(np.percentile(v, 92))
-    if content < BLACK_ENTER:
-        return None  # black screen → caller dims off
+    # Content gate: share of pixels that are BOTH saturated and bright.
+    vivid = (s > 0.35) & (v > 0.35)
+    vivid_frac = float(vivid.mean())
 
-    # Perceptual brightness for the strip (gamma), floored so lit != invisible.
-    bright = int(np.clip((content ** 0.7) * 100.0, MIN_ON_BRIGHT, 100))
+    # Colour + brightness from the vivid (content) pixels only — never the wall.
+    n = int(vivid.sum())
+    if n < 8:
+        return None, vivid_frac
+    content_v = float(v[vivid].mean())
+    bright = int(np.clip((content_v ** 0.7) * 100.0, MIN_ON_BRIGHT, 100))
 
-    # Consider only vivid, lit pixels — the actual screen content, not wall/shadow.
-    mask = (s > 0.18) & (v > 0.25)
-    w = ((s ** 1.2) * v) * mask
+    w = ((s ** 1.2) * v) * vivid
     wsum = float(w.sum())
-    if wsum < 1e-3:
-        # Lit but greyscale (white/news/text) → neutral warm white.
-        return (255, 200, 140, bright)
-
-    # Dominant hue = saturation-weighted circular mean (hue wraps at 180).
     ang = h * (math.pi / 90.0)
     x = float((w * np.cos(ang)).sum())
     y = float((w * np.sin(ang)).sum())
@@ -84,7 +94,7 @@ def analyze(bgr: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
     bgr_out = cv2.cvtColor(
         np.uint8([[[int(dom), int(out_s * 255), 255]]]), cv2.COLOR_HSV2BGR
     )[0, 0]
-    return int(bgr_out[2]), int(bgr_out[1]), int(bgr_out[0]), bright
+    return (int(bgr_out[2]), int(bgr_out[1]), int(bgr_out[0]), bright), vivid_frac
 
 
 class Ambilight:
@@ -93,7 +103,8 @@ class Ambilight:
         self._running = False
         self._rgb = None            # smoothed colour (float array)
         self._bright = 0.0          # smoothed brightness
-        self._is_black = True
+        self._has_content = False   # content-gate state (TV showing something)
+        self._pending = 0           # debounce counter for state flips
         self._last_sent_rgb = None
         self._last_sent_bright = -1
 
@@ -107,7 +118,8 @@ class Ambilight:
         self._running = True
         self._rgb = None
         self._bright = 0.0
-        self._is_black = True
+        self._has_content = False
+        self._pending = 0
         self._task = asyncio.create_task(self._loop(), name="ambilight")
         log.info("ambilight.start")
         return True
@@ -135,17 +147,25 @@ class Ambilight:
                     continue
                 misses = 0
 
-                res = analyze(frame_obj.image)
+                res, vivid_frac = analyze(frame_obj.image)
 
-                # ── Brightness target + black-screen handling (with hysteresis) ──
-                if res is None:
+                # ── Content gate: hysteresis + debounce (no flicker at boundary) ──
+                want = (vivid_frac > CONTENT_ON) if not self._has_content \
+                    else (vivid_frac > CONTENT_OFF)
+                if want != self._has_content:
+                    self._pending += 1
+                    if self._pending >= STATE_DEBOUNCE:
+                        self._has_content = want
+                        self._pending = 0
+                else:
+                    self._pending = 0
+
+                # ── Targets ──
+                if not self._has_content or res is None:
                     target_bright = 0.0
-                    self._is_black = True
                 else:
                     r, g, b, bpct = res
-                    self._is_black = False
                     target_bright = float(bpct)
-                    # smooth colour, then re-saturate so blends stay vivid
                     sample = np.array([r, g, b], dtype=np.float32)
                     self._rgb = sample if self._rgb is None else \
                         COLOR_ALPHA * sample + (1 - COLOR_ALPHA) * self._rgb
@@ -175,11 +195,11 @@ class Ambilight:
         if self._rgb is not None:
             r, g, b = _resaturate(*(int(x) for x in self._rgb))
             if self._last_sent_rgb is None or \
-                    sum(abs(a - c) for a, c in zip((r, g, b), self._last_sent_rgb)) > 12:
+                    sum(abs(a - c) for a, c in zip((r, g, b), self._last_sent_rgb)) > COLOR_DEADBAND:
                 await strip.set_color(r, g, b)
                 self._last_sent_rgb = (r, g, b)
         # Brightness: only on meaningful change.
-        if abs(bright - self._last_sent_bright) >= 3:
+        if abs(bright - self._last_sent_bright) >= BRIGHT_DEADBAND:
             await strip.set_brightness(bright)
             self._last_sent_bright = bright
 
