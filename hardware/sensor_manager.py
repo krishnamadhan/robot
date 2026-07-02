@@ -116,7 +116,12 @@ class UPSHATSensor:
 
     def read(self) -> Dict[str, Any]:
         if self._mock:
-            return {"percent": 100.0, "voltage": 0.0, "charging": False, "mock": True}
+            # Simulated drain: 0.1%/min from 85% (floor 5%) so battery-low
+            # behaviours are exercisable without hardware.
+            now = time.monotonic()
+            self._mock_pct = max(5.0, self._mock_pct - 0.1 * (now - self._last_mock_t) / 60.0)
+            self._last_mock_t = now
+            return {"percent": self._mock_pct, "voltage": 0.0, "charging": False, "mock": True}
         try:
             with i2c_lock:
                 raw = _i2c_bus().read_i2c_block_data(self.ADDR, 0x04, 2)
