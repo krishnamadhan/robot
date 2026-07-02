@@ -21,6 +21,7 @@ sys.path.insert(0, "/home/pi/robot")
 
 from core.event_bus import bus              # noqa: E402
 from perception.vision.camera import camera  # noqa: E402
+from perception.video.stream_server import stream_server  # noqa: E402
 from services.api import service as api      # noqa: E402
 from utils.logger import get_logger          # noqa: E402
 
@@ -38,8 +39,17 @@ async def main() -> None:
                     hint="TV ambilight needs the camera; !led colour commands still work")
 
     await api.start()  # FastAPI on :8000 — /led, /led/tv, /health
+
+    # Live camera stream on :8080 (the "!cosmo live" / dashboard view).
+    if cam_ok:
+        try:
+            if await stream_server.start():
+                log.info("led_service.stream", url=stream_server.best_url())
+        except Exception as e:
+            log.warning("led_service.stream_failed", error=str(e)[:80])
+
     log.info("led_service.ready", api="http://0.0.0.0:8000",
-             features="led + tv-ambilight (personality/audio/behaviour DISABLED)")
+             features="led + tv-ambilight + live-stream (personality/audio/behaviour DISABLED)")
 
     # Idle forever; the API server + camera thread do the work.
     try:
