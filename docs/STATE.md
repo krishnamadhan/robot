@@ -8,6 +8,16 @@
 > (or from docs — see CLAUDE.md). All code intact in git.
 > Last updated: 2026-07-02 (R/B channel-swap colour fix + YOLO→ONNX, torch removed; RSS down)
 
+> 2026-07-02 TV Ambilight update: deployed ROI-aware ambilight at `93eac6d`.
+> `cosmo` is running the minimal LED service again. Ambilight now samples a
+> perspective-corrected TV ROI, falls back to the existing legacy
+> `/home/pi/.robot/ambilight_roi.json` calibration, and includes
+> `tools/ambilight_calibrate.py` plus `tools/ambilight_verify.py`. Focused tests
+> pass on the Pi (`tests/unit/test_ambilight.py`, 4 passed). `/led/tv` starts and
+> stops sync cleanly; final verified state was `tv_sync:false`. BLE strip writes
+> were not accepted during the smoke test (`strip_off:false`), likely because the
+> controller was unreachable/busy, but the API no longer hangs on that path.
+
 ---
 
 ## Component Status
