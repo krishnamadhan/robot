@@ -91,8 +91,13 @@ class _YOLOOnnxDetector:
             return False
         try:
             import onnxruntime as ort
+            opts = ort.SessionOptions()
+            # 3 threads ≈ 130ms/frame vs 390ms single-threaded; leaves a core
+            # for the audio pipeline. Detection loop paces itself by fps target.
+            opts.intra_op_num_threads = 3
+            opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
             self._session = ort.InferenceSession(
-                str(path), providers=["CPUExecutionProvider"]
+                str(path), sess_options=opts, providers=["CPUExecutionProvider"]
             )
             self._input_name = self._session.get_inputs()[0].name
             log.info("person_detector.yolo_onnx_loaded", path=path.name)

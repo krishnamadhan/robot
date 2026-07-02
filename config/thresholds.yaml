@@ -45,5 +45,5 @@ vision:
   person_confidence_min: 0.5    # YOLO confidence threshold
   face_recognition_threshold: 0.6  # cosine distance for recognition
   motion_fps: 20                # target FPS for motion detection
-  detection_fps: 8              # target FPS for YOLO person detection
+  detection_fps: 5              # target FPS for person detection (v2: 8→5 — ONNX ~130ms/frame; tracking interpolates at 30fps)
   recognition_fps: 3            # target FPS for face recognition
