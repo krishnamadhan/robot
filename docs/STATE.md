@@ -1,22 +1,26 @@
 # Cosmo — STATE.md
 > Single source of truth for session continuity. Updated at end of every session; read at start.
-> ⚠️ 2026-07-02: **cosmo REMOVED from PM2** (stopped + deleted + saved) at Madhan's
-> request — no robot hardware wired yet, so no point running it. Camera stream (:8080)
-> and LED API (:8000) are DOWN with it, so `!led` WhatsApp command + TV ambilight are
-> inactive. Strip still works standalone: `PYTHONPATH=/home/pi/robot python3 tools/led_test.py <colour>`.
-> Re-add cosmo: `pm2 start tools/cosmo_demo.py --name cosmo --interpreter python3 && pm2 save`
-> (or from docs — see CLAUDE.md). All code intact in git.
-> Last updated: 2026-07-02 (R/B channel-swap colour fix + YOLO→ONNX, torch removed; RSS down)
-
-> 2026-07-02 TV Ambilight update: deployed ROI-aware ambilight at `93eac6d`.
-> `cosmo` is running the minimal LED service again. Ambilight now samples a
-> perspective-corrected TV ROI, falls back to the existing legacy
-> `/home/pi/.robot/ambilight_roi.json` calibration, and includes
-> `tools/ambilight_calibrate.py` plus `tools/ambilight_verify.py`. Focused tests
-> pass on the Pi (`tests/unit/test_ambilight.py`, 4 passed). `/led/tv` starts and
-> stops sync cleanly; final verified state was `tv_sync:false`. BLE strip writes
-> were not accepted during the smoke test (`strip_off:false`), likely because the
-> controller was unreachable/busy, but the API no longer hangs on that path.
+> **CURRENT STATE (2026-07-03):** `cosmo` is ONLINE in PM2, running the MINIMAL
+> service `tools/led_service.py` — camera + LED API (:8000) + live stream (:8080) +
+> TV ambilight ONLY. The full personality/audio/vision-AI stack is intentionally OFF
+> (no robot hardware wired). ~316MB RSS. (It was briefly removed 2026-07-02, then
+> re-added as led_service for the TV-ambilight work.)
+>
+> **TV Ambilight — WORKING & COLOUR-CALIBRATED.** Camera watches the TV, LEDDMX BLE
+> strip matches the on-screen colour. `behavior/ambilight.py`: perspective-corrected
+> TV ROI (legacy `~/.robot/ambilight_roi.json`), bottom-right-weighted sampling,
+> vivid-fraction content gate (black/off screen → strip off), 5-min idle dim-off,
+> flash damping + anti-flicker deadband, and an **auto-calibrated 3×3 colour-correction
+> matrix** (cast red/green/blue/white/cyan/magenta/yellow to the Samsung Q70D "Maddy TV"
+> at 192.168.1.10 via pychromecast, solved camera→true RGB — all 6 primaries verified
+> matching). CCM valid only with WB locked at (hw_r 2.4, hw_b 0.8), which ambilight
+> sets on start. Toggle: `POST /led/tv {on}`; calibrate: `POST /led/calibrate` (show a
+> full-red screen). banteragent `!led` / `!led tv on|off` / `!led calibrate` commands
+> are STAGED (dormant until next banteragent restart); driven via API for now.
+> LED strip: LEDDMX BLE, connect by KNOWN_ADDR (41:42:CD:95:A7:15), single-connection,
+> native power opcode broken → soft power (brightness 0). See memory reference-led-strip.
+> Standalone test: `PYTHONPATH=/home/pi/robot python3 tools/led_test.py <colour>`.
+> Last updated: 2026-07-03 (STATE banner reconciled with reality by watchdog resume)
 
 ---
 
