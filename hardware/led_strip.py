@@ -27,6 +27,9 @@ log = get_logger(__name__)
 
 CHAR_FFE1 = "0000ffe1-0000-1000-8000-00805f9b34fb"
 NAME_PREFIX = "LEDDMX"
+# Known address — once connected, the strip STOPS advertising, so scan-by-name
+# can't rediscover it. Connecting by address works regardless of advertising.
+KNOWN_ADDR = "41:42:CD:95:A7:15"
 
 
 def _color_frame(r: int, g: int, b: int) -> bytes:
@@ -53,7 +56,7 @@ class LedStrip:
     def __init__(self, name_prefix: str = NAME_PREFIX) -> None:
         self._prefix = name_prefix.upper()
         self._client = None
-        self._addr: Optional[str] = None
+        self._addr: Optional[str] = KNOWN_ADDR
         self._last_rgb = (255, 255, 255)
         self._brightness = 100
         self._is_on = True
@@ -64,17 +67,31 @@ class LedStrip:
         if self._client is not None and self._client.is_connected:
             return True
         from bleak import BleakClient, BleakScanner
+
+        # 1. Connect by known address directly — works even when the strip is not
+        #    advertising (a connected BLE peripheral goes silent, so scanning fails).
+        if self._addr:
+            try:
+                self._client = BleakClient(self._addr, timeout=15.0)
+                await self._client.connect()
+                log.info("led.connected", addr=self._addr, via="address")
+                return True
+            except Exception as e:
+                log.info("led.addr_connect_failed", error=str(e)[:60])
+                self._client = None
+
+        # 2. Fall back to scan-by-name (first-ever connect / address changed).
         dev = await BleakScanner.find_device_by_filter(
             lambda d, adv: (d.name or "").upper().startswith(self._prefix), timeout=12.0
         )
         if not dev:
-            log.warning("led.not_found", prefix=self._prefix)
+            log.warning("led.not_found", prefix=self._prefix, addr=self._addr)
             return False
         try:
             self._client = BleakClient(dev.address, timeout=20.0)
             await self._client.connect()
             self._addr = dev.address
-            log.info("led.connected", name=dev.name, addr=dev.address)
+            log.info("led.connected", name=dev.name, addr=dev.address, via="scan")
             return True
         except Exception as e:
             log.warning("led.connect_failed", error=str(e)[:80])
