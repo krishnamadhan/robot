@@ -1129,24 +1129,31 @@ async def led_tv_sync(request: Request, _: None = _AuthRequired):
 
     on = bool((body or {}).get("on"))
     try:
-        from behavior.ambilight import ROI_CONFIG, ambilight
+        from behavior.ambilight import LEGACY_ROI_CONFIG, ROI_CONFIG, ambilight
         from hardware.led_strip import strip
+        roi_active = ROI_CONFIG.exists() or LEGACY_ROI_CONFIG.exists()
+        roi_config = str(ROI_CONFIG if ROI_CONFIG.exists() else LEGACY_ROI_CONFIG)
         if on:
             ok = await ambilight.start()
             return {
                 "ok": ok,
                 "tv_sync": ambilight.active,
-                "roi_config": str(ROI_CONFIG),
-                "roi_active": ROI_CONFIG.exists(),
+                "roi_config": roi_config,
+                "roi_active": roi_active,
                 **strip.state,
             }
         await ambilight.stop()
-        await strip.power(False)
+        strip_off = False
+        try:
+            strip_off = await asyncio.wait_for(strip.power(False), timeout=4.0)
+        except Exception as e:
+            log.warning("api.led_tv_strip_off_failed", error=str(e)[:80])
         return {
             "ok": True,
+            "strip_off": strip_off,
             "tv_sync": ambilight.active,
-            "roi_config": str(ROI_CONFIG),
-            "roi_active": ROI_CONFIG.exists(),
+            "roi_config": roi_config,
+            "roi_active": roi_active,
             **strip.state,
         }
     except Exception as e:
