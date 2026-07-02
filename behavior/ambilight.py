@@ -15,6 +15,7 @@ that file, it falls back to whole-frame sampling.
 import asyncio
 import json
 import math
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Sequence, Tuple
@@ -71,6 +72,14 @@ STATE_DEBOUNCE = 2
 # Anti-flicker deadband: hold output unless the change is meaningful.
 COLOR_DEADBAND = 22       # sum abs(delta RGB) must exceed this to repaint
 BRIGHT_DEADBAND = 4       # brightness must move at least this many percent
+
+# Idle timeout: if the screen sample barely changes for this long (paused frame,
+# menu, screensaver, static logo) treat it as "not being watched" → dim to min.
+# Any meaningful change wakes it back up immediately.
+IDLE_TIMEOUT_S = 300.0    # 5 minutes
+IDLE_CHANGE_RGB = 30      # sum abs(delta RGB) that counts as real activity
+IDLE_CHANGE_BRIGHT = 8    # brightness delta that counts as real activity
+IDLE_MIN_BRIGHT = 0       # brightness while idle (0 = off; raise for a faint glow)
 
 QuadPoints = Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int], Tuple[int, int]]
 
@@ -253,6 +262,10 @@ class Ambilight:
         self._pending = 0
         self._last_sent_rgb = None
         self._last_sent_bright = -1
+        self._idle = False
+        self._last_activity_ts = 0.0
+        self._activity_rgb = None
+        self._activity_bright = 0.0
 
     @property
     def active(self) -> bool:
@@ -266,6 +279,10 @@ class Ambilight:
         self._bright = 0.0
         self._has_content = False
         self._pending = 0
+        self._idle = False
+        self._last_activity_ts = time.monotonic()
+        self._activity_rgb = None
+        self._activity_bright = 0.0
         self._task = asyncio.create_task(self._loop(), name="ambilight")
         roi_path = ROI_CONFIG if ROI_CONFIG.exists() else LEGACY_ROI_CONFIG
         log.info("ambilight.start", roi=str(roi_path) if roi_path.exists() else None)
@@ -322,11 +339,30 @@ class Ambilight:
                     target_bright = 0.0
                 else:
                     r, g, b, bpct = res
-                    target_bright = float(bpct)
-                    sample = np.array([r, g, b], dtype=np.float32)
-                    self._rgb = sample if self._rgb is None else (
-                        COLOR_ALPHA * sample + (1 - COLOR_ALPHA) * self._rgb
-                    )
+                    # ── Idle detection: has the raw sample actually changed? ──
+                    now = time.monotonic()
+                    if self._activity_rgb is None:
+                        self._activity_rgb = (r, g, b)
+                        self._activity_bright = bpct
+                        self._last_activity_ts = now
+                    moved = (sum(abs(a - c) for a, c in zip((r, g, b), self._activity_rgb)) > IDLE_CHANGE_RGB
+                             or abs(bpct - self._activity_bright) > IDLE_CHANGE_BRIGHT)
+                    if moved:
+                        self._activity_rgb = (r, g, b)
+                        self._activity_bright = bpct
+                        self._last_activity_ts = now
+                        self._idle = False
+                    elif now - self._last_activity_ts > IDLE_TIMEOUT_S:
+                        self._idle = True
+
+                    if self._idle:
+                        target_bright = float(IDLE_MIN_BRIGHT)
+                    else:
+                        target_bright = float(bpct)
+                        sample = np.array([r, g, b], dtype=np.float32)
+                        self._rgb = sample if self._rgb is None else (
+                            COLOR_ALPHA * sample + (1 - COLOR_ALPHA) * self._rgb
+                        )
 
                 nb = BRIGHT_ALPHA * target_bright + (1 - BRIGHT_ALPHA) * self._bright
                 if nb - self._bright > BRIGHT_MAX_RISE:
