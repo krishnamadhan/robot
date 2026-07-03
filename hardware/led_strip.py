@@ -19,6 +19,7 @@ Test tool: tools/led_test.py.
 """
 
 import asyncio
+import time
 from typing import Optional
 
 from utils.logger import get_logger
@@ -49,6 +50,17 @@ COLORS = {
     "cyan": (0, 255, 255), "amber": (255, 120, 0), "off": None,
 }
 
+# Hands-free scene presets: colour + brightness (or an animation).
+SCENES = {
+    "movie":   {"rgb": (255, 130, 40),  "bright": 22, "desc": "dim warm bias light"},
+    "chill":   {"rgb": (255, 160, 70),  "bright": 55, "desc": "warm relaxed"},
+    "night":   {"rgb": (255, 70, 0),    "bright": 8,  "desc": "deep amber nightlight"},
+    "focus":   {"rgb": (235, 242, 255), "bright": 100, "desc": "cool bright"},
+    "reading": {"rgb": (255, 200, 120), "bright": 85, "desc": "warm white"},
+    "romance": {"rgb": (255, 20, 90),   "bright": 35, "desc": "soft rose"},
+    "party":   {"animate": "cycle",     "desc": "rotating colour cycle"},
+}
+
 
 class LedStrip:
     """Stateful LEDDMX strip. Reconnects on demand; remembers colour + brightness."""
@@ -61,6 +73,14 @@ class LedStrip:
         self._brightness = 100
         self._is_on = True
         self._lock = asyncio.Lock()
+        # Health telemetry
+        self._writes_ok = 0
+        self._writes_fail = 0
+        self._consec_fail = 0
+        self._last_ok_ts = 0.0
+        self._last_error = ""
+        self._scene: Optional[str] = None
+        self._anim_task: Optional[asyncio.Task] = None
 
     async def _ensure(self) -> bool:
         """Connect if not already; return True if usable."""
@@ -101,13 +121,22 @@ class LedStrip:
     async def _write(self, frame: bytes) -> bool:
         async with self._lock:
             if not await self._ensure():
+                self._writes_fail += 1
+                self._consec_fail += 1
+                self._last_error = "not connected"
                 return False
             try:
                 await self._client.write_gatt_char(CHAR_FFE1, frame, response=False)
+                self._writes_ok += 1
+                self._consec_fail = 0
+                self._last_ok_ts = time.time()
                 return True
             except Exception as e:
                 log.warning("led.write_failed", error=str(e)[:80])
                 self._client = None  # force reconnect next call
+                self._writes_fail += 1
+                self._consec_fail += 1
+                self._last_error = str(e)[:80]
                 return False
 
     async def set_color(self, r: int, g: int, b: int) -> bool:
@@ -131,7 +160,44 @@ class LedStrip:
         self._is_on = on
         return await self._write(_bright_frame(self._brightness if on else 0))
 
+    async def _stop_anim(self) -> None:
+        if self._anim_task:
+            self._anim_task.cancel()
+            self._anim_task = None
+        self._scene = None
+
+    async def set_scene(self, name: str) -> bool:
+        """Apply a hands-free scene preset (colour+brightness, or an animation)."""
+        preset = SCENES.get(name.lower())
+        if preset is None:
+            return False
+        await self._stop_anim()
+        if preset.get("animate") == "cycle":
+            self._scene = name.lower()
+            self._anim_task = asyncio.create_task(self._party_loop(), name="led_party")
+            return True
+        r, g, b = preset["rgb"]
+        ok = await self.set_color(r, g, b)
+        ok = await self.set_brightness(preset["bright"]) and ok
+        self._scene = name.lower()
+        return ok
+
+    async def _party_loop(self) -> None:
+        """Slowly rotate hue through the spectrum — a calm party glow."""
+        import colorsys
+        try:
+            await self.set_brightness(100)
+            h = 0.0
+            while True:
+                r, g, b = (int(c * 255) for c in colorsys.hsv_to_rgb(h, 1.0, 1.0))
+                await self.set_color(r, g, b)
+                h = (h + 0.04) % 1.0
+                await asyncio.sleep(1.5)
+        except asyncio.CancelledError:
+            pass
+
     async def disconnect(self) -> None:
+        await self._stop_anim()
         if self._client is not None:
             try:
                 await self._client.disconnect()
@@ -142,7 +208,21 @@ class LedStrip:
     @property
     def state(self) -> dict:
         return {"on": self._is_on, "rgb": self._last_rgb,
-                "brightness": self._brightness, "addr": self._addr}
+                "brightness": self._brightness, "addr": self._addr,
+                "scene": self._scene}
+
+    @property
+    def health(self) -> dict:
+        connected = self._client is not None and self._client.is_connected
+        return {
+            "connected": connected,
+            "writes_ok": self._writes_ok,
+            "writes_fail": self._writes_fail,
+            "consec_fail": self._consec_fail,
+            "last_ok_age_s": round(time.time() - self._last_ok_ts, 1) if self._last_ok_ts else None,
+            "last_error": self._last_error or None,
+            "healthy": connected and self._consec_fail < 3,
+        }
 
 
 # Module-level singleton for the robot process / API to share

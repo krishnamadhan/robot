@@ -1045,13 +1045,47 @@ async def led_state(_: None = _AuthRequired):
     else:
         roi_active = ROI_CONFIG.exists() or LEGACY_ROI_CONFIG.exists()
         roi_config = str(ROI_CONFIG if ROI_CONFIG.exists() else LEGACY_ROI_CONFIG)
+    from hardware.led_strip import SCENES
     return {
         **strip.state,
         "tv_sync": tv_sync,
         "roi_active": roi_active,
         "roi_config": roi_config,
         "colors": list(COLORS),
+        "scenes": list(SCENES),
     }
+
+
+@app.get("/led/health")
+async def led_health(_: None = _AuthRequired):
+    """LED strip + ambilight health for monitoring/admin reports."""
+    from hardware.led_strip import strip
+    try:
+        from behavior.ambilight import ambilight
+        tv_sync = ambilight.active
+    except Exception:
+        tv_sync = False
+    return {**strip.health, "tv_sync": tv_sync, "scene": strip.state.get("scene")}
+
+
+@app.post("/led/scene")
+async def led_scene(request: Request, _: None = _AuthRequired):
+    """Apply a hands-free scene preset. Body {"scene": "movie|chill|night|..."}."""
+    try:
+        from hardware.led_strip import strip, SCENES
+        from behavior.ambilight import ambilight
+        body = await request.json()
+        name = (body.get("scene") or "").lower()
+        if name not in SCENES:
+            return JSONResponse(status_code=400, content={"error": "unknown scene", "scenes": list(SCENES)})
+        if ambilight.active:      # a scene overrides TV sync
+            await ambilight.stop()
+        ok = await strip.set_scene(name)
+        if not ok:
+            return JSONResponse(status_code=503, content={"error": "strip unreachable"})
+        return {"ok": True, "scene": name, **strip.state}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @app.post("/led/calibrate")
