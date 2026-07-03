@@ -166,6 +166,10 @@ class LedStrip:
             self._anim_task = None
         self._scene = None
 
+    async def stop_animation(self) -> None:
+        """Public: stop any running scene animation (e.g. before TV sync takes over)."""
+        await self._stop_anim()
+
     async def set_scene(self, name: str) -> bool:
         """Apply a hands-free scene preset (colour+brightness, or an animation)."""
         preset = SCENES.get(name.lower())

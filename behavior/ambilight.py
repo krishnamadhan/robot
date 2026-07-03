@@ -311,6 +311,12 @@ class Ambilight:
         self._activity_rgb = None
         self._activity_bright = 0.0
         self._apply_wb_lock()
+        # Stop any scene animation (party cycle) so it doesn't fight the sync loop.
+        try:
+            from hardware.led_strip import strip
+            await strip.stop_animation()
+        except Exception:
+            pass
         self._task = asyncio.create_task(self._loop(), name="ambilight")
         roi_path = ROI_CONFIG if ROI_CONFIG.exists() else LEGACY_ROI_CONFIG
         log.info("ambilight.start", roi=str(roi_path) if roi_path.exists() else None)

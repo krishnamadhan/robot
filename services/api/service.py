@@ -1007,9 +1007,14 @@ async def led_control(request: Request, _: None = _AuthRequired):
     """
     try:
         from hardware.led_strip import strip, COLORS
+        from behavior.ambilight import ambilight
         body = await request.json()
         cmd = (body.get("cmd") or "").lower()
         val = body.get("value")
+        # A manual command overrides any scene animation or TV sync.
+        await strip.stop_animation()
+        if ambilight.active:
+            await ambilight.stop()
         if cmd == "named":
             ok = await strip.set_named(str(val))
         elif cmd == "color" and isinstance(val, (list, tuple)) and len(val) == 3:
