@@ -1,32 +1,21 @@
 # Cosmo Live Status
-> Auto-generated: 2026-07-02 06:00:01
+> Auto-generated: 2026-07-03 06:00:01
 > Run `tools/update_docs.sh` to refresh
 
 ## System Health
 | Metric | Value |
 |--------|-------|
-| Uptime | 42h 22m |
-| CPU Temp | 56.5°C |
-| Free RAM | 4782 MB |
+| Uptime | 8h 25m |
+| CPU Temp | 47.7°C |
+| Free RAM | 5826 MB |
 | Mood | 1.0 |
-| Energy | 0.32 |
+| Energy | 1.0 |
 
 ## Hardware Components
 | Component | Status | Reason |
 |-----------|--------|--------|
 | camera | ✅ real | picamera2(CSI) 640x480@30fps |
-| sensor.bh1750 | ⚠️ mock | hardware not detected |
-| sensor.ups | ⚠️ mock | hardware not detected |
-| sensor.pir | ⚠️ mock | on ESP32 |
-| sensor.ultrasonic | ⚠️ mock | on ESP32 |
-| sensor.imu | ⚠️ mock | on ESP32 |
-| sensor.cliff | ⚠️ mock | on ESP32 |
-| sensor.touch | ⚠️ mock | on ESP32 |
-| sensor.sound | ⚠️ mock | on ESP32 |
-| sensor.vibration | ⚠️ mock | on ESP32 |
-| motors | ✅ real |  |
-| servos | ⚠️ mock | [Errno 11] Resource temporarily unavailable |
 
-**Real components:** camera, motors
-**Mocked:** sensor.bh1750, sensor.ups, sensor.pir, sensor.ultrasonic, sensor.imu, sensor.cliff, sensor.touch, sensor.sound, sensor.vibration, servos
+**Real components:** camera
+**Mocked:** none
 **Errors:** none
