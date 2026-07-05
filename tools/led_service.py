@@ -15,11 +15,23 @@ PM2:  pm2 start /home/pi/robot/tools/led_service.py --name cosmo \
         --interpreter python3 --cwd /home/pi/robot && pm2 save
 """
 import asyncio
+import os
 import sys
+from pathlib import Path
 
 sys.path.insert(0, "/home/pi/robot")
 
+# Load robot/.env (WIPRO_LOCAL_KEY etc.) before any hardware imports.
+_env_file = Path(__file__).parent.parent / ".env"
+if _env_file.exists():
+    for _line in _env_file.read_text().splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _v = _line.split("=", 1)
+            os.environ.setdefault(_k.strip(), _v.strip())
+
 from core.event_bus import bus              # noqa: E402
+from hardware.wipro_light import wipro      # noqa: E402
 from perception.vision.camera import camera  # noqa: E402
 from perception.video.stream_server import stream_server  # noqa: E402
 from services.api import service as api      # noqa: E402
@@ -31,6 +43,7 @@ log = get_logger(__name__)
 async def main() -> None:
     log.info("led_service.starting")
     await bus.start()
+    wipro.init()  # no-op if WIPRO_LOCAL_KEY not set
 
     cam_ok = await camera.start()
     log.info("led_service.camera", ok=cam_ok)
