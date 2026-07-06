@@ -174,8 +174,31 @@ class WiproLight:
 
     # ── blocking Tuya calls (single executor thread only) ────────────────────
 
+    def _detect(self) -> bool:
+        """Blocking capability detection. MUST run before any nowait send:
+        tinytuya's bulb_has_capability() raises unless the DP map is known,
+        and nowait sends can't populate it (the detection status query is
+        issued with nowait too, so no reply is ever read)."""
+        if getattr(self._bulb, "bulb_configured", False):
+            return True
+        try:
+            self._bulb.detect_bulb()   # waited status() → populates dpset
+        except Exception as e:
+            log.warning("wipro.detect_failed", error=str(e)[:100])
+        ok = bool(getattr(self._bulb, "bulb_configured", False))
+        if ok:
+            log.info("wipro.detected", dpset=str(self._bulb.dpset)[:120])
+        return ok
+
+    @staticmethod
+    def _errored(res) -> bool:
+        return isinstance(res, dict) and bool(res.get("Error"))
+
     def _send(self, target: Tuple) -> bool:
         try:
+            if not self._detect():
+                return False
+
             if target is _OFF:
                 self._bulb.turn_off(nowait=True)
                 self._is_on = False
@@ -184,10 +207,14 @@ class WiproLight:
 
             r, g, b, bright = target
             if not self._is_on:
-                self._bulb.turn_on()
+                if self._errored(self._bulb.turn_on()):
+                    log.warning("wipro.turn_on_error")
+                    return False
                 self._is_on = True
             if not self._in_music:
-                self._bulb.set_mode("music")
+                if self._errored(self._bulb.set_mode("music")):
+                    log.warning("wipro.set_mode_error")
+                    return False
                 self._in_music = True
                 log.info("wipro.music_mode")
 

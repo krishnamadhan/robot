@@ -72,6 +72,7 @@ def serve_cards(outdir: Path):
     handler = functools.partial(
         http.server.SimpleHTTPRequestHandler, directory=str(outdir))
     handler.log_message = lambda *a, **k: None
+    socketserver.TCPServer.allow_reuse_address = True
     httpd = socketserver.TCPServer(("", HTTP_PORT), handler)
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()
