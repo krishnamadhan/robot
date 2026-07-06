@@ -1122,14 +1122,6 @@ async def led_calibrate(_: None = _AuthRequired):
         area = cv2.contourArea(contour)
         if area < 0.04 * w * h:
             return JSONResponse(status_code=422, content={"error": "red region too small"})
-        # A red blob covering nearly the whole frame is reflected glow, not the
-        # TV rectangle (happens when the camera is not aimed at the screen).
-        # Refuse rather than overwrite a good ROI with wall bounce.
-        if area > 0.80 * w * h:
-            return JSONResponse(status_code=422, content={
-                "error": "red fills the whole frame — camera doesn't see the TV "
-                         "as a distinct rectangle. Re-aim the camera at the TV "
-                         "and retry. Existing ROI kept."})
 
         peri = cv2.arcLength(contour, True)
         approx = cv2.approxPolyDP(contour, 0.025 * peri, True)
@@ -1145,6 +1137,17 @@ async def led_calibrate(_: None = _AuthRequired):
                 [x + pad_x, y + hh - pad_y],
             ])
         ordered = _order_quad(pts)
+        # Guard on the FINAL quad (the bounding-rect fallback can inflate a
+        # modest blob to near-whole-frame): a quad covering >80% of the frame
+        # is reflected wall glow, not the TV rectangle — the camera isn't
+        # aimed at the screen. Refuse rather than overwrite a good ROI.
+        quad_area = cv2.contourArea(ordered.astype(np.float32).reshape(-1, 1, 2))
+        if quad_area > 0.80 * w * h:
+            return JSONResponse(status_code=422, content={
+                "error": "detected red region spans nearly the whole frame — "
+                         "that's wall glow, the camera doesn't see the TV as a "
+                         "distinct rectangle. Re-aim the camera at the TV "
+                         "(check the live feed :8080) and retry. Existing ROI kept."})
         norm = [[round(float(x) / w, 6), round(float(y) / h, 6)] for x, y in ordered]
 
         ROI_CONFIG.parent.mkdir(parents=True, exist_ok=True)

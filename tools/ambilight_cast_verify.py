@@ -156,12 +156,18 @@ def main() -> None:
         print("Casting RED for ROI calibration...")
         cast_card(cc, f"http://{ip}:{HTTP_PORT}/red.png")
         time.sleep(SETTLE_S)
-        res = api_json("/led/calibrate", "POST", None, token)
-        print(f"ROI calibrated: {res.get('points')}")
-        if res.get("preview_b64"):
-            Path("/tmp/ambilight_roi_preview.jpg").write_bytes(
-                base64.b64decode(res["preview_b64"]))
-            print("ROI preview: /tmp/ambilight_roi_preview.jpg")
+        try:
+            res = api_json("/led/calibrate", "POST", None, token)
+        except urllib.error.HTTPError as e:
+            detail = json.loads(e.read().decode()).get("error", str(e))
+            print(f"CALIBRATION REFUSED: {detail}")
+            print("Continuing verification with the existing ROI.")
+        else:
+            print(f"ROI calibrated: {res.get('points')}")
+            if res.get("preview_b64"):
+                Path("/tmp/ambilight_roi_preview.jpg").write_bytes(
+                    base64.b64decode(res["preview_b64"]))
+                print("ROI preview: /tmp/ambilight_roi_preview.jpg")
 
     # ROI file is mtime-cached inside ambilight — a recalibration above is
     # picked up automatically here AND by the running cosmo service.
