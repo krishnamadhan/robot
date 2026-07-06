@@ -103,10 +103,9 @@ IDLE_CHANGE_RGB = 30      # sum abs(delta RGB) that counts as real activity
 IDLE_CHANGE_BRIGHT = 8    # brightness delta that counts as real activity
 IDLE_MIN_BRIGHT = 0       # brightness while idle (0 = off; raise for a faint glow)
 
-# Wipro bulb sync: update at 1.5 Hz (every N ticks of the 6 Hz loop).
-# The bulb is a room accent, not the primary display — lower rate is fine and
-# avoids hammering the Tuya LAN socket.
-WIPRO_TICK_EVERY = 4      # push to Wipro every 4th tick → ~1.5 Hz
+# Wipro bulb sync: every tick is pushed to the bulb's coalescing mailbox —
+# its worker self-paces (~3 Hz) and always chases the latest colour, with
+# hardware fade (music mode) blending between updates.
 
 QuadPoints = Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int], Tuple[int, int]]
 
@@ -298,7 +297,6 @@ class Ambilight:
         self._last_activity_ts = 0.0
         self._activity_rgb = None
         self._activity_bright = 0.0
-        self._wipro_tick = 0
 
     @property
     def active(self) -> bool:
@@ -354,6 +352,11 @@ class Ambilight:
             await strip.power(False)
         except Exception as e:
             log.warning("ambilight.stop_poweroff_failed", error=str(e)[:80])
+        try:
+            from hardware.wipro_light import wipro
+            wipro.power_off()
+        except Exception:
+            pass
         self._rgb = None
         self._bright = 0.0
         self._has_content = False
@@ -434,14 +437,11 @@ class Ambilight:
         from hardware.wipro_light import wipro
 
         bright = int(round(self._bright))
-        self._wipro_tick = (self._wipro_tick + 1) % WIPRO_TICK_EVERY
-
         if bright <= 1:
             if self._last_sent_bright != 0:
                 await strip.power(False)
                 self._last_sent_bright = 0
-                if self._wipro_tick == 0:
-                    asyncio.create_task(wipro.power(False), name="wipro-off")
+                wipro.power_off()
             return
 
         if self._rgb is not None:
@@ -452,11 +452,9 @@ class Ambilight:
             ):
                 await strip.set_color(r, g, b)
                 self._last_sent_rgb = (r, g, b)
-
-            if self._wipro_tick == 0:
-                asyncio.create_task(
-                    wipro.set_color(r, g, b, bright), name="wipro-color"
-                )
+            # Mailbox is coalescing + deadband-free: the bulb's music-mode fade
+            # smooths micro-changes the strip's deadband would suppress.
+            wipro.set_color(r, g, b, bright)
 
         if abs(bright - self._last_sent_bright) >= BRIGHT_DEADBAND:
             await strip.set_brightness(bright)
