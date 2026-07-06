@@ -1119,8 +1119,17 @@ async def led_calibrate(_: None = _AuthRequired):
             return JSONResponse(status_code=422, content={"error": "no red TV rectangle found"})
 
         contour = max(contours, key=cv2.contourArea)
-        if cv2.contourArea(contour) < 0.04 * w * h:
+        area = cv2.contourArea(contour)
+        if area < 0.04 * w * h:
             return JSONResponse(status_code=422, content={"error": "red region too small"})
+        # A red blob covering nearly the whole frame is reflected glow, not the
+        # TV rectangle (happens when the camera is not aimed at the screen).
+        # Refuse rather than overwrite a good ROI with wall bounce.
+        if area > 0.80 * w * h:
+            return JSONResponse(status_code=422, content={
+                "error": "red fills the whole frame — camera doesn't see the TV "
+                         "as a distinct rectangle. Re-aim the camera at the TV "
+                         "and retry. Existing ROI kept."})
 
         peri = cv2.arcLength(contour, True)
         approx = cv2.approxPolyDP(contour, 0.025 * peri, True)

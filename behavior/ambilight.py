@@ -36,6 +36,15 @@ MIN_ON_BRIGHT = 15        # dimmest the strip goes while the screen is lit
 SAT_FLOOR = 0.90          # output never duller than this (cameras mute TV colour → push hard)
 SAT_BOOST = 2.4           # multiply measured saturation before clamping
 
+# White/pastel handling: the vivid floor above turns WHITE screen content into
+# saturated amber (cast-verified 2026-07-06). When the bright screen area reads
+# low-saturation overall, the content is white/pastel — output follows the
+# measured (low) saturation instead of the vivid floor, blending smoothly in
+# between so scene cuts don't pop. Only active with a calibrated TV ROI —
+# whole-frame sampling can't tell "white screen" from "room lights on".
+WHITE_SAT_LOW = 0.18      # below → white-ish output (tint capped at 0.25)
+WHITE_SAT_HIGH = 0.34     # above → normal vivid path; in between → blend
+
 # Camera colour correction (derived from a paused-orange reference 2026-07-02):
 # 1. Auto-WB cools warm scenes (orange gained a blue cast, B 153→1 when locked).
 #    Lock WB warm so the camera output is predictable.
@@ -238,6 +247,25 @@ def analyze_debug(
     vivid_frac = float((vivid * sw).sum() / sw.sum())
     n = int(vivid.sum())
     if n < 8:
+        # Calibrated-ROI white screen: nearly all pixels are bright but too
+        # desaturated to count as vivid → emit white instead of "no content".
+        if roi_active:
+            bright_mask = v > VIVID_V_MIN
+            bright_frac = float((bright_mask * sw).sum() / sw.sum())
+            if bright_frac > 0.5:
+                bw = float((bright_mask * sw).sum())
+                content_v = float((v * bright_mask * sw).sum() / max(bw, 1e-6))
+                bright = int(np.clip((content_v ** 0.7) * 100.0, MIN_ON_BRIGHT, 100))
+                return Analysis(
+                    color=(255, 255, 255, bright),
+                    vivid_frac=bright_frac,   # feeds the content gate
+                    roi_active=roi_active,
+                    roi_points=used_points,
+                    vivid_pixels=n,
+                    mean_sat=0.0,
+                    content_value=content_v,
+                    sample_shape=sample_bgr.shape[:2],
+                )
         return Analysis(
             color=None,
             vivid_frac=vivid_frac,
@@ -261,6 +289,23 @@ def analyze_debug(
     dom = (math.atan2(y, x) % (2 * math.pi)) * (90.0 / math.pi)
     mean_sat = float((weights * s).sum() / wsum)
     out_s = float(np.clip(mean_sat * SAT_BOOST, SAT_FLOOR, 1.0))
+
+    # White/pastel: judge overall saturation across the BRIGHT screen area
+    # (vivid pixels alone are biased — on a white screen only the residual
+    # saturated pixels survive the vivid mask, which is what painted white
+    # amber). Requires a calibrated ROI (see WHITE_SAT_* comment).
+    if roi_active:
+        bright_mask = v > VIVID_V_MIN
+        bw = float((bright_mask * sw).sum())
+        if bw > 0:
+            sat_bright = float((s * bright_mask * sw).sum() / bw)
+            if sat_bright < WHITE_SAT_HIGH:
+                white_s = min(sat_bright, 0.25)
+                if sat_bright < WHITE_SAT_LOW:
+                    out_s = white_s
+                else:
+                    t = (sat_bright - WHITE_SAT_LOW) / (WHITE_SAT_HIGH - WHITE_SAT_LOW)
+                    out_s = white_s + t * (out_s - white_s)
     bgr_out = cv2.cvtColor(
         np.uint8([[[int(dom), int(out_s * 255), 255]]]), cv2.COLOR_HSV2BGR
     )[0, 0]
