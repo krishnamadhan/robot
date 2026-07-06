@@ -415,9 +415,28 @@ class Ambilight:
 
         period = 1.0 / SAMPLE_HZ
         misses = 0
+        wb_check = 0
         try:
             while self._running:
                 await asyncio.sleep(period)
+
+                # Self-heal the WB lock: a live-feed colour reset (or anything
+                # else touching color_config) mid-sync silently invalidates the
+                # CCM and skews every colour. Re-assert every ~5 s if drifted.
+                wb_check += 1
+                if WB_LOCK and wb_check >= 30:
+                    wb_check = 0
+                    try:
+                        from perception.vision.camera import color_config
+                        if (color_config.get("hw_r") != WB_LOCK_R
+                                or color_config.get("hw_b") != WB_LOCK_B):
+                            log.warning("ambilight.wb_drifted",
+                                        r=color_config.get("hw_r"),
+                                        b=color_config.get("hw_b"))
+                            self._apply_wb_lock()
+                    except Exception:
+                        pass
+
                 frame_obj = camera.latest_frame
                 if frame_obj is None or frame_obj.is_stale(2000):
                     misses += 1
