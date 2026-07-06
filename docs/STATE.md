@@ -20,7 +20,24 @@
 > LED strip: LEDDMX BLE, connect by KNOWN_ADDR (41:42:CD:95:A7:15), single-connection,
 > native power opcode broken → soft power (brightness 0). See memory reference-led-strip.
 > Standalone test: `PYTHONPATH=/home/pi/robot python3 tools/led_test.py <colour>`.
-> Last updated: 2026-07-03 (STATE banner reconciled with reality by watchdog resume)
+>
+> **Wipro bulb sync (2026-07-06):** Wipro Next Smart Home RGB bulb (Tuya v3.3,
+> 192.168.1.3, id 01731060d8f15be1dd7a, key in robot/.env WIPRO_LOCAL_KEY) syncs
+> alongside the BLE strip during TV ambilight. hardware/wipro_light.py — music
+> mode (DP28, hardware fade, no flash wear) + single coalescing worker (~3 Hz,
+> serialized; Tuya = one TCP connection). Test: tools/wipro_test.py.
+>
+> **⚠ CAMERA NOT AIMED AT TV (found 2026-07-06 via cast-verify):** the camera
+> now sees only wall glow — TV is out of frame (drifted since 2026-07-02 cal).
+> Ambilight runs on reflected light (hues still land 4-12° in cast sweep) but
+> real accuracy needs a physical re-aim, then: `!led calibrate` (endpoint now
+> rejects wall-glow/whole-frame results) and re-solve CCM with 8 cards incl.
+> orange (23° yellow-ward, wasn't in original card set) via
+> tools/ambilight_cast_verify.py --calibrate. White/pastel content now outputs
+> desaturated/white (was forced amber by SAT_FLOOR); full-white screens no
+> longer read as "no content". banteragent !pi help / !led help updated
+> (dormant until natural restart).
+> Last updated: 2026-07-06 (Wipro sync + ambilight accuracy session)
 
 ---
 
