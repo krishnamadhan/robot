@@ -93,3 +93,53 @@ class TestLast:
     def test_last_n_clamped(self, client):
         r = client.get("/cosmo/last?n=999")
         assert r.status_code == 200
+
+
+class TestLed:
+
+    def test_led_pattern_named_stops_animation_and_ambilight(self, client):
+        with patch("hardware.led_strip.strip") as strip, patch("behavior.ambilight.ambilight") as ambilight:
+            strip.stop_animation = AsyncMock()
+            strip.set_pattern = AsyncMock(return_value=True)
+            strip.state = {"mode": "pattern:rainbow", "on": True}
+            ambilight.active = True
+            ambilight.stop = AsyncMock()
+            r = client.post("/led", json={"cmd": "pattern", "value": "rainbow"})
+        assert r.status_code == 200
+        assert r.json()["mode"] == "pattern:rainbow"
+        strip.stop_animation.assert_awaited_once()
+        ambilight.stop.assert_awaited_once()
+        strip.set_pattern.assert_awaited_once_with("rainbow")
+
+    def test_led_music_off_maps_to_zero(self, client):
+        with patch("hardware.led_strip.strip") as strip, patch("behavior.ambilight.ambilight") as ambilight:
+            strip.stop_animation = AsyncMock()
+            strip.set_music = AsyncMock(return_value=True)
+            strip.state = {"mode": None, "on": True}
+            ambilight.active = False
+            ambilight.stop = AsyncMock()
+            r = client.post("/led", json={"cmd": "music", "value": "off"})
+        assert r.status_code == 200
+        strip.stop_animation.assert_awaited_once()
+        ambilight.stop.assert_not_awaited()
+        strip.set_music.assert_awaited_once_with(0)
+
+    def test_led_temp_accepts_range_value(self, client):
+        with patch("hardware.led_strip.strip") as strip, patch("behavior.ambilight.ambilight") as ambilight:
+            strip.stop_animation = AsyncMock()
+            strip.set_color_temp = AsyncMock(return_value=True)
+            strip.state = {"mode": "temp:72", "on": True}
+            ambilight.active = False
+            ambilight.stop = AsyncMock()
+            r = client.post("/led", json={"cmd": "temp", "value": 72})
+        assert r.status_code == 200
+        strip.stop_animation.assert_awaited_once()
+        strip.set_color_temp.assert_awaited_once_with(72)
+
+    def test_led_unknown_cmd_lists_new_modes(self, client):
+        r = client.post("/led", json={"cmd": "sparkle", "value": "x"})
+        assert r.status_code == 400
+        body = r.json()
+        assert "pattern" in body["error"]
+        assert "music" in body["error"]
+        assert "temp" in body["error"]
