@@ -2,6 +2,8 @@
 
 > Ordered by priority. Tick items as done. Add new items at the correct priority level.
 > Session START: read this and pick the top unchecked item.
+> RULE (2026-07-08): hardware-wiring checklists live HERE; all other work goes
+> on AgentBoard (`board list`). Items marked **→ AB-###** are tracked there.
 > Session END: update checkboxes, add newly discovered tasks.
 
 ---
@@ -20,7 +22,7 @@
 ## P1 — Wire hardware (waiting on parcels or XT60)
 
 - [x] **Fix Pi camera**: migrated to picamera2 (IMX708 CSI) — auto-detects CSI first, falls back to USB; camera ✓ on startup (2026-06-13)
-- [ ] Wire OLED eyes (0x3C + 0x3D) → verify with `i2cdetect` → switch eyes.py to oled mode (KI-019 mutex done 2026-06-12 — software ready)
+- [ ] **→ AB-018** Wire OLED eyes (0x3C + 0x3D) → verify with `i2cdetect` → switch eyes.py to oled mode (KI-019 mutex done 2026-06-12 — software ready)
 - [ ] Wire motors: rewire TB6612FNG from Pi GPIO → ESP32 GPIO 15–21 — **BLOCKED on XT60 pigtail + capacitors arriving**
 - [ ] Wire PIR HC-SR501 → ESP32 GPIO12, set `SENSORS["pir"] = True` in esp32/main.py
 - [ ] Wire TTP223 touch ×4 → ESP32 GPIO1–4 (head/back/belly/tail), set `SENSORS["touch"] = True`
@@ -44,11 +46,11 @@
 - [x] **Activity → movement response** — co_presence settle: stop wander + async approach; hangout: follow_mode(60s) every 2min *(done 2026-06-13)*
 - [x] **Smart home integration stub** — EventType.SMARTHOME_* (5 types); POST /smarthome/event; mind.py reacts to tv_on/lights_off/presence *(done 2026-06-13)*
 - [x] **Dashboard motor controls need token** — dashboard injects token at serve time; postCmd/motorCmd send Bearer header; motor duration fix via _timed_move wrapper *(done 2026-06-13)*
-- [ ] **Home Assistant webhook** — configure HA webhook → POST http://pi-tailscale-ip:8000/smarthome/event for TV on/off, lights, presence automations
-- [ ] Re-enroll Indhu face: 20 samples, good light (currently ~75% — target 90%+) → `python3 tools/enroll_face.py`
+- [ ] **→ AB-002** **Home Assistant webhook** — configure HA webhook → POST http://pi-tailscale-ip:8000/smarthome/event for TV on/off, lights, presence automations
+- [ ] *(after AB-009 camera re-aim)* Re-enroll Indhu face: 20 samples, good light (currently ~75% — target 90%+) → `python3 tools/enroll_face.py`
 - [ ] Prompt caching (ADR-018): add ephemeral cache headers to Claude calls — after OLED + face tests
-- [ ] Test Piper Kitten Micro 25MB vs current lessac-medium 61MB (ADR-016)
-- [ ] Test FER 5-class vs current DeepFace 7-class emotion detection (ADR-014)
+- [ ] **→ AB-003** Test Piper Kitten Micro 25MB vs current lessac-medium 61MB (ADR-016)
+- [ ] **→ AB-004** Test FER 5-class vs current DeepFace 7-class emotion detection (ADR-014)
 
 ---
 

@@ -17,13 +17,13 @@ Take the top unchecked item from COSMO_BACKLOG.md. State which task you're takin
 ~/robot/
 ├── CLAUDE.md, COSMO_BACKLOG.md
 ├── docs/  STATE.md · KNOWN_ISSUES.md · DECISIONS.md · CHANGELOG.md
-├── core/  event_bus.py · personality.py · state_machine.py · memory/
+├── core/  event_bus.py · personality.py · behavior_tree.py · action_router.py · capabilities.py · memory/
 ├── cognition/  mind.py · llm.py · conversation.py
 ├── perception/vision/  person.py(yolo11n) · face.py(SFace) · emotion.py
 ├── perception/audio/  wake_word.py · vad.py · stt.py · pipeline.py
-├── behavior/  engine.py · navigation.py · idle.py
-├── expression/  eyes.py(SSD1306) · speech.py · sounds.py
-├── hardware/  esp32_bridge.py · motors.py · sensor_manager.py
+├── behavior/  ambilight.py · exploration.py · navigation.py
+├── expression/  eyes.py(SSD1306) · speech.py · sounds.py · idle_motion.py
+├── hardware/  esp32_bridge.py · motors.py · sensor_manager.py · led_strip.py · wipro_light.py · i2c_bus.py
 ├── esp32/  main.py(MicroPython firmware) · driver_tb6612.py
 ├── config/  hardware.yaml · personality.yaml
 └── tools/  cosmo_demo.py(PM2 entry) · esp32_test.py · …
