@@ -64,7 +64,7 @@
 
 ## P4 — Phase 4
 
-- [ ] Train custom "hey_cosmo" OWW model → save to `~/.robot/models/hey_cosmo.tflite` (COSMO_WAKE_LABEL env var controls active label — no code change needed once model is there)
+- [ ] **→ AB-020** Train custom "hey_cosmo" OWW model → save to `~/.robot/models/hey_cosmo.tflite` (COSMO_WAKE_LABEL env var controls active label — no code change needed once model is there)
 
 ---
 
