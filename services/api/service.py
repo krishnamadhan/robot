@@ -1179,6 +1179,14 @@ async def led_tv_sync(request: Request, _: None = _AuthRequired):
         return JSONResponse(status_code=400, content={"error": "invalid JSON body"})
 
     on = bool((body or {}).get("on"))
+    # Persist desired state so a cosmo restart mid-evening restores the sync
+    # (this session: three restarts silently killed it).
+    try:
+        state_file = Path.home() / ".robot" / "ambilight_state.json"
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(json.dumps({"tv_sync": on}))
+    except Exception:
+        pass
     try:
         from behavior.ambilight import LEGACY_ROI_CONFIG, ROI_CONFIG, ambilight
         from hardware.led_strip import strip

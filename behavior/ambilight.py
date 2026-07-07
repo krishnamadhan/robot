@@ -500,11 +500,15 @@ class Ambilight:
     async def _push(self, strip) -> None:
         from hardware.wipro_light import wipro
 
+        # Only record state the strip ACKed: a failed BLE write left as "sent"
+        # freezes the strip on a stale colour after reconnect until the scene
+        # drifts past the deadband (seen live 2026-07-06: 80 s outage → strip
+        # stuck yellow while the Wipro kept syncing).
         bright = int(round(self._bright))
         if bright <= 1:
             if self._last_sent_bright != 0:
-                await strip.power(False)
-                self._last_sent_bright = 0
+                if await strip.power(False):
+                    self._last_sent_bright = 0
                 wipro.power_off()
             return
 
@@ -514,15 +518,15 @@ class Ambilight:
                 self._last_sent_rgb is None
                 or sum(abs(a - c) for a, c in zip((r, g, b), self._last_sent_rgb)) > COLOR_DEADBAND
             ):
-                await strip.set_color(r, g, b)
-                self._last_sent_rgb = (r, g, b)
+                if await strip.set_color(r, g, b):
+                    self._last_sent_rgb = (r, g, b)
             # Mailbox is coalescing + deadband-free: the bulb's music-mode fade
             # smooths micro-changes the strip's deadband would suppress.
             wipro.set_color(r, g, b, bright)
 
         if abs(bright - self._last_sent_bright) >= BRIGHT_DEADBAND:
-            await strip.set_brightness(bright)
-            self._last_sent_bright = bright
+            if await strip.set_brightness(bright):
+                self._last_sent_bright = bright
 
 
 ambilight = Ambilight()

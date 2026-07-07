@@ -64,6 +64,21 @@ async def main() -> None:
     log.info("led_service.ready", api="http://0.0.0.0:8000",
              features="led + tv-ambilight + live-stream (personality/audio/behaviour DISABLED)")
 
+    # Restore TV sync if it was on before the last restart (only during the
+    # evening window — outside 18:00-24:00 the cron routine owns the state).
+    try:
+        import json as _json
+        state_file = Path.home() / ".robot" / "ambilight_state.json"
+        if cam_ok and state_file.exists():
+            desired = _json.loads(state_file.read_text()).get("tv_sync", False)
+            from datetime import datetime
+            if desired and datetime.now().hour >= 18:
+                from behavior.ambilight import ambilight
+                await ambilight.start()
+                log.info("led_service.tv_sync_restored")
+    except Exception as e:
+        log.warning("led_service.tv_sync_restore_failed", error=str(e)[:80])
+
     # Idle forever; the API server + camera thread do the work.
     try:
         while True:
