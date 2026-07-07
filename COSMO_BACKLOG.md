@@ -48,7 +48,7 @@
 - [x] **Dashboard motor controls need token** — dashboard injects token at serve time; postCmd/motorCmd send Bearer header; motor duration fix via _timed_move wrapper *(done 2026-06-13)*
 - [ ] **→ AB-002** **Home Assistant webhook** — configure HA webhook → POST http://pi-tailscale-ip:8000/smarthome/event for TV on/off, lights, presence automations
 - [ ] *(after AB-009 camera re-aim)* Re-enroll Indhu face: 20 samples, good light (currently ~75% — target 90%+) → `python3 tools/enroll_face.py`
-- [ ] Prompt caching (ADR-018): add ephemeral cache headers to Claude calls — after OLED + face tests
+- [ ] Prompt caching (ADR-018) — gated on AB-018 (OLED) + AB-009 (face tests)
 - [ ] **→ AB-003** Test Piper Kitten Micro 25MB vs current lessac-medium 61MB (ADR-016)
 - [ ] **→ AB-004** Test FER 5-class vs current DeepFace 7-class emotion detection (ADR-014)
 
