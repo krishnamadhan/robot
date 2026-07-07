@@ -21,6 +21,8 @@ BLE strip + Wipro bulb follow the dominant colour.
 - **Strip controller modes** (2026-07-07, driver-level, API/!led wiring pending):
   0x03 patterns 0-210, 0x0B built-in-mic sound sync, 0x09 colour temp, custom
   patterns. `hardware/led_strip.py` PATTERNS/MUSIC_MODES. 0x04 power stays BANNED.
+  Robot API `/led` and `tools/led_test.py` now expose `pattern`, `music`, and
+  `temp` controls alongside the existing colour/brightness commands.
 - **Routines (cron):** 18:00 sync on · 00:00 all off (`tools/lights_routine.sh`);
   TV-sync desired state persists across cosmo restarts (evening window).
 - Govee T2 behind the TV runs its own camera sync (independent, intentional).

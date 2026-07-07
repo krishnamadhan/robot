@@ -1005,8 +1005,8 @@ async def _timed_move(coro, duration: float) -> None:
 async def led_control(request: Request, _: None = _AuthRequired):
     """LEDDMX BLE strip control.
 
-    Body: {"cmd": "color"|"named"|"bright"|"on"|"off",
-           "value": "<name>" | [r,g,b] | <pct>}
+    Body: {"cmd": "color"|"named"|"bright"|"on"|"off"|"pattern"|"music"|"temp",
+           "value": "<name>" | [r,g,b] | <pct> | <pattern> | <eq> }
     """
     try:
         from hardware.led_strip import strip, COLORS
@@ -1018,7 +1018,55 @@ async def led_control(request: Request, _: None = _AuthRequired):
         await strip.stop_animation()
         if ambilight.active:
             await ambilight.stop()
-        if cmd == "named":
+        if cmd == "pattern":
+            value = val
+            if isinstance(value, str):
+                value = value.strip()
+                if not value:
+                    return JSONResponse(status_code=400, content={
+                        "error": "value must be a pattern name or integer"})
+                try:
+                    value = int(value)
+                except ValueError:
+                    pass
+            if value is None:
+                return JSONResponse(status_code=400, content={
+                    "error": "value must be a pattern name or integer"})
+            try:
+                ok = await strip.set_pattern(value)
+            except (TypeError, ValueError):
+                return JSONResponse(status_code=400, content={
+                    "error": "value must be a pattern name or integer"})
+        elif cmd == "music":
+            value = val
+            if isinstance(value, str):
+                value = value.strip()
+                if not value:
+                    return JSONResponse(status_code=400, content={
+                        "error": "value must be a music name, integer, or off"})
+                if value.lower() == "off":
+                    value = 0
+                else:
+                    try:
+                        value = int(value)
+                    except ValueError:
+                        value = value.lower()
+            if value is None:
+                return JSONResponse(status_code=400, content={
+                    "error": "value must be a music name, integer, or off"})
+            try:
+                ok = await strip.set_music(value)
+            except (TypeError, ValueError):
+                return JSONResponse(status_code=400, content={
+                    "error": "value must be a music name, integer, or off"})
+        elif cmd == "temp":
+            try:
+                value = int(val)
+            except (TypeError, ValueError):
+                return JSONResponse(status_code=400, content={
+                    "error": "value must be an integer 0-100"})
+            ok = await strip.set_color_temp(value)
+        elif cmd == "named":
             ok = await strip.set_named(str(val))
         elif cmd == "color" and isinstance(val, (list, tuple)) and len(val) == 3:
             ok = await strip.set_color(int(val[0]), int(val[1]), int(val[2]))
@@ -1030,7 +1078,7 @@ async def led_control(request: Request, _: None = _AuthRequired):
             ok = await strip.power(False)
         else:
             return JSONResponse(status_code=400, content={
-                "error": "cmd must be named/color/bright/on/off",
+                "error": "cmd must be named/color/bright/on/off/pattern/music/temp",
                 "colors": list(COLORS)})
         if not ok:
             return JSONResponse(status_code=503, content={
