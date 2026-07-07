@@ -1,43 +1,35 @@
 # Cosmo — STATE.md
 > Single source of truth for session continuity. Updated at end of every session; read at start.
-> **CURRENT STATE (2026-07-03):** `cosmo` is ONLINE in PM2, running the MINIMAL
-> service `tools/led_service.py` — camera + LED API (:8000) + live stream (:8080) +
-> TV ambilight ONLY. The full personality/audio/vision-AI stack is intentionally OFF
-> (no robot hardware wired). ~316MB RSS. (It was briefly removed 2026-07-02, then
-> re-added as led_service for the TV-ambilight work.)
->
-> **TV Ambilight — WORKING & COLOUR-CALIBRATED.** Camera watches the TV, LEDDMX BLE
-> strip matches the on-screen colour. `behavior/ambilight.py`: perspective-corrected
-> TV ROI (legacy `~/.robot/ambilight_roi.json`), bottom-right-weighted sampling,
-> vivid-fraction content gate (black/off screen → strip off), 5-min idle dim-off,
-> flash damping + anti-flicker deadband, and an **auto-calibrated 3×3 colour-correction
-> matrix** (cast red/green/blue/white/cyan/magenta/yellow to the Samsung Q70D "Maddy TV"
-> at 192.168.1.10 via pychromecast, solved camera→true RGB — all 6 primaries verified
-> matching). CCM valid only with WB locked at (hw_r 2.4, hw_b 0.8), which ambilight
-> sets on start. Toggle: `POST /led/tv {on}`; calibrate: `POST /led/calibrate` (show a
-> full-red screen). banteragent `!led` / `!led tv on|off` / `!led calibrate` commands
-> are STAGED (dormant until next banteragent restart); driven via API for now.
-> LED strip: LEDDMX BLE, connect by KNOWN_ADDR (41:42:CD:95:A7:15), single-connection,
-> native power opcode broken → soft power (brightness 0). See memory reference-led-strip.
-> Standalone test: `PYTHONPATH=/home/pi/robot python3 tools/led_test.py <colour>`.
->
-> **Wipro bulb sync (2026-07-06):** Wipro Next Smart Home RGB bulb (Tuya v3.3,
-> 192.168.1.3, id 01731060d8f15be1dd7a, key in robot/.env WIPRO_LOCAL_KEY) syncs
-> alongside the BLE strip during TV ambilight. hardware/wipro_light.py — music
-> mode (DP28, hardware fade, no flash wear) + single coalescing worker (~3 Hz,
-> serialized; Tuya = one TCP connection). Test: tools/wipro_test.py.
->
-> **⚠ CAMERA NOT AIMED AT TV (found 2026-07-06 via cast-verify):** the camera
-> now sees only wall glow — TV is out of frame (drifted since 2026-07-02 cal).
-> Ambilight runs on reflected light (hues still land 4-12° in cast sweep) but
-> real accuracy needs a physical re-aim, then: `!led calibrate` (endpoint now
-> rejects wall-glow/whole-frame results) and re-solve CCM with 8 cards incl.
-> orange (23° yellow-ward, wasn't in original card set) via
-> tools/ambilight_cast_verify.py --calibrate. White/pastel content now outputs
-> desaturated/white (was forced amber by SAT_FLOOR); full-white screens no
-> longer read as "no content". banteragent !pi help / !led help updated
-> (dormant until natural restart).
-> Last updated: 2026-07-06 (Wipro sync + ambilight accuracy session)
+> Build history (June 2026 phase sprints, resolved OQs) → docs/HISTORY.md. Work queue → AgentBoard (`board list`) + COSMO_BACKLOG.md.
+
+## Current State (2026-07-07)
+
+**Service:** `cosmo` PM2 = MINIMAL `tools/led_service.py` — camera + LED API (:8000)
++ live stream (:8080) + TV ambilight only. Personality/audio/vision-AI stack OFF
+(no robot hardware wired). ~320MB RSS.
+
+**TV ambilight — WORKING (reflected-light mode).** Camera samples the scene → LEDDMX
+BLE strip + Wipro bulb follow the dominant colour.
+- `behavior/ambilight.py`: ROI sampling, CCM colour correction (valid only at WB lock
+  hw_r 2.4 / hw_b 0.8 — self-heals if something resets camera colour), content gate,
+  white/pastel desaturation path, idle dim-off, ACK-only state tracking.
+- **⚠ Camera is NOT aimed at the TV** (drifted since 2026-07-02) — sync runs off wall
+  glow; hues land 4–12°, orange 23°. Re-aim → `!led calibrate` (rejects wall glow)
+  → re-solve CCM with 8 cards (`tools/ambilight_cast_verify.py --calibrate`).
+- **Wipro bulb** (Tuya v3.3, 192.168.1.3, key in .env): synced via music-mode
+  streaming, serialized coalescing worker ~3 Hz. `hardware/wipro_light.py`.
+- **Strip controller modes** (2026-07-07, driver-level, API/!led wiring pending):
+  0x03 patterns 0-210, 0x0B built-in-mic sound sync, 0x09 colour temp, custom
+  patterns. `hardware/led_strip.py` PATTERNS/MUSIC_MODES. 0x04 power stays BANNED.
+- **Routines (cron):** 18:00 sync on · 00:00 all off (`tools/lights_routine.sh`);
+  TV-sync desired state persists across cosmo restarts (evening window).
+- Govee T2 behind the TV runs its own camera sync (independent, intentional).
+
+**Toggle:** `POST /led/tv {on}` · status `GET /led` · `!led tv on|off` (WhatsApp).
+Tests: `tools/led_test.py`, `tools/wipro_test.py`, `tools/ambilight_cast_verify.py`.
+
+**banteragent staged (dormant until its next natural restart):** !led/!pi help
+updates, !cosmo proxy suite, /cosmo-notify, !refreshgames all (AB-007 merged).
 
 ---
 
@@ -80,34 +72,3 @@
 | PCA9685 servo | ❌ Not started | ⚠️ On order | Phase 3 |
 
 ---
-
-## Next Priority
-
-**Phase 1 APPROVED & COMMITTED (2026-06-11, fe52382). Phase 2 entry prerequisite DONE: perception/audio deep-dive complete (62b62a0).** Critical findings fixed: emotion smoothing history cleared on PERSON_LOST; mic capture-thread shutdown race tolerated; stale VAD `_partial` dropped per session; STT model unloaded on pipeline stop. Non-critical findings: wake_word import-time load fixed (lazy `load_detectors()` on pipeline start) and stale-frame telemetry counter added (`vision.frame_stale_drop`) on 2026-06-12; 2026-06-12 "Don't wait" go-ahead — both deferred findings resolved: PERSON_DETECTED owner = person.py (vision_loop publish removed, personality side-effects kept, `vision.person_arrived` counter); anonymous emotions gated (mind `_on_emotion` early-return on person_id=None; cosmo_demo `set_emotion` only when pid matches active person — eyes/sounds stay ungated, pet-like). **Phase 2 GO received; 2.1 + 2.2 done.** 2.1: eye baseline drift from personality vector (tests/unit/test_eyes.py; eye_simulator j/k u/i g/t personality nudges). 2.2: expression/idle_motion.py — curiosity glances (cadence from curiosity trait + arousal), boredom fidgets, pupil settling, micro-reactions to SOUND_DETECTED/LIGHT_CHANGED; defers to event expressions; started in cosmo_demo + eye_simulator (tests/unit/test_idle_motion.py). 2.3 done: time-of-day now shifts the *baseline targets* mood/energy drift toward (`_circadian_targets`); late_night −0.5 settles energy ≈0.15 → sleepy face/behaviors engage overnight. 2.4 done: eye event map extended to 13 events with per-event duration/priority (now incl. WAKE_WORD→surprised, FACE_UNKNOWN→curious, PERSON_LOST→sad, CONVERSATION_START→happy, CLIFF_DETECTED→scared, BATTERY_LOW→sleepy, OBSTACLE_WARNING→surprised). 2.5 done: FACE_RECOGNIZED `person_id` now threads into `_maybe_speak` → greet uses `_build_rich_system_prompt` (episodic recall + persons-table relationship_quality/last-seen gap) even before `conversation.set_person`; speech language configurable (`personality.yaml speech.language: english|tanglish`) — applies to Claude-direct person paths only, ambient Ollama prompts pinned English; default english pending Tanglish decision at STOP gate (tests/unit/test_mind_greet.py, 13 tests). **Phase 2 STOP gate PASSED 2026-06-12 ("Don't wait" go-ahead): speech.language flipped to tanglish (Claude-direct paths; ambient stays English). Phase 3 (movement firmware) is now active — 3.1 done (ESP32 cliff Pin.irq reflex + bounded _outq, OQ-1/OQ-2 ✅); 3.2 done (bridge move-command coalescing + 300ms staleness drop; 3s heartbeat watchdog → caps FAILED + SENSOR_TIMEOUT event → CONFUSED eyes "body offline"; auto-recovery via mark_seen). 3.3 done (tests/unit/test_router_movement.py — APPROACH/FLEE/WANDER/FOLLOW/COME drive navigation under reg.simulate(LOCOMOTION); without it, expressive fallback fires, never silent; STOP allowed no-op; obstacle gate holds). Suite 260 passed. **Phase 3 STOP gate PASSED 2026-06-12 (suite 260 passed, 0 failed; 3.1/3.2/3.3 committed). Phase 4 (HARDWARE_PLAN.md doc) DONE 2026-06-12 — docs/HARDWARE_PLAN.md rewritten: 8-step wiring guide with parts/pins/test commands/capability flips, GPIO6/16 FIT0992 conflict, MAX17040 fragility notes, KI-024 pre-flight, maintenance checklist, SD-card risk/recovery. Phase 5 ("Continue with the build" go-ahead, 2026-06-12) DONE pending STOP gate: robot API (port 8000, services/api/service.py) gained `/caps`, `POST /cosmo/sim`, `POST /cosmo/say` (300-char cap, tts.speak), `GET /cosmo/last`; banteragent src/router.ts `!cosmo` case extended with status|caps|mood|last|log|say|sim|start|stop (proxies to 8000; start/stop = pm2 via ecosystem.config.js; 5s fetch timeout → "brain offline" hint; DM-only + listener BOT_OWNER_PHONE gate = owner path; tsc clean). **banteragent NOT restarted — proxy is dormant until its next natural restart**; banteragent tree was already dirty with Madhan's in-progress work so router.ts left uncommitted there. Robot tests: tests/unit/test_api_cosmo.py (9 tests); suite 269 passed. Phase 4 + 5 gates approved ("Go", 2026-06-12) — master plan complete; work now comes from COSMO_BACKLOG.md. KI-016 done 2026-06-12: episodic memory migrated to aiosqlite (async initialize/close, call sites in main.py/cosmo_demo.py/memory_browser.py updated; brain tests rewritten to async API; suite 269 passed). KI-017 done 2026-06-12: TokenBudget try_reserve/release reservation counter closes concurrent Claude double-spend (no lock — sync check+reserve is atomic on the event loop); _call_claude + generate_streaming reserve/release around the awaited call; suite 277 passed. KI-019 done 2026-06-12: shared I2C mutex (hardware/i2c_bus.py threading.Lock — OLED renders on executor thread so asyncio.Lock insufficient; wraps BH1750/UPS transactions + per-eye OLED display; suite 281 passed). KNOWN_ISSUES sweep 2026-06-12: KI-020/KI-023 already fixed in code (statuses updated), KI-018 obsolete (HSM archived), KI-022 resolved (wm.start() wired in main.py too + strong task ref). Remaining open KIs all need hardware/human: KI-001 wake word model, KI-002/KI-011 face recog, KI-021 dtoverlay before motor enable. Perf baseline 2026-06-12 (cosmo under PM2, running): boot→API ~16s, RAM 527MB, idle CPU ~16%, temp 52°C, API <2ms, touch-trigger→Tanglish speech end-to-end 1.83s (Haiku + Piper), KI-017 reservation exercised live OK. Camera absent (C920 unplugged) → vision capability absent. /logs/tail fixed (632c56e) — PM2 writes cosmo-out-6.log, endpoint now globs newest. Next backlog candidates: Indhu face re-enroll (needs her present), prompt caching ADR-018 (gated on OLED+face tests), Piper Kitten Micro ADR-016 — most remaining items are hardware-blocked (parcels/XT60). A daily remote trigger (trig_01FMp6sVt1KVAe81BahjUgT8, 11:30 IST) resumes work on this STATE; disable at claude.ai/code/scheduled when done. **Co-presence DONE 2026-06-12 (2e41eb0):** cognition/activity.py infers watching_tv / quiet_company / hangout from mic RMS ambient buckets (perception/audio/pipeline.py `ambient_stats`) + person presence; hysteresis 2×5s steps, TV sustain 90s; TV spikes → bb.tv_moment; bonding `co_presence` event_impact every 60s. BT CO_PRESENCE branch (no PersonVisible gate — sofa may be off-camera): settles (approach + LOVING + purr), SURPRISED on tv_moment, sparse glances, rare Tanglish co_watch murmur (mind cooldown 900s, 35%/300s attempt); idle_motion calms when bb.settled. tests/unit/test_activity.py 15 tests; test_tier1 sys.modules leak fixed; suite 296 passed. Restarted under PM2 22:49 — clean boot, activity monitor live, RAM 508MB / 51°C. Full live validation needs camera + person present (wiring starts 2026-06-13). **2026-06-13 sprint 1 — outbound WhatsApp + exploration + discovery (4d97a5d):** cognition/notifications.py (NotificationManager, 10/day limit, per-trigger cooldowns, aiosqlite log) + banteragent /cosmo-notify endpoint. behavior/exploration.py (RoomSnapshot every 5min, anti-revisit wander weights, DiscoveryEvent log). Wander detects obstacle <25cm → retreat+scan → DoDiscovery BT node (CURIOUS eyes + speak if person; WhatsApp if alone). mind.py _maybe_notify_missing() — alone >20min + attachment >0.6 → mood-modulated DM. Suite 199 passed. **2026-06-13 sprint 2 — personality/behavior/security:** API auth (ROBOT_API_TOKEN env var; Bearer token gates motor/mind/sound/trigger — /cosmo/say stays open for banteragent compat). Touch→attachment: TOUCH_DETECTED → personality.process_event("touch_gentle") + episodic.upsert_person(relationship_delta=0.04). Personalized curiosity: _build_curiosity_prompt() pulls episodic memories for specific questions (not generic "ask about their day"). Activity→movement: co_presence settle emits STOP + async approach_person(); hangout → follow_mode(60s) every 2min via DoEngagePresence. Smart home stub: EventType.SMARTHOME_* (5 types) + POST /smarthome/event ingestion API + mind.py handlers (tv_on→excited, lights_off→nervous, presence_home→reset alone timer). Suite 199 passed. **2026-06-13 sprint 3 — WhatsApp commands + fixes (6a9cda1 / banteragent fd3d607):** New !cosmo commands: test (fires face_seen+touched+emotion_happy in sequence), move (fwd/back/left/right/stop → /motor/* with Bearer auth), home (inject smart home events), health (system + PM2 dump). Dashboard now injects ROBOT_API_TOKEN at serve time (postCmd/motorCmd send Bearer header). motor/forward + motor/back: fixed duration handling via _timed_move wrapper. Suite 199 passed. **Next: HA webhook config + Pi camera CSI seating.**
-
-<details><summary>Wiring sequence (deferred — reference for Phase 4 doc)</summary>
-
-1. Rewire TB6612FNG from Pi GPIO to ESP32 GPIO 15–21 (AIN1=15, AIN2=16, PWMA=17, BIN1=18, BIN2=19, PWMB=20, STBY=21). **Do not power motors until XT60 pigtail arrives.**
-2. Wire sensors in order (PIR first — safest): PIR→GPIO12, Touch×4→GPIO1–4, IMU I2C→GPIO8/9, Cliff→GPIO13/14, Sound→GPIO5.
-3. For each sensor: set `SENSORS["<id>"] = True` in esp32/main.py, copy to ESP32, run `python3 tools/esp32_test.py` to verify before enabling next.
-4. Wire OLED eyes (0x3C left, 0x3D right) — run `sudo i2cdetect -y 1` to confirm both visible, then switch eyes.py render target to "oled".
-
-**Blocked on:** XT60 female pigtail (Robocraze) for motor power; APDS-9960 replacement; cliff/sound sensors in parcel.
-
-</details>
-
----
-
-## Open Questions
-
-| # | Question | Stakes |
-|---|----------|--------|
-| ~~OQ-1~~ | ✅ Resolved 2026-06-12 (3.1) — cliff `Pin.irq` brakes motors locally + 500ms move-refusal hold (`_cliff_active`); pir/touch/vibe also IRQ-driven (vibe debounced 50ms). Deploy to ESP32 at wiring time. | Safety |
-| ~~OQ-2~~ | ✅ Resolved 2026-06-12 (3.1) — `_outq` bounded at 100, drop-oldest non-critical; heartbeats + cliff events never evicted. | Reliability |
-| ~~OQ-3~~ | ✅ Resolved 2026-06-11 — event_bus dispatches via `create_task` (strong refs + done-callback error logging; sync handlers tolerated; drained on stop). | Latency |
-| ~~OQ-4~~ | ✅ Resolved 2026-06-11 — HSM archived (archive/state_machine.py); BT is sole decision authority, router sole actuator. | Architecture |
-| ~~OQ-5~~ | ✅ Resolved 2026-06-11 — single TokenBudget; persists per-day total to memory_meta via atomic increment UPSERT; resumes on restart. Tests isolated via tests/conftest.py. | Reliability |
-| ~~OQ-6~~ | ✅ Resolved 2026-06-11 — LLMRouter deleted; mind.py routes through `LLMInterface.generate_once` (D4 two-tier). | Maintainability |
-| ~~OQ-7~~ | ✅ Resolved 2026-06-11 — (a) generate_streaming budget-gated + records usage. (b) cache_control added, but static prefix ≈300 tokens < Haiku's 2048-token cache minimum → currently a no-op; becomes live when the prompt grows. | Cost |
-| ~~OQ-8~~ | ✅ Resolved 2026-06-11 — `_follow_loop` unsubscribes its PERSON_DETECTED handler in `finally`. | Reliability |
-| ~~OQ-9~~ | ✅ Resolved 2026-06-12 — deleted tests for never-existed Pi-side sensor classes (PIR/MPU/cliff/ultra live on ESP32, covered by bridge tests); rewrote MotorController/SoundEngine/UPSHAT tests to current APIs; MotorSafetyError test → Pi-side e-stop latch test; bridge tests get `_mock` attr + `asyncio.run` (loop isolation). Suite: 248 passed, 0 failed. | Hygiene |
