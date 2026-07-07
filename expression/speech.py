@@ -153,7 +153,16 @@ class TTSEngine:
             )
             paplay.stdin.write(raw_audio)
             paplay.stdin.close()
-            paplay.wait()
+            # KI-015: bound the wait by the audio's actual duration + margin —
+            # a wedged audio sink otherwise freezes this thread (and with it
+            # the speech queue) forever. s16le mono: 2 bytes/sample.
+            audio_s = len(raw_audio) / (2 * _RATE)
+            try:
+                paplay.wait(timeout=audio_s + 5.0)
+            except subprocess.TimeoutExpired:
+                paplay.kill()
+                paplay.wait()
+                log.error("tts.paplay_timeout", audio_s=round(audio_s, 1))
         except Exception as e:
             log.error("tts.piper_error", error=str(e)[:80])
             if paplay and paplay.poll() is None:

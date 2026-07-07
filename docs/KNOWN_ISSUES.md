@@ -156,6 +156,12 @@
   )
   ```
 - **Priority:** Medium — only fires if Claude API goes down, but recovery is full process restart
+- **Addendum (AB-010, 2026-07-08):** two residual unbounded paths found and fixed:
+  `generate_streaming` had no timeout on `messages.stream` (stalled connection hung
+  the speech loop — now passes `timeout=CLAUDE_TIMEOUT_S`, an httpx read timeout
+  bounding inter-chunk gaps), and `/trigger/describe` used a **sync** Anthropic
+  client with no timeout inside the async API — blocked the whole :8000 loop
+  (now AsyncAnthropic + 30s). Tests: tests/unit/test_timeouts_ab010.py.
 
 ### KI-015: Piper TTS subprocess has no timeout — _speaking flag can lock forever
 - **Status:** ✅ Fixed (2026-05-21)
@@ -173,6 +179,11 @@
       self._speaking = False
   ```
 - **Priority:** Medium — mutes Cosmo silently, hard to diagnose
+- **Addendum (AB-010, 2026-07-08):** residual gap fixed — `paplay.wait()` after a
+  successful piper synth was unbounded (wedged audio sink froze the speech thread;
+  `_speaking` itself was safe via finally, but the thread never returned). Now
+  bounded by audio duration + 5s, killed on expiry. Test in
+  tests/unit/test_timeouts_ab010.py::test_paplay_wedge_is_killed.
 
 ### KI-016: SQLite episodic memory — concurrent writes from thread pool cause "database is locked"
 - **Status:** ✅ Resolved 2026-06-12 — episodic.py migrated to aiosqlite (single async connection serializes all access; `initialize()`/`close()` now async, call sites updated in main.py / cosmo_demo.py / memory_browser.py; tests rewritten to async API). TokenBudget keeps its own separate sync conn (WAL, atomic UPSERT) — unaffected.
