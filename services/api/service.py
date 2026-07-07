@@ -266,9 +266,12 @@ async def trigger_describe():
         if not key:
             return JSONResponse(status_code=503, content={"error": "No ANTHROPIC_API_KEY"})
 
-        client = anthropic.Anthropic(api_key=key)
+        # KI-014: async client + timeout — the previous sync client blocked the
+        # entire :8000 event loop (incl. /led) for the duration of the call,
+        # indefinitely on a hung connection.
+        client = anthropic.AsyncAnthropic(api_key=key, timeout=30.0)
         t0 = time.monotonic()
-        response = client.messages.create(
+        response = await client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=150,
             messages=[{

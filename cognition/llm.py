@@ -549,11 +549,16 @@ class LLMInterface:
 
         buffer = ""
         try:
+            # KI-014: per-request timeout — httpx read timeout bounds the gap
+            # BETWEEN chunks (a stall guard), not total stream duration, so a
+            # long healthy stream is fine but a wedged connection can't hang
+            # the speech loop forever.
             async with self._anthropic_client.messages.stream(
                 model=self._claude_model,
                 max_tokens=self.MAX_TOKENS,
                 system=_system_to_blocks(system_prompt),
                 messages=messages,
+                timeout=self.CLAUDE_TIMEOUT_S,
             ) as stream:
                 async for text_chunk in stream.text_stream:
                     buffer += text_chunk
