@@ -370,8 +370,8 @@ async def camera_color_set(request: Request, _: None = _AuthRequired):
         for k in allowed:
             if k in color_config:
                 doc.add(k, color_config[k])
-        with open(toml_path, "w") as fh:
-            fh.write(_tk.dumps(doc))
+        from utils.atomic_write import atomic_write_text
+        atomic_write_text(toml_path, _tk.dumps(doc))
         persisted = True
     except Exception:
         persisted = False
@@ -1201,8 +1201,8 @@ async def led_calibrate(_: None = _AuthRequired):
                          "(check the live feed :8080) and retry. Existing ROI kept."})
         norm = [[round(float(x) / w, 6), round(float(y) / h, 6)] for x, y in ordered]
 
-        ROI_CONFIG.parent.mkdir(parents=True, exist_ok=True)
-        ROI_CONFIG.write_text(json.dumps({
+        from utils.atomic_write import atomic_write_text
+        atomic_write_text(ROI_CONFIG, json.dumps({
             "version": 1,
             "normalized": True,
             "points": norm,
@@ -1233,9 +1233,9 @@ async def led_tv_sync(request: Request, _: None = _AuthRequired):
     # Persist desired state so a cosmo restart mid-evening restores the sync
     # (this session: three restarts silently killed it).
     try:
+        from utils.atomic_write import atomic_write_json
         state_file = Path.home() / ".robot" / "ambilight_state.json"
-        state_file.parent.mkdir(parents=True, exist_ok=True)
-        state_file.write_text(json.dumps({"tv_sync": on}))
+        atomic_write_json(state_file, {"tv_sync": on})
     except Exception:
         pass
     try:

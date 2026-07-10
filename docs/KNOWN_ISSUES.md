@@ -228,7 +228,12 @@
 - **Priority:** Fix before wiring OLED eyes — collisions guaranteed once both sensor polling and display rendering are live
 
 ### KI-020: Spatial memory write is not atomic — power loss mid-write corrupts JSON
-- **Status:** ✅ Resolved (verified 2026-06-12) — spatial.py:206-208 already uses the temp-file + `os.replace` pattern from the fix sketch.
+- **Status:** ✅ CLOSED repo-wide (AB-012, 2026-07-10). 2026-06-12 had fixed spatial.py
+  only; the sweep found 4 more non-atomic persistent-state writes and converted all of
+  them to the new `utils/atomic_write.py` helper (tmp + fsync + `os.replace`):
+  exploration snapshots, ambilight ROI config, ambilight_state.json, color.toml.
+  Read sides verified corrupt-tolerant (catch → log → start fresh).
+  Tests: `tests/unit/test_atomic_write.py` (7, incl. truncated-file recovery).
 - **Service:** core/memory/spatial.py line ~200
 - **Symptom:** `SPATIAL_PATH.write_text(json.dumps(data))` truncates the file before writing. If the Pi loses power mid-write (UPS HAT limits this but doesn't eliminate it), `spatial.json` is left as an empty or partial file. Next boot: `json.JSONDecodeError` in spatial memory load, Cosmo loses all room fingerprints permanently.
 - **Root cause:** `Path.write_text()` is not atomic across all conditions. No temp-file pattern used.

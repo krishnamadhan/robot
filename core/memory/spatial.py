@@ -203,9 +203,9 @@ class SpatialMemory:
                 "rooms": {rid: asdict(r) for rid, r in self._rooms.items()},
                 "landmarks": {lid: asdict(l) for lid, l in self._landmarks.items()},
             }
-            tmp = SPATIAL_PATH.with_suffix(".tmp")
-            tmp.write_text(json.dumps(data, indent=2))
-            tmp.replace(SPATIAL_PATH)  # atomic on Linux — no partial-write corruption
+            from utils.atomic_write import atomic_write_json
+
+            atomic_write_json(SPATIAL_PATH, data, indent=2)  # tmp + os.replace + fsync
         except Exception as e:
             log.error("spatial.save_failed", error=str(e))
 

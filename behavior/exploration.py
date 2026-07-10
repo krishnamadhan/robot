@@ -76,9 +76,10 @@ class ExplorationMemory:
         self._loaded = True
 
     def save(self) -> None:
-        _SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        from utils.atomic_write import atomic_write_json
+
         data = {"snapshots": [asdict(s) for s in self._snapshots]}
-        _SNAPSHOT_PATH.write_text(json.dumps(data))
+        atomic_write_json(_SNAPSHOT_PATH, data)
 
     # ── Snapshot recording ────────────────────────────────────────────────────
 
