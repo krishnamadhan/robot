@@ -14,9 +14,16 @@
 - **Fix:** camera.py auto-scans /dev/video0–18 for USB camera (skips Pi ISP video19+). cosmo_demo.py continues in degraded no-vision mode instead of return-on-failure.
 
 ### KI-ROBOT-CTRL-DEPRECATED: robot_control.py dangerous pinout
-- **Status:** FIXED — sys.exit(1) guard added
+- **Status:** CLOSED (AB-013, 2026-07-10) — file archived, repo-wide sweep done
 - **Symptom:** Old 2WD script uses GPIO6 (UPS HAT adapter-fail pin) for BIN2. Running it would burn HAT converter.
-- **Fix:** robot_control.py now prints error and exits immediately. Use tools/motor_test.py instead.
+- **Fix:** robot_control.py + 12 other pre-ESP32 root scripts (manual_drive, avoid,
+  test_4wd, calibrate_motors, hcsr04_*, test_*, move, pir_live, touch_live) moved to
+  `archive/legacy_pi_gpio/` with a DO-NOT-RUN README. Nothing outside sanctioned
+  paths touches GPIO6/16 anymore.
+- **Sanctioned direct-GPIO paths:** `hardware/` · `battery_monitor.py` (UPS HAT owner)
+  · `tools/motor_test*.py` + `tools/motor_diag_*.py` **temporarily** — motors are
+  physically still on Pi GPIO; these move to the ESP32 bridge at the rewire session
+  (verified 2026-07-10: none of them touch GPIO6/16).
 
 ### KI-MIND-RACE-01: mind.py speech race + cooldown burn
 - **Status:** FIXED
