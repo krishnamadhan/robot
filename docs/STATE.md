@@ -18,6 +18,10 @@ BLE strip + Wipro bulb follow the dominant colour.
   → re-solve CCM with 8 cards (`tools/ambilight_cast_verify.py --calibrate`).
 - **Wipro bulb** (Tuya v3.3, 192.168.1.3, key in .env): synced via music-mode
   streaming, serialized coalescing worker ~3 Hz. `hardware/wipro_light.py`.
+  **Manual control (AB-014, 2026-07-10, LIVE):** `set_color_manual` (persistent
+  DP24 colour mode) + `POST/GET /led/bulb` (color/bright/on/off), bulb block in
+  `/led` + `/led/health`, static scenes fan out to the bulb. curl-verified on
+  the running service. Remaining: `!led bulb` banteragent half (codex, staged).
 - **Strip controller modes** (2026-07-07, driver-level, API/!led wiring pending):
   0x03 patterns 0-210, 0x0B built-in-mic sound sync, 0x09 colour temp, custom
   patterns. `hardware/led_strip.py` PATTERNS/MUSIC_MODES. 0x04 power stays BANNED.

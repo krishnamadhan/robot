@@ -47,7 +47,7 @@ async def main():
         print("WIPRO_LOCAL_KEY not set in robot/.env")
         return
 
-    print("Wipro test ready. Commands: r g b w  1-9 0  o t s q")
+    print("Wipro test ready. Commands: r g b w  1-9 0  o t s q  m=MANUAL colour-mode (AB-014, persists without streaming)")
 
     import termios
     import tty
@@ -70,6 +70,13 @@ async def main():
                 print("\r[off]                    ", end="", flush=True)
             elif ch == "s":
                 print(f"\r{wipro.stats}                ", end="", flush=True)
+            elif ch == "m":
+                # Manual colour-mode round trip: set, verify it leaves music mode.
+                wipro.set_color_manual(255, 140, 60, bright)
+                await asyncio.sleep(1.5)
+                st = wipro.stats
+                verdict = "OK — colour mode" if not st["music"] else "STILL IN MUSIC MODE?!"
+                print(f"\r[manual set → {verdict} · {st}]  ", end="", flush=True)
             elif ch in COLOURS:
                 r, g, b = COLOURS[ch]
                 wipro.set_color(r, g, b, bright)

@@ -105,6 +105,23 @@ class WiproLight:
         self._ensure_worker()
         self._dirty.set()
 
+    def set_color_manual(self, r: int, g: int, b: int, bright_pct: int = 100) -> None:
+        """Queue a MANUAL colour set (persistent 'colour' mode, DP24 — unlike
+        music mode it sticks without streaming keep-alives). Same mailbox +
+        worker as ambilight sends, so the single-TCP invariant holds."""
+        if not self._enabled:
+            return
+        self._last_manual = (int(r), int(g), int(b), int(bright_pct))
+        self._target = ("manual", int(r), int(g), int(b), int(bright_pct))
+        self._ensure_worker()
+        self._dirty.set()
+
+    def set_bright_manual(self, bright_pct: int) -> None:
+        """Queue a manual brightness change, keeping the last manual colour
+        (warm white if none was set yet)."""
+        r, g, b, _ = getattr(self, "_last_manual", None) or (255, 240, 220, 80)
+        self.set_color_manual(r, g, b, bright_pct)
+
     def power_off(self) -> None:
         """Queue a power-off. Coalescing — cancels any pending colour."""
         if not self._enabled:
@@ -134,7 +151,8 @@ class WiproLight:
     @property
     def stats(self) -> dict:
         return {"ok": self._sends_ok, "fail": self._sends_fail,
-                "music": self._in_music, "on": self._is_on}
+                "music": self._in_music, "on": self._is_on,
+                "last_manual": getattr(self, "_last_manual", None)}
 
     # ── worker: single consumer, serialized sends ────────────────────────────
 
@@ -203,6 +221,24 @@ class WiproLight:
                 self._bulb.turn_off(nowait=True)
                 self._is_on = False
                 self._in_music = False   # mode resets on next on
+                return True
+
+            if target[0] == "manual":
+                # Persistent colour mode (DP24). Waited calls are fine at
+                # manual rates; set_colour switches the bulb out of music mode.
+                _, r, g, b, bright = target
+                if not self._is_on:
+                    if self._errored(self._bulb.turn_on()):
+                        log.warning("wipro.turn_on_error")
+                        return False
+                    self._is_on = True
+                h, s, v = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
+                v = max(BRIGHT_FLOOR, v * bright / 100.0)
+                rr, gg, bb = [int(x * 255) for x in colorsys.hsv_to_rgb(h, s, v)]
+                if self._errored(self._bulb.set_colour(rr, gg, bb)):
+                    log.warning("wipro.set_colour_error")
+                    return False
+                self._in_music = False   # left music mode; ambilight re-enters it
                 return True
 
             r, g, b, bright = target

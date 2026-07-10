@@ -1102,6 +1102,7 @@ async def led_state(_: None = _AuthRequired):
         roi_active = ROI_CONFIG.exists() or LEGACY_ROI_CONFIG.exists()
         roi_config = str(ROI_CONFIG if ROI_CONFIG.exists() else LEGACY_ROI_CONFIG)
     from hardware.led_strip import SCENES
+    from hardware.wipro_light import wipro
     return {
         **strip.state,
         "tv_sync": tv_sync,
@@ -1109,6 +1110,7 @@ async def led_state(_: None = _AuthRequired):
         "roi_config": roi_config,
         "colors": list(COLORS),
         "scenes": list(SCENES),
+        "bulb": {"enabled": wipro.enabled, **wipro.stats},
     }
 
 
@@ -1121,7 +1123,53 @@ async def led_health(_: None = _AuthRequired):
         tv_sync = ambilight.active
     except Exception:
         tv_sync = False
-    return {**strip.health, "tv_sync": tv_sync, "scene": strip.state.get("scene")}
+    from hardware.wipro_light import wipro
+    return {**strip.health, "tv_sync": tv_sync, "scene": strip.state.get("scene"),
+            "bulb": {"enabled": wipro.enabled, **wipro.stats}}
+
+
+@app.get("/led/bulb")
+async def led_bulb_state(_: None = _AuthRequired):
+    """Wipro bulb state — driver stats + last manual command (AB-014)."""
+    from hardware.wipro_light import wipro
+    return {"enabled": wipro.enabled, **wipro.stats}
+
+
+@app.post("/led/bulb")
+async def led_bulb(request: Request, _: None = _AuthRequired):
+    """Manual Wipro bulb control (AB-014).
+    Body: {"cmd": "color", "value": [r,g,b], "bright": 0-100}
+        | {"cmd": "bright", "value": 0-100}
+        | {"cmd": "on"} | {"cmd": "off"}
+    All sends go through the single wipro worker (single-TCP invariant)."""
+    from hardware.wipro_light import wipro
+    if not wipro.enabled:
+        return JSONResponse(status_code=503, content={"error": "bulb disabled (WIPRO_LOCAL_KEY not set)"})
+    try:
+        body = await request.json()
+        cmd = (body.get("cmd") or "").lower()
+        if cmd == "color":
+            v = body.get("value") or []
+            if len(v) != 3 or not all(isinstance(x, (int, float)) and 0 <= x <= 255 for x in v):
+                return JSONResponse(status_code=400, content={"error": "value must be [r,g,b] 0-255"})
+            bright = body.get("bright", 100)
+            if not isinstance(bright, (int, float)) or not 0 < bright <= 100:
+                return JSONResponse(status_code=400, content={"error": "bright must be 1-100"})
+            wipro.set_color_manual(int(v[0]), int(v[1]), int(v[2]), int(bright))
+        elif cmd == "bright":
+            v = body.get("value")
+            if not isinstance(v, (int, float)) or not 0 < v <= 100:
+                return JSONResponse(status_code=400, content={"error": "value must be 1-100"})
+            wipro.set_bright_manual(int(v))
+        elif cmd == "on":
+            wipro.set_color_manual(255, 240, 220, 80)   # warm white default
+        elif cmd == "off":
+            wipro.power_off()
+        else:
+            return JSONResponse(status_code=400, content={"error": "cmd must be color|bright|on|off"})
+        return {"ok": True, "cmd": cmd, **wipro.stats}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @app.post("/led/scene")
@@ -1139,6 +1187,12 @@ async def led_scene(request: Request, _: None = _AuthRequired):
         ok = await strip.set_scene(name)
         if not ok:
             return JSONResponse(status_code=503, content={"error": "strip unreachable"})
+        # Scene fan-out (AB-014): bulb follows static scenes; drivers stay dumb.
+        from hardware.wipro_light import wipro
+        preset = SCENES.get(name) or {}
+        if wipro.enabled and "rgb" in preset:
+            r, g, b = preset["rgb"]
+            wipro.set_color_manual(r, g, b, preset.get("bright", 100))
         return {"ok": True, "scene": name, **strip.state}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
