@@ -1,24 +1,22 @@
 #!/usr/bin/env python3
 """
-Voice enrollment tool for Cosmo.
+Consent-gated voice enrollment for Cosmo.
 
-Records a reference audio clip of a person reading a paragraph,
-then benchmarks XTTS v2 synthesis speed using the 3.11 venv subprocess.
-Enrolled voice activates automatically when that person's face is recognized.
+This stores only local enrollment artifacts:
+  ~/.robot/memory/voices/<name>/reference.wav
+  ~/.robot/memory/voices/<name>/consent.json
 
-Usage:
-    python3 tools/enroll_voice.py --name "Madhan"
-    python3 tools/enroll_voice.py --name "Indhu"
-    python3 tools/enroll_voice.py --name "Madhan" --play   # play test output
-    python3 tools/enroll_voice.py --name "Madhan" --record-only  # skip benchmark
+Remote Voicebox synthesis is optional and controlled separately with VOICEBOX_URL.
 """
 
+from __future__ import annotations
+
 import argparse
+import json
 import os
-import subprocess
 import sys
-import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -30,35 +28,23 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.text import Text
 
+from expression.voice_engine import RemoteVoiceboxEngine, voice_profile_path
+
 console = Console()
 
-_VOICES_DIR  = Path.home() / ".robot/memory/voices"
-_VENV_PYTHON = Path.home() / ".robot/venvs/xtts311/bin/python3"
-_WORKER      = Path(__file__).parent / "xtts_worker.py"
-_RATE        = 22050
-_DURATION    = 30
-_CHANNELS    = 1
-_TEST_SENT   = "Hey, it's me! I'm Cosmo. I'm really happy to see you today."
+RATE = 22050
+DURATION_S = 30
+CHANNELS = 1
+CONSENT_PHRASE = "I consent to Cosmo cloning my voice for local lab use"
 
-# Phonetically balanced passage — covers all English phonemes
-_PARAGRAPH = """\
+PARAGRAPH = """\
 Please call Stella. Ask her to bring these things with her from the store:
 six spoons of fresh snow peas, five thick slabs of blue cheese, and maybe
 a snack for her brother Bob. We also need a small plastic snake and a big
 toy frog for the babies. Look at her, she has a way with people that just
 makes everyone around her smile. She walks quickly and speaks clearly,
-and laughs at the right moments — a truly wonderful person to know.\
+and laughs at the right moments.
 """
-
-_PW_ENV = {
-    **os.environ,
-    "XDG_RUNTIME_DIR": "/run/user/1000",
-    "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus",
-}
-
-
-def _xtts_ready() -> bool:
-    return _VENV_PYTHON.exists() and _WORKER.exists()
 
 
 def _countdown(n: int) -> None:
@@ -68,118 +54,108 @@ def _countdown(n: int) -> None:
     console.print("[bold green]GO![/bold green]   ")
 
 
-def _record(duration: int, rate: int):
-    console.print(f"\n[bold red]● RECORDING[/bold red] — {duration}s — speak clearly")
-    audio = sd.rec(int(duration * rate), samplerate=rate, channels=_CHANNELS, dtype="int16")
+def _record(duration_s: int) -> object:
+    console.print(f"\n[bold red]RECORDING[/bold red] — {duration_s}s — speak clearly")
+    audio = sd.rec(int(duration_s * RATE), samplerate=RATE, channels=CHANNELS, dtype="int16")
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         TimeElapsedColumn(),
         console=console,
     ) as prog:
-        task = prog.add_task("Recording...", total=duration)
+        task = prog.add_task("Recording...", total=duration_s)
         start = time.monotonic()
-        while time.monotonic() - start < duration:
+        while time.monotonic() - start < duration_s:
             prog.update(task, completed=time.monotonic() - start)
             time.sleep(0.1)
     sd.wait()
     return audio
 
 
-def _benchmark(ref_wav: Path, play: bool) -> float:
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-        tmp = f.name
+def _write_consent(path: Path, *, name: str, spoken_consent: str,
+                   transcribed_consent: str | None) -> None:
+    data = {
+        "name": name,
+        "consent_granted": True,
+        "consent_phrase": CONSENT_PHRASE,
+        "spoken_consent": spoken_consent,
+        "transcribed_consent": transcribed_consent,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "scope": "Cosmo local lab voice cloning only",
+        "revocation": "Delete this voice directory to disable cloned synthesis.",
+    }
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
 
-    console.print(f'\n[cyan]Synthesising:[/cyan] "[italic]{_TEST_SENT}[/italic]"')
-    console.print("[dim](first run downloads ~1.8 GB XTTS model — be patient)[/dim]")
 
+def _optional_transcribe(path: Path, base_url: str | None) -> str | None:
+    if not base_url:
+        return None
     try:
-        result = subprocess.run(
-            [str(_VENV_PYTHON), str(_WORKER), str(ref_wav), _TEST_SENT, tmp],
-            capture_output=True, text=True, timeout=600,
-        )
-        if result.returncode != 0:
-            console.print(f"[red]XTTS worker failed:[/red] {result.stderr[:200]}")
-            return -1.0
-
-        elapsed = float(result.stdout.strip().split(":")[-1])
-
-        if play:
-            console.print("[cyan]Playing test output...[/cyan]")
-            subprocess.run(["paplay", tmp], env=_PW_ENV, check=False)
-
-        return elapsed
-    finally:
-        try:
-            os.unlink(tmp)
-        except Exception:
-            pass
+        engine = RemoteVoiceboxEngine(base_url, timeout_s=10)
+        return engine.transcribe(path.read_bytes(), sample_rate=RATE, encoding="wav")
+    except Exception as exc:
+        console.print(f"[yellow]Voicebox /transcribe check skipped: {exc}[/yellow]")
+        return None
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Enroll a voice profile for Cosmo")
-    parser.add_argument("--name", required=True, help="Person's name (must match face enrolment)")
-    parser.add_argument("--play", action="store_true", help="Play the synthesised test sentence")
-    parser.add_argument("--record-only", action="store_true",
-                        help="Just record — skip XTTS benchmark")
+    parser = argparse.ArgumentParser(description="Enroll a consented voice profile for Cosmo")
+    parser.add_argument("--name", required=True, help="Person's name; should match face enrollment")
+    parser.add_argument("--duration", type=int, default=DURATION_S,
+                        help=f"reference recording duration in seconds (default {DURATION_S})")
+    parser.add_argument("--voicebox-url", default=os.getenv("VOICEBOX_URL"),
+                        help="optional URL for a /transcribe consent check")
     args = parser.parse_args()
 
-    name      = args.name.strip().title()
-    voice_dir = _VOICES_DIR / name.lower()
-    ref_wav   = voice_dir / "reference.wav"
-    xtts_ok   = _xtts_ready()
+    name = args.name.strip().title()
+    if not name:
+        raise SystemExit("--name cannot be empty")
+
+    root = voice_profile_path(name)
+    ref_wav = root / "reference.wav"
+    consent_json = root / "consent.json"
 
     console.print(Panel(
-        f"[bold]Cosmo Voice Enrolment — {name}[/bold]\n\n"
-        f"XTTS venv: [{'green]✓ ready' if xtts_ok else 'red]✗ missing — run tools/setup_xtts_venv.sh'}[/{'green' if xtts_ok else 'red'}]\n"
-        f"Output:    [dim]{ref_wav}[/dim]",
-        title="Voice Enrolment",
+        f"[bold]Cosmo Voice Enrollment — {name}[/bold]\n\n"
+        f"Output: [dim]{root}[/dim]\n"
+        f"Remote transcribe: {'enabled' if args.voicebox_url else 'disabled'}",
+        title="Voice Enrollment",
         border_style="cyan",
     ))
 
-    # Show the passage
     console.print(Panel(
-        Text(_PARAGRAPH, style="bold white"),
-        title="[yellow]Read this aloud — naturally, at a normal pace[/yellow]",
+        Text(CONSENT_PHRASE, style="bold white"),
+        title="[yellow]Type this exact consent phrase to continue[/yellow]",
         border_style="yellow",
         padding=(1, 2),
     ))
-    console.print("[dim]Tip: speak clearly, no background music, mic ~30–50 cm away[/dim]")
-    console.print("\nPress [bold]Enter[/bold] when ready...")
-    input()
+    typed = input("> ").strip()
+    if typed != CONSENT_PHRASE:
+        console.print("[red]Consent phrase did not match. No recording was saved.[/red]")
+        raise SystemExit(2)
+
+    console.print(Panel(
+        Text(PARAGRAPH, style="bold white"),
+        title="[yellow]Read this aloud naturally after the countdown[/yellow]",
+        border_style="yellow",
+        padding=(1, 2),
+    ))
+    input("Press Enter when ready...")
 
     _countdown(3)
-    audio = _record(_DURATION, _RATE)
+    audio = _record(max(5, args.duration))
 
-    voice_dir.mkdir(parents=True, exist_ok=True)
-    sf.write(str(ref_wav), audio, _RATE)
-    console.print(f"[green]✓ Saved {_DURATION}s reference clip → {ref_wav}[/green]")
+    root.mkdir(parents=True, exist_ok=True)
+    sf.write(str(ref_wav), audio, RATE)
+    transcript = _optional_transcribe(ref_wav, args.voicebox_url)
+    _write_consent(consent_json, name=name, spoken_consent=typed,
+                   transcribed_consent=transcript)
 
-    if args.record_only or not xtts_ok:
-        if not xtts_ok:
-            console.print("\n[yellow]Run [bold]bash tools/setup_xtts_venv.sh[/bold] to enable synthesis benchmark.[/yellow]")
-        console.print("\n[bold green]Recording saved.[/bold green]")
-        return
-
-    synth_time = _benchmark(ref_wav, play=args.play)
-    if synth_time < 0:
-        return
-
-    console.print(f"\n[bold]Results:[/bold]")
-    if synth_time < 10:
-        verdict, color = "Excellent — fast enough for conversation", "green"
-    elif synth_time < 20:
-        verdict, color = "Usable — noticeable pause, acceptable for Cosmo", "yellow"
-    elif synth_time < 40:
-        verdict, color = "Slow — novelty use, not fluid conversation", "yellow"
-    else:
-        verdict, color = "Too slow for real-time — consider Hailo accelerator", "red"
-
-    console.print(f"  Synthesis time:  [{color}]{synth_time:.1f}s[/{color}]")
-    console.print(f"  Chars/sec:       {len(_TEST_SENT) / synth_time:.1f}")
-    console.print(f"  Verdict:         [{color}]{verdict}[/{color}]")
-    console.print(f"\n[bold green]Enrolment complete![/bold green]")
-    console.print(f"[dim]Cosmo will speak in {name}'s voice when their face is recognized.[/dim]")
+    console.print(f"[green]Saved reference audio:[/green] {ref_wav}")
+    console.print(f"[green]Saved consent metadata:[/green] {consent_json}")
+    if transcript:
+        console.print(f"[dim]Voicebox transcript: {transcript[:120]}[/dim]")
+    console.print("[bold green]Enrollment complete.[/bold green]")
 
 
 if __name__ == "__main__":

@@ -134,3 +134,10 @@
 - **Decision:** Deferred — not viable at current prompt sizes
 - **Rationale:** Claude Haiku 4.5 requires a minimum of 2048 tokens in a cached block. Cosmo's system prompts in mind.py are ~281 tokens even at their richest. Caching would never activate. Revisit when multi-turn conversation history accumulates 2048+ tokens of repeated context, or if Anthropic lowers the minimum cacheable block size for Haiku.
 - **Status:** ❌ Deferred — prompt too short for Haiku cache minimum (2048 tokens)
+
+## ADR-019: Voice cloning is remote-only; Piper stays default/fallback
+- **Date:** 2026-07-11
+- **Decision:** Add a `VoiceEngine` abstraction with local Piper as the default and final fallback. Experimental cloned speech uses a remote Voicebox HTTP client only when `VOICEBOX_URL` and a consented local voice profile are present.
+- **Rationale:** The Voicebox server does not exist yet, and Cosmo must not load large clone models or become mute waiting on remote infrastructure. A consented local profile plus a small HTTP contract lets the server be built later while tests pin `/transcribe` and `/generate` behavior now.
+- **Fallback rule:** Any remote error, timeout, missing profile, or missing consent metadata falls back to Piper.
+- **Status:** ✅ Implemented in AB-049
