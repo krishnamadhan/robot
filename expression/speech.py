@@ -1,15 +1,10 @@
 """
-TTS engine — Piper (default) + XTTS v2 voice cloning (per-person profiles).
-
-Default: Piper offline TTS (fast, 1.5s, always available)
-Cloned:  XTTS v2 activated when a known person's voice profile exists.
-         Runs via subprocess in a Python 3.11 venv (XTTS is 3.13-incompatible).
-         Venv: ~/.robot/venvs/xtts311/  — set up by tools/setup_xtts_venv.sh
+TTS engine — Piper default/fallback + optional remote Voicebox clone client.
 
 Binary: /usr/local/bin/piper
 Model:  ~/.robot/models/piper/en_US-lessac-medium.onnx  (22050 Hz mono s16le)
-Voices: ~/.robot/memory/voices/<name>/reference.wav
-Worker: tools/xtts_worker.py (runs inside 3.11 venv)
+Voices: ~/.robot/memory/voices/<name>/reference.wav + consent.json
+Remote: set VOICEBOX_URL to enable experimental /generate cloned synthesis.
 """
 
 import asyncio
@@ -18,19 +13,21 @@ import subprocess
 import tempfile
 import threading
 import time
-from pathlib import Path
 from typing import Optional
 
+from expression.voice_engine import (
+    PIPER_MODEL_PATH,
+    PIPER_RATE,
+    PiperVoiceEngine,
+    RemoteVoiceboxEngine,
+    SynthesisResult,
+    VoiceEngineError,
+    VoiceProfile,
+    load_voice_profile,
+)
 from utils.logger import get_logger
 
 log = get_logger(__name__)
-
-_MODEL_PATH  = Path.home() / ".robot/models/piper/en_US-lessac-medium.onnx"
-_PIPER_BIN   = Path("/usr/local/bin/piper")
-_VOICES_DIR  = Path.home() / ".robot/memory/voices"
-_VENV_PYTHON = Path.home() / ".robot/venvs/xtts311/bin/python3"
-_WORKER      = Path(__file__).parent.parent / "tools/xtts_worker.py"
-_RATE        = 22050
 
 _PW_ENV = {
     **os.environ,
@@ -39,24 +36,11 @@ _PW_ENV = {
 }
 
 
-def _piper_available() -> bool:
-    return _PIPER_BIN.exists() and _MODEL_PATH.exists()
-
-
-def _xtts_available() -> bool:
-    return _VENV_PYTHON.exists() and _WORKER.exists()
-
-
-def _voice_ref_path(name: str) -> Optional[Path]:
-    p = _VOICES_DIR / name.lower() / "reference.wav"
-    return p if p.exists() else None
-
-
 class TTSEngine:
     """
-    Non-blocking TTS with two backends:
-      - Piper (default, fast, always on)
-      - XTTS v2 (activated via set_voice_profile, runs in 3.11 venv subprocess)
+    Non-blocking TTS with two synthesis backends:
+      - Piper (default, local fallback)
+      - Remote Voicebox (optional, requires VOICEBOX_URL + consented profile)
 
     speak() always returns immediately. Audio plays in a background thread.
     interrupt=True (default) kills any currently playing speech before starting.
@@ -67,48 +51,43 @@ class TTSEngine:
         self._speaking      = False
         self._muted_until   = 0.0
         self._proc: Optional[subprocess.Popen] = None
-        self._available     = _piper_available()
-
-        # XTTS state
-        self._xtts_ref_wav: Optional[str] = None
-        self._xtts_name:    Optional[str] = None
-        self._xtts_ready    = _xtts_available()
+        self._piper         = PiperVoiceEngine()
+        self._remote        = RemoteVoiceboxEngine.from_env()
+        self._available     = self._piper.is_available()
+        self._voice_profile: Optional[VoiceProfile] = None
 
         if not self._available:
             log.warning("tts.unavailable",
-                        piper=str(_PIPER_BIN), model=str(_MODEL_PATH))
+                        model=str(PIPER_MODEL_PATH))
         else:
-            log.info("tts.ready", model=_MODEL_PATH.name, rate=_RATE)
+            log.info("tts.ready", model=PIPER_MODEL_PATH.name, rate=PIPER_RATE)
 
-        if self._xtts_ready:
-            log.info("tts.xtts_venv_found", venv=str(_VENV_PYTHON))
+        if self._remote:
+            log.info("tts.voicebox_enabled", url=self._remote.base_url)
         else:
-            log.info("tts.xtts_venv_missing",
-                     hint="run tools/setup_xtts_venv.sh to enable voice cloning")
+            log.info("tts.voicebox_disabled",
+                     hint="set VOICEBOX_URL to enable cloned voice synthesis")
 
     # ── Voice profile ──────────────────────────────────────────────────────────
 
     def set_voice_profile(self, name: Optional[str]) -> None:
         """Activate a cloned voice for the named person, or None to revert to Piper."""
         if name is None:
-            self._xtts_ref_wav = None
-            self._xtts_name    = None
+            self._voice_profile = None
             log.info("tts.voice_profile_cleared")
             return
 
-        if not self._xtts_ready:
-            return  # silently skip — Piper stays active
+        profile = load_voice_profile(name)
+        if profile is None:
+            log.info("tts.voice_profile_missing_or_unconsented", name=name)
+            return
 
-        ref = _voice_ref_path(name)
-        if ref is None:
-            return  # no voice enrolled for this person
-
-        if self._xtts_name == name:
+        if self._voice_profile and self._voice_profile.name == profile.name:
             return  # already active
 
-        self._xtts_ref_wav = str(ref)
-        self._xtts_name    = name
-        log.info("tts.voice_profile_set", name=name, ref=str(ref))
+        self._voice_profile = profile
+        log.info("tts.voice_profile_set", name=profile.name,
+                 ref=str(profile.reference_wav))
 
     # ── Piper backend ──────────────────────────────────────────────────────────
 
@@ -121,42 +100,38 @@ class TTSEngine:
                 pass
         self._proc = None
 
-    def _speak_piper(self, text: str) -> None:
+    def _play_result(self, result: SynthesisResult) -> None:
+        if result.encoding == "s16le":
+            self._play_raw(result.audio, result.sample_rate)
+            return
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            tmp = f.name
+            f.write(result.audio)
+        try:
+            self._play_file(tmp)
+        finally:
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
+
+    def _play_raw(self, raw_audio: bytes, sample_rate: int) -> None:
         paplay = None
         try:
-            piper = subprocess.Popen(
-                [str(_PIPER_BIN), "--model", str(_MODEL_PATH), "--output_raw"],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-            )
-            with self._lock:
-                self._proc = piper
-
-            try:
-                raw_audio, _ = piper.communicate(text.encode("utf-8"), timeout=10.0)
-            except subprocess.TimeoutExpired:
-                piper.kill()
-                piper.communicate()
-                log.error("tts.piper_timeout", text_len=len(text))
-                return
-
-            if not raw_audio:
-                return
-
             paplay = subprocess.Popen(
                 ["paplay", "--raw",
-                 f"--rate={_RATE}", "--channels=1", "--format=s16le"],
+                 f"--rate={sample_rate}", "--channels=1", "--format=s16le"],
                 stdin=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 env=_PW_ENV,
             )
+            with self._lock:
+                self._proc = paplay
             paplay.stdin.write(raw_audio)
             paplay.stdin.close()
-            # KI-015: bound the wait by the audio's actual duration + margin —
-            # a wedged audio sink otherwise freezes this thread (and with it
-            # the speech queue) forever. s16le mono: 2 bytes/sample.
-            audio_s = len(raw_audio) / (2 * _RATE)
+            # s16le mono: 2 bytes/sample.
+            audio_s = len(raw_audio) / (2 * sample_rate)
             try:
                 paplay.wait(timeout=audio_s + 5.0)
             except subprocess.TimeoutExpired:
@@ -164,50 +139,41 @@ class TTSEngine:
                 paplay.wait()
                 log.error("tts.paplay_timeout", audio_s=round(audio_s, 1))
         except Exception as e:
-            log.error("tts.piper_error", error=str(e)[:80])
+            log.error("tts.play_raw_error", error=str(e)[:80])
             if paplay and paplay.poll() is None:
                 paplay.kill()
 
-    # ── XTTS backend (subprocess into 3.11 venv) ───────────────────────────────
-
-    def _speak_xtts(self, text: str, ref_wav: str) -> bool:
+    def _play_file(self, path: str) -> None:
+        paplay = None
         try:
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-                tmp = f.name
-
-            result = subprocess.run(
-                [str(_VENV_PYTHON), str(_WORKER), ref_wav, text, tmp],
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-
-            if result.returncode != 0:
-                log.warning("tts.xtts_failed",
-                            stderr=result.stderr[:120], fallback="piper")
-                return False
-
-            elapsed = float(result.stdout.strip().split(":")[-1])
-            log.info("tts.xtts_synth", chars=len(text), elapsed_s=round(elapsed, 1))
-
-            subprocess.run(
-                ["paplay", tmp],
-                env=_PW_ENV,
-                check=False,
+            paplay = subprocess.Popen(
+                ["paplay", path],
                 stderr=subprocess.DEVNULL,
+                env=_PW_ENV,
             )
-            return True
-        except subprocess.TimeoutExpired:
-            log.error("tts.xtts_timeout")
-            return False
-        except Exception as e:
-            log.error("tts.xtts_error", error=str(e)[:80])
-            return False
-        finally:
+            with self._lock:
+                self._proc = paplay
             try:
-                os.unlink(tmp)
-            except Exception:
-                pass
+                paplay.wait(timeout=60.0)
+            except subprocess.TimeoutExpired:
+                paplay.kill()
+                paplay.wait()
+                log.error("tts.paplay_timeout", audio_s=None)
+        except Exception as e:
+            log.error("tts.play_file_error", error=str(e)[:80])
+            if paplay and paplay.poll() is None:
+                paplay.kill()
+
+    def _speak_piper(self, text: str) -> None:
+        try:
+            if not hasattr(self, "_piper"):
+                self._piper = PiperVoiceEngine()
+            result = self._piper.synthesize(text)
+            self._play_result(result)
+        except VoiceEngineError as e:
+            log.error("tts.piper_error", error=str(e)[:80])
+        except Exception as e:
+            log.error("tts.piper_error", error=str(e)[:80])
 
     # ── Unified speak thread ───────────────────────────────────────────────────
 
@@ -215,15 +181,16 @@ class TTSEngine:
         with self._lock:
             self._speaking = True
         try:
-            ref_wav = self._xtts_ref_wav
-            name    = self._xtts_name
-
-            if ref_wav and name and self._xtts_ready:
-                success = self._speak_xtts(text, ref_wav)
-                if not success:
-                    self._speak_piper(text)
-            else:
-                self._speak_piper(text)
+            profile = self._voice_profile
+            if profile and self._remote:
+                try:
+                    result = self._remote.synthesize(text, profile)
+                    self._play_result(result)
+                    return
+                except VoiceEngineError as e:
+                    log.warning("tts.voicebox_failed",
+                                error=str(e)[:120], fallback="piper")
+            self._speak_piper(text)
         finally:
             with self._lock:
                 self._speaking = False
@@ -240,7 +207,7 @@ class TTSEngine:
             with self._lock:
                 self._kill_current()
         log.info("tts.speak", preview=text[:60],
-                 voice=self._xtts_name or "piper")
+                 voice=self.active_voice)
         from utils.action_log import action_log
         action_log.record("speech", text[:60])
         loop = asyncio.get_event_loop()
@@ -281,7 +248,9 @@ class TTSEngine:
 
     @property
     def active_voice(self) -> str:
-        return self._xtts_name or "piper"
+        if self._voice_profile and self._remote:
+            return self._voice_profile.name
+        return "piper"
 
 
 tts = TTSEngine()

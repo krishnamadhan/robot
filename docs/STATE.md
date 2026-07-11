@@ -60,7 +60,7 @@ updates, !cosmo proxy suite, /cosmo-notify, !refreshgames all (AB-007 merged).
 | Vision pipeline | ✅ | ✅ Working | IMX708 Wide CSI; **R/B channel swap fixed 2026-07-02** (picamera2 RGB888 is BGR — old code double-swapped → blue cast). AWB auto at boot; color.toml reset neutral. Person detect: **yolo11n.onnx via onnxruntime** (torch uninstalled, ~160MB+ RSS saved; ultralytics path broken since torchvision loss, had silently fallen back to HOG) |
 | Face recognition | ✅ | ⚠️ Re-enroll both | SFace — embeddings were enrolled on R/B-swapped frames (pre-2026-07-02 fix); confidence may drop. Re-enroll Madhan + Indhu with tools/enroll_face.py |
 | Emotion detection | ✅ | ✅ Working | DeepFace 7-emotion |
-| Audio pipeline | ✅ | ✅ Active | hey_jarvis → STT → Claude → TTS → JBL Flip 5 |
+| Audio pipeline | ✅ | ✅ Active | hey_jarvis → STT → Claude → TTS → JBL Flip 5; AB-049 adds VoiceEngine V1: Piper default/fallback, optional remote Voicebox clone path behind consent metadata + VOICEBOX_URL |
 | Token budget | ✅ Unified | N/A | Single TokenBudget (cognition/llm.py); persists to memory_meta SQLite, survives restarts (OQ-5 ✅) |
 | LLM routing | ✅ Unified | N/A | LLMInterface only; D4 two-tier (ambient→Ollama-first, person→Claude direct); LLMRouter + mind direct client deleted (OQ-6 ✅) |
 | OLED eyes | ⚠️ Terminal | ⚠️ Not wired | Hardware arrived — wire now (0x3C left, 0x3D right with A0 bridged). Eye engine personality-baseline drift live (2.1) |
