@@ -1011,9 +1011,35 @@ async def led_control(request: Request, _: None = _AuthRequired):
     try:
         from hardware.led_strip import strip, COLORS
         from behavior.ambilight import ambilight
+        from hardware.wipro_light import wipro
         body = await request.json()
         cmd = (body.get("cmd") or "").lower()
         val = body.get("value")
+
+        def fanout_bulb() -> None:
+            if not wipro.enabled:
+                return
+            if cmd == "named":
+                rgb = COLORS.get(str(val).lower())
+                if rgb is None:
+                    if str(val).lower() == "off":
+                        wipro.power_off()
+                    return
+                r, g, b = rgb
+                wipro.set_color_manual(r, g, b, 100)
+            elif cmd == "color" and isinstance(val, (list, tuple)) and len(val) == 3:
+                wipro.set_color_manual(int(val[0]), int(val[1]), int(val[2]), 100)
+            elif cmd == "bright":
+                bright = int(val)
+                if bright <= 0:
+                    wipro.power_off()
+                else:
+                    wipro.set_bright_manual(bright)
+            elif cmd == "on":
+                wipro.set_color_manual(255, 240, 220, 80)
+            elif cmd == "off":
+                wipro.power_off()
+
         # A manual command overrides any scene animation or TV sync.
         await strip.stop_animation()
         if ambilight.active:
@@ -1083,6 +1109,7 @@ async def led_control(request: Request, _: None = _AuthRequired):
         if not ok:
             return JSONResponse(status_code=503, content={
                 "error": "strip unreachable — powered? phone app disconnected?"})
+        fanout_bulb()
         return {"ok": True, **strip.state}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -1153,14 +1180,20 @@ async def led_bulb(request: Request, _: None = _AuthRequired):
             if len(v) != 3 or not all(isinstance(x, (int, float)) and 0 <= x <= 255 for x in v):
                 return JSONResponse(status_code=400, content={"error": "value must be [r,g,b] 0-255"})
             bright = body.get("bright", 100)
-            if not isinstance(bright, (int, float)) or not 0 < bright <= 100:
-                return JSONResponse(status_code=400, content={"error": "bright must be 1-100"})
-            wipro.set_color_manual(int(v[0]), int(v[1]), int(v[2]), int(bright))
+            if not isinstance(bright, (int, float)) or not 0 <= bright <= 100:
+                return JSONResponse(status_code=400, content={"error": "bright must be 0-100"})
+            if int(bright) <= 0:
+                wipro.power_off()
+            else:
+                wipro.set_color_manual(int(v[0]), int(v[1]), int(v[2]), int(bright))
         elif cmd == "bright":
             v = body.get("value")
-            if not isinstance(v, (int, float)) or not 0 < v <= 100:
-                return JSONResponse(status_code=400, content={"error": "value must be 1-100"})
-            wipro.set_bright_manual(int(v))
+            if not isinstance(v, (int, float)) or not 0 <= v <= 100:
+                return JSONResponse(status_code=400, content={"error": "value must be 0-100"})
+            if int(v) <= 0:
+                wipro.power_off()
+            else:
+                wipro.set_bright_manual(int(v))
         elif cmd == "on":
             wipro.set_color_manual(255, 240, 220, 80)   # warm white default
         elif cmd == "off":

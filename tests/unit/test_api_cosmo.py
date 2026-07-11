@@ -97,19 +97,79 @@ class TestLast:
 
 class TestLed:
 
+    def test_led_named_fans_out_to_wipro_bulb(self, client):
+        with (
+            patch("hardware.led_strip.strip") as strip,
+            patch("behavior.ambilight.ambilight") as ambilight,
+            patch("hardware.wipro_light.wipro") as wipro,
+        ):
+            strip.stop_animation = AsyncMock()
+            strip.set_named = AsyncMock(return_value=True)
+            strip.state = {"mode": "solid", "on": True}
+            ambilight.active = False
+            ambilight.stop = AsyncMock()
+            wipro.enabled = True
+            r = client.post("/led", json={"cmd": "named", "value": "red"})
+        assert r.status_code == 200
+        strip.set_named.assert_awaited_once_with("red")
+        wipro.set_color_manual.assert_called_once_with(255, 0, 0, 100)
+
+    def test_led_bright_zero_fans_out_as_bulb_off(self, client):
+        with (
+            patch("hardware.led_strip.strip") as strip,
+            patch("behavior.ambilight.ambilight") as ambilight,
+            patch("hardware.wipro_light.wipro") as wipro,
+        ):
+            strip.stop_animation = AsyncMock()
+            strip.set_brightness = AsyncMock(return_value=True)
+            strip.state = {"mode": "solid", "on": True, "brightness": 0}
+            ambilight.active = False
+            ambilight.stop = AsyncMock()
+            wipro.enabled = True
+            r = client.post("/led", json={"cmd": "bright", "value": 0})
+        assert r.status_code == 200
+        strip.set_brightness.assert_awaited_once_with(0)
+        wipro.power_off.assert_called_once_with()
+        wipro.set_bright_manual.assert_not_called()
+
     def test_led_pattern_named_stops_animation_and_ambilight(self, client):
-        with patch("hardware.led_strip.strip") as strip, patch("behavior.ambilight.ambilight") as ambilight:
+        with (
+            patch("hardware.led_strip.strip") as strip,
+            patch("behavior.ambilight.ambilight") as ambilight,
+            patch("hardware.wipro_light.wipro") as wipro,
+        ):
             strip.stop_animation = AsyncMock()
             strip.set_pattern = AsyncMock(return_value=True)
             strip.state = {"mode": "pattern:rainbow", "on": True}
             ambilight.active = True
             ambilight.stop = AsyncMock()
+            wipro.enabled = True
             r = client.post("/led", json={"cmd": "pattern", "value": "rainbow"})
         assert r.status_code == 200
         assert r.json()["mode"] == "pattern:rainbow"
         strip.stop_animation.assert_awaited_once()
         ambilight.stop.assert_awaited_once()
         strip.set_pattern.assert_awaited_once_with("rainbow")
+        wipro.set_color_manual.assert_not_called()
+        wipro.set_bright_manual.assert_not_called()
+        wipro.power_off.assert_not_called()
+
+    def test_led_color_fans_out_to_wipro_bulb(self, client):
+        with (
+            patch("hardware.led_strip.strip") as strip,
+            patch("behavior.ambilight.ambilight") as ambilight,
+            patch("hardware.wipro_light.wipro") as wipro,
+        ):
+            strip.stop_animation = AsyncMock()
+            strip.set_color = AsyncMock(return_value=True)
+            strip.state = {"mode": "solid", "on": True}
+            ambilight.active = False
+            ambilight.stop = AsyncMock()
+            wipro.enabled = True
+            r = client.post("/led", json={"cmd": "color", "value": [12, 34, 56]})
+        assert r.status_code == 200
+        strip.set_color.assert_awaited_once_with(12, 34, 56)
+        wipro.set_color_manual.assert_called_once_with(12, 34, 56, 100)
 
     def test_led_music_off_maps_to_zero(self, client):
         with patch("hardware.led_strip.strip") as strip, patch("behavior.ambilight.ambilight") as ambilight:
