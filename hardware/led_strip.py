@@ -225,9 +225,17 @@ class LedStrip:
         return await self._write(_bright_frame(self._brightness))
 
     async def power(self, on: bool) -> bool:
-        """Soft power — native 0x04 opcode is broken/latches this unit."""
+        """Soft power — native 0x04 opcode is broken/latches this unit.
+        Off = zero the RGB channels *and* brightness. Brightness-0 alone
+        leaves the last colour latched, which some units show as a faint
+        glow; a black colour frame kills that residual. (The controller's
+        own status LED is physical and can't be reached over BLE.)"""
         self._is_on = on
-        return await self._write(_bright_frame(self._brightness if on else 0))
+        if not on:
+            self._mode = None
+            await self._write(_color_frame(0, 0, 0))
+            return await self._write(_bright_frame(0))
+        return await self._write(_bright_frame(self._brightness))
 
     async def _stop_anim(self) -> None:
         if self._anim_task:
