@@ -4,7 +4,8 @@ TTS engine — Piper default/fallback + optional remote Voicebox clone client.
 Binary: /usr/local/bin/piper
 Model:  ~/.robot/models/piper/en_US-lessac-medium.onnx  (22050 Hz mono s16le)
 Voices: ~/.robot/memory/voices/<name>/reference.wav + consent.json
-Remote: set VOICEBOX_URL to enable experimental /generate cloned synthesis.
+Remote: set VOICE_ENGINE=voicebox or VOICE_ENGINE=replicate to enable
+experimental cloned synthesis. Piper remains the fallback.
 """
 
 import asyncio
@@ -19,6 +20,7 @@ from expression.voice_engine import (
     PIPER_MODEL_PATH,
     PIPER_RATE,
     PiperVoiceEngine,
+    ReplicateVoiceEngine,
     RemoteVoiceboxEngine,
     SynthesisResult,
     VoiceEngineError,
@@ -34,6 +36,18 @@ _PW_ENV = {
     "XDG_RUNTIME_DIR": "/run/user/1000",
     "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus",
 }
+
+
+def _remote_from_env():
+    engine = os.getenv("VOICE_ENGINE", "").strip().lower()
+    if engine == "replicate":
+        return ReplicateVoiceEngine.from_env()
+    if engine in ("", "voicebox", "remote_voicebox"):
+        return RemoteVoiceboxEngine.from_env()
+    if engine == "piper":
+        return None
+    log.warning("tts.unknown_voice_engine", value=engine, fallback="piper")
+    return None
 
 
 class TTSEngine:
@@ -52,7 +66,7 @@ class TTSEngine:
         self._muted_until   = 0.0
         self._proc: Optional[subprocess.Popen] = None
         self._piper         = PiperVoiceEngine()
-        self._remote        = RemoteVoiceboxEngine.from_env()
+        self._remote        = _remote_from_env()
         self._available     = self._piper.is_available()
         self._voice_profile: Optional[VoiceProfile] = None
 
@@ -63,10 +77,10 @@ class TTSEngine:
             log.info("tts.ready", model=PIPER_MODEL_PATH.name, rate=PIPER_RATE)
 
         if self._remote:
-            log.info("tts.voicebox_enabled", url=self._remote.base_url)
+            log.info("tts.clone_engine_enabled", engine=self._remote.name)
         else:
-            log.info("tts.voicebox_disabled",
-                     hint="set VOICEBOX_URL to enable cloned voice synthesis")
+            log.info("tts.clone_engine_disabled",
+                     hint="set VOICE_ENGINE=replicate or VOICEBOX_URL to enable cloned voice synthesis")
 
     # ── Voice profile ──────────────────────────────────────────────────────────
 
@@ -188,7 +202,8 @@ class TTSEngine:
                     self._play_result(result)
                     return
                 except VoiceEngineError as e:
-                    log.warning("tts.voicebox_failed",
+                    log.warning("tts.clone_engine_failed",
+                                engine=self._remote.name,
                                 error=str(e)[:120], fallback="piper")
             self._speak_piper(text)
         finally:

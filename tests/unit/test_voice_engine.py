@@ -18,8 +18,11 @@ class _Headers:
 
 
 class _Response:
-    def __init__(self, payload: dict, content_type="application/json"):
-        self._body = json.dumps(payload).encode("utf-8")
+    def __init__(self, payload, content_type="application/json"):
+        if isinstance(payload, bytes):
+            self._body = payload
+        else:
+            self._body = json.dumps(payload).encode("utf-8")
         self.headers = _Headers(content_type)
 
     def __enter__(self):
@@ -68,6 +71,39 @@ class _VoiceboxMock:
         raise urllib.error.HTTPError(req.full_url, 404, "not found", hdrs=None, fp=None)
 
 
+class _ReplicateMock:
+    create_calls = 0
+    download_calls = 0
+    payload = b"RIFFreplicate-wav"
+
+    @classmethod
+    def reset(cls):
+        cls.create_calls = 0
+        cls.download_calls = 0
+
+    @classmethod
+    def urlopen(cls, req, timeout):
+        assert timeout == 3
+        assert req.headers["Authorization"] == "Bearer test-token"
+
+        if req.full_url == "https://api.replicate.com/v1/models/lucataco/xtts-v2/predictions":
+            cls.create_calls += 1
+            payload = json.loads(req.data.decode("utf-8"))
+            assert payload["input"]["text"] == "hello"
+            assert payload["input"]["language"] == "en"
+            assert payload["input"]["speaker"].startswith("data:audio/wav;base64,")
+            return _Response({
+                "status": "succeeded",
+                "output": "https://replicate.delivery/mock-output.wav",
+            })
+
+        if req.full_url == "https://replicate.delivery/mock-output.wav":
+            cls.download_calls += 1
+            return _Response(cls.payload, content_type="audio/wav")
+
+        raise urllib.error.HTTPError(req.full_url, 404, "not found", hdrs=None, fp=None)
+
+
 def _profile(tmp_path: Path):
     from expression.voice_engine import VoiceProfile
 
@@ -93,6 +129,28 @@ def test_remote_voicebox_generate_and_transcribe(tmp_path):
     assert result.audio == _VoiceboxMock.generate_payload
     assert _VoiceboxMock.transcribe_calls == 1
     assert _VoiceboxMock.generate_calls == 1
+
+
+def test_replicate_generate_downloads_output(tmp_path):
+    from expression.voice_engine import ReplicateVoiceEngine
+
+    _ReplicateMock.reset()
+    with patch("expression.voice_engine.urllib.request.urlopen", _ReplicateMock.urlopen):
+        engine = ReplicateVoiceEngine("test-token", timeout_s=3)
+        result = engine.synthesize("hello", _profile(tmp_path))
+
+    assert result.engine == "replicate"
+    assert result.encoding == "wav"
+    assert result.audio == _ReplicateMock.payload
+    assert _ReplicateMock.create_calls == 1
+    assert _ReplicateMock.download_calls == 1
+
+
+def test_replicate_from_env_returns_none_without_token(monkeypatch):
+    from expression.voice_engine import ReplicateVoiceEngine
+
+    monkeypatch.delenv("REPLICATE_API_TOKEN", raising=False)
+    assert ReplicateVoiceEngine.from_env() is None
 
 
 def test_load_voice_profile_requires_consent_json(tmp_path, monkeypatch):
