@@ -27,6 +27,8 @@ PIPER_MODEL_PATH = Path.home() / ".robot/models/piper/en_US-lessac-medium.onnx"
 PIPER_BIN = Path("/usr/local/bin/piper")
 PIPER_RATE = 22050
 VOICES_DIR = Path.home() / ".robot/memory/voices"
+REPLICATE_API_BASE = "https://api.replicate.com/v1"
+REPLICATE_XTTS_MODEL = "lucataco/xtts-v2"
 
 
 @dataclass(frozen=True)
@@ -230,3 +232,163 @@ class RemoteVoiceboxEngine(VoiceEngine):
                  path=path, elapsed_ms=int((time.monotonic() - t0) * 1000),
                  bytes=len(body))
         return body, content_type.split(";")[0].strip().lower()
+
+
+class ReplicateVoiceEngine(VoiceEngine):
+    """
+    Replicate-backed XTTS-v2 voice cloning.
+
+    Uses the public model endpoint:
+      POST /models/lucataco/xtts-v2/predictions
+
+    Output is downloaded from Replicate's returned URL. Failures are reported
+    as VoiceEngineError so TTSEngine can fall back to Piper.
+    """
+
+    name = "replicate"
+
+    def __init__(
+        self,
+        api_token: str,
+        *,
+        model: str = REPLICATE_XTTS_MODEL,
+        api_base: str = REPLICATE_API_BASE,
+        timeout_s: float = 20.0,
+        poll_interval_s: float = 0.5,
+    ) -> None:
+        self.api_token = api_token
+        self.model = model
+        self.api_base = api_base.rstrip("/")
+        self.timeout_s = timeout_s
+        self.poll_interval_s = poll_interval_s
+
+    @classmethod
+    def from_env(cls) -> Optional["ReplicateVoiceEngine"]:
+        token = os.getenv("REPLICATE_API_TOKEN", "").strip()
+        if not token:
+            return None
+        timeout = float(os.getenv("REPLICATE_TIMEOUT_S", "20"))
+        model = os.getenv("REPLICATE_VOICE_MODEL", REPLICATE_XTTS_MODEL).strip()
+        return cls(token, model=model or REPLICATE_XTTS_MODEL, timeout_s=timeout)
+
+    def synthesize(self, text: str, profile: Optional[VoiceProfile] = None) -> SynthesisResult:
+        if profile is None:
+            raise VoiceEngineError("replicate requires a consented voice profile")
+
+        prediction = self._create_prediction(text, profile)
+        output = self._wait_for_output(prediction)
+        audio = self._download_output(output)
+        if not audio:
+            raise VoiceEngineError("replicate returned empty audio")
+        return SynthesisResult(audio=audio, sample_rate=PIPER_RATE,
+                               encoding="wav", engine=self.name)
+
+    def _create_prediction(self, text: str, profile: VoiceProfile) -> dict:
+        owner, name = self.model.split("/", 1)
+        payload = {
+            "input": {
+                "text": text,
+                "speaker": self._audio_data_uri(profile.reference_wav),
+                "language": os.getenv("REPLICATE_XTTS_LANGUAGE", "en"),
+            },
+        }
+        body, _ = self._request_json(
+            f"{self.api_base}/models/{owner}/{name}/predictions",
+            payload=payload,
+            method="POST",
+        )
+        return body
+
+    def _wait_for_output(self, prediction: dict) -> object:
+        deadline = time.monotonic() + self.timeout_s
+        current = prediction
+        while True:
+            status = str(current.get("status") or "").lower()
+            if status == "succeeded":
+                return current.get("output")
+            if status in ("failed", "canceled"):
+                raise VoiceEngineError(f"replicate prediction {status}")
+            if time.monotonic() >= deadline:
+                raise VoiceEngineError("replicate timed out")
+
+            get_url = (current.get("urls") or {}).get("get")
+            if not get_url:
+                raise VoiceEngineError("replicate prediction missing poll URL")
+            time.sleep(self.poll_interval_s)
+            current, _ = self._request_json(get_url, method="GET")
+
+    def _download_output(self, output: object) -> bytes:
+        url = self._output_url(output)
+        if not url:
+            raise VoiceEngineError("replicate prediction missing output URL")
+        body, _ = self._request_bytes(url, method="GET")
+        return body
+
+    def _output_url(self, output: object) -> Optional[str]:
+        if isinstance(output, str):
+            return output
+        if isinstance(output, list) and output:
+            first = output[0]
+            return first if isinstance(first, str) else None
+        if isinstance(output, dict):
+            for key in ("audio", "url", "output"):
+                value = output.get(key)
+                if isinstance(value, str):
+                    return value
+        return None
+
+    def _request_json(
+        self,
+        url: str,
+        *,
+        method: str,
+        payload: Optional[dict] = None,
+    ) -> tuple[dict, str]:
+        body, content_type = self._request_bytes(url, method=method, payload=payload)
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except Exception as exc:
+            raise VoiceEngineError("invalid replicate JSON") from exc
+        if not isinstance(data, dict):
+            raise VoiceEngineError("invalid replicate response")
+        return data, content_type
+
+    def _request_bytes(
+        self,
+        url: str,
+        *,
+        method: str,
+        payload: Optional[dict] = None,
+    ) -> tuple[bytes, str]:
+        headers = {
+            "Authorization": f"Bearer {self.api_token}",
+            "Content-Type": "application/json",
+        }
+        data = None
+        if payload is not None:
+            data = json.dumps(payload).encode("utf-8")
+            headers["Prefer"] = f"wait={min(int(self.timeout_s), 60)}"
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        t0 = time.monotonic()
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
+                body = resp.read()
+                content_type = resp.headers.get("Content-Type", "application/octet-stream")
+        except urllib.error.HTTPError as exc:
+            raise VoiceEngineError(f"replicate HTTP {exc.code}") from exc
+        except Exception as exc:
+            raise VoiceEngineError(str(exc)) from exc
+        log.info("replicate.http",
+                 elapsed_ms=int((time.monotonic() - t0) * 1000),
+                 bytes=len(body),
+                 method=method)
+        return body, content_type.split(";")[0].strip().lower()
+
+    def _audio_data_uri(self, path: Path) -> str:
+        try:
+            audio = path.read_bytes()
+        except Exception as exc:
+            raise VoiceEngineError("cannot read voice reference audio") from exc
+        if not audio:
+            raise VoiceEngineError("voice reference audio is empty")
+        return "data:audio/wav;base64," + base64.b64encode(audio).decode("ascii")

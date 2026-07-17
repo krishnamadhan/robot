@@ -14,6 +14,11 @@ speech falls back to Piper.
   - enabled only when `VOICEBOX_URL` is set
   - requires a locally consented profile
   - calls `POST /generate`
+- Optional Replicate clone engine: `ReplicateVoiceEngine`
+  - enabled with `VOICE_ENGINE=replicate` and `REPLICATE_API_TOKEN`
+  - model slug: `lucataco/xtts-v2`
+  - API base: `https://api.replicate.com/v1`
+  - if `REPLICATE_API_TOKEN` is unset, startup continues with Piper fallback
 - Consent profile:
   - `~/.robot/memory/voices/<name>/reference.wav`
   - `~/.robot/memory/voices/<name>/consent.json`
@@ -80,6 +85,14 @@ Optional future/mock Voicebox transcript check:
 ```bash
 VOICEBOX_URL=http://127.0.0.1:8088 \
 PYTHONPATH=/home/pi/robot python3 tools/enroll_voice.py --name Madhan
+```
+
+Replicate cloned synthesis:
+
+```bash
+VOICE_ENGINE=replicate \
+REPLICATE_API_TOKEN=... \
+PYTHONPATH=/home/pi/robot python3 tools/voice_test.py --name Madhan
 ```
 
 To revoke a profile, remove its directory:

@@ -145,7 +145,8 @@ def main() -> None:
     _countdown(3)
     audio = _record(max(5, args.duration))
 
-    root.mkdir(parents=True, exist_ok=True)
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(root, 0o700)
     sf.write(str(ref_wav), audio, RATE)
     transcript = _optional_transcribe(ref_wav, args.voicebox_url)
     _write_consent(consent_json, name=name, spoken_consent=typed,
