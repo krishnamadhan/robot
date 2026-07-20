@@ -10,7 +10,9 @@ Take the top unchecked item from COSMO_BACKLOG.md. State which task you're takin
 **MCP tools available in this session:**
 - **Graphify** — AST knowledge graph of this codebase is pre-built at `graphify-out/graph.json`.
   Before editing any module, ask the graph first: "What calls X?", "Which files import Y?", "Trace the path from Z to the API".
-  Refresh after major merges: `graphify /home/pi/robot --update` (incremental, ~10s).
+  Refresh after major merges: `graphify /home/pi/robot --directed --code-only --update` (incremental, ~10s).
+  Full rebuild: `graphify /home/pi/robot --directed --code-only` (~30s, 3095 nodes).
+  Pre-check: `find . -type p` — remove any FIFOs found or graphify will hang on open.
 - **Context7** — for any external library (picamera2, asyncio, py_trees, onnxruntime, aiosqlite, etc.)
   append `use context7` to get version-exact docs: *"how does py_trees Behaviour.update() work? use context7"*
 
