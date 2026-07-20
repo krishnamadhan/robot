@@ -108,7 +108,8 @@ cd "$ROBOT_DIR"
 if ! git diff --quiet docs/; then
     git add docs/
     git commit -m "docs: auto-update $(date +%Y-%m-%d_%H:%M)" --quiet
-    echo "✅ Docs committed"
+    git push origin master --quiet 2>&1 || true
+    echo "✅ Docs committed and pushed"
 else
     echo "✅ No doc changes"
 fi

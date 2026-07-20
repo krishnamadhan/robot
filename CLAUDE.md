@@ -7,9 +7,16 @@
 **START:** `cat docs/STATE.md && cat COSMO_BACKLOG.md && git log --oneline -5 && pm2 status`
 Take the top unchecked item from COSMO_BACKLOG.md. State which task you're taking before coding.
 
+**MCP tools available in this session:**
+- **Graphify** — AST knowledge graph of this codebase is pre-built at `graphify-out/graph.json`.
+  Before editing any module, ask the graph first: "What calls X?", "Which files import Y?", "Trace the path from Z to the API".
+  Refresh after major merges: `graphify /home/pi/robot --update` (incremental, ~10s).
+- **Context7** — for any external library (picamera2, asyncio, py_trees, onnxruntime, aiosqlite, etc.)
+  append `use context7` to get version-exact docs: *"how does py_trees Behaviour.update() work? use context7"*
+
 **END:** Update `docs/STATE.md` (component status + Next Priority). If bugs found → `docs/KNOWN_ISSUES.md`. If architecture changed → `docs/DECISIONS.md`. Sync and commit are automated by hooks.
 
-**Never restart `banteragent`** — loses WhatsApp auth permanently.
+**Don't restart `banteragent` without reason** (corrected 2026-07-20: auth survives restarts; avoid gratuitous ones — drops in-flight messages).
 
 ## Project Layout
 
@@ -74,7 +81,7 @@ Set OFF pin LOW before ON pin HIGH.
 
 ## Do Not Ever
 
-- Never restart `banteragent` PM2 — loses WhatsApp auth
+- Don't restart `banteragent` PM2 gratuitously (auth survives, but in-flight messages drop)
 - Never set AIN1=1 AND AIN2=1 — destroys TB6612FNG
 - Never connect LiPo to Pi 5V rail — destroys Pi 5
 - Never load model >500MB into RAM
