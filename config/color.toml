@@ -1,8 +1,15 @@
+# Camera colour config — persisted from the :8080 dashboard "Save".
+# hw_r/hw_b reset to neutral boot defaults 2026-07-23: the warm lock (2.4/0.8)
+# was calibrated for the camera aimed AT THE TV and now just yellows the whole
+# feed (camera drifted off-TV). Camera boots on auto-AWB (neutral); these hw
+# values only apply if pushed manually from the dashboard. Keeping them at the
+# mild defaults means even an accidental slider push won't reintroduce heavy
+# yellow. See behavior/ambilight.py WB_LOCK note to restore TV-accurate sync.
 sw_g = 1.0
 saturation = 1.0
 sw_r = 1.0
 ev = 0.6
-hw_r = 2.4
+hw_r = 1.8
 shadow = 0.0
-hw_b = 0.8
+hw_b = 1.6
 sw_b = 1.0

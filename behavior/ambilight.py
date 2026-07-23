@@ -51,7 +51,16 @@ WHITE_SAT_HIGH = 0.34     # above → normal vivid path; in between → blend
 # 2. The sensor over-reads GREEN on warm content (orange showed R≈G, hue 52°
 #    instead of ~33°). Attenuate green in software → warm colours land right.
 #    Pure green/blue hues are unaffected (R or B ≈ 0 there).
-WB_LOCK = True
+# DISABLED 2026-07-23: the warm WB lock (2.4/0.8) + CCM below were calibrated
+# with the camera aimed AT THE TV. The camera has since drifted off-TV (STATE.md,
+# since 2026-07-02) and now samples wall/room glow, so the warm lock just yellows
+# the whole feed within ~5 s of any reset (self-heal re-asserts it) — and the LED
+# strip/bulb inherit the yellow because they sample that frame. Madhan's standing
+# preference is a NEUTRAL camera (no colour modifiers). Auto-AWB gives that.
+# To restore TV-accurate sync: re-aim the camera at the TV, re-run
+# tools/ambilight_calibrate.py + ambilight_calibrate_cast.py, then flip WB_LOCK
+# and CCM_ENABLED back to True.
+WB_LOCK = False
 WB_LOCK_R = 2.4           # ISP red ColourGain when ambilight owns the camera
 WB_LOCK_B = 0.8           # ISP blue ColourGain (low = kill the cool cast)
 
@@ -60,7 +69,7 @@ WB_LOCK_B = 0.8           # ISP blue ColourGain (low = kill the cool cast)
 # rendering of each. Maps camera RGB → true RGB as `true = rgb @ CCM`. ONLY valid
 # with WB locked at (WB_LOCK_R, WB_LOCK_B) — the calibration was done there.
 # Re-run tools/ambilight_calibrate_cast.py if the camera/TV/setup changes.
-CCM_ENABLED = True
+CCM_ENABLED = False  # DISABLED 2026-07-23 with WB_LOCK — only valid when WB is locked (see above)
 CCM = np.array([
     [1.062, -0.069, 0.059],
     [0.018, 1.189, 0.212],
